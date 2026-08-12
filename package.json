@@ -1,0 +1,14 @@
+{
+  "name": "polar-stream-interface-renderer",
+  "private": true,
+  "version": "0.3.0",
+  "description": "Deterministic background renderer for Polar Stream visual validation",
+  "type": "module",
+  "scripts": {
+    "render:interface": "node scripts/render_interface.mjs",
+    "validate:interface": "node scripts/render_interface.mjs --validate"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

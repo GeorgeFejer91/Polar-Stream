@@ -2,7 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "polar-stream.preferences.v1";
-  const defaults = Object.freeze({ streamName: null, lastDevice: null });
+  const defaults = Object.freeze({ streamName: null, lastDevice: null, outputConfig: null });
 
   function load() {
     try {
@@ -14,7 +14,11 @@
         && typeof stored?.lastDevice?.name === "string"
         ? { id: stored.lastDevice.id, name: stored.lastDevice.name }
         : null;
-      return { streamName, lastDevice };
+      const outputConfig = stored?.outputConfig && typeof stored.outputConfig === "object"
+        && Array.isArray(stored.outputConfig.outputs)
+        ? structuredClone(stored.outputConfig)
+        : null;
+      return { streamName, lastDevice, outputConfig };
     } catch (_error) {
       return { ...defaults };
     }
@@ -37,10 +41,15 @@
     return write({ ...load(), lastDevice: { id: device.id, name: device.name } });
   }
 
+  function saveOutputConfig(outputConfig) {
+    return write({ ...load(), streamName: outputConfig.streamName, outputConfig: structuredClone(outputConfig) });
+  }
+
   window.PolarPreferences = Object.freeze({
     STORAGE_KEY,
     load,
     saveStreamName,
     saveLastDevice,
+    saveOutputConfig,
   });
 })();

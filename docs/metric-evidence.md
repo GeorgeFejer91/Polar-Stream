@@ -15,7 +15,7 @@ The new engine retains every metric family exposed by the previous repository an
 | ECG | `raw_ecg`, `ecg_mean`, `ecg_rms`, `ecg_peak_to_peak`, `ecg_sd` |
 | Accelerometer X/Y/Z | `raw_acc`, `acc_magnitude` |
 | Breathing waveform | `breathing_volume`, `breathing_axis_range`, `breathing_calibration` |
-| Inhale/exhale classification | `breathing_phase` (+1 inhale, −1 exhale, 0 pause) |
+| Four-state ACC breath-phase classification | `breathing_phase` (+1 inhale, −1 exhale, 0 pause, −2 bad signal) |
 | Short-term HRV | `rmssd`, `ln_rmssd`, `sdnn`, `pnn50`, `sd1` |
 | Coherence | `coherence`, `heartmath_coherence`, `coherence_peak_frequency`, `coherence_peak_power`, `coherence_total_power` |
 | Coherence readiness | `coherence_confidence` |
@@ -53,9 +53,9 @@ Polar Stream intentionally does not expose LF/HF as “sympathovagal balance.”
 
 ## ACC-derived breathing and phase
 
-The breathing processor applies a 0.10 EMA to ACC, learns the dominant motion axis by PCA over a 12-second calibration window, projects samples onto that axis, uses the 5th and 95th percentile projections as robust bounds, and scales the waveform to 0–1. Rising batches are classified as inhale, falling batches as exhale, and changes inside the threshold as pause.
+The breathing processor follows the original Polar app's ACC tracker: it applies a configurable EMA to ACC, learns the dominant motion axis by PCA over a configurable calibration window (12 seconds by default), projects samples onto that axis, uses robust quantile bounds, and scales the waveform to 0–1. Rising batches are `+1` inhale, falling batches are `−1` exhale, changes inside the threshold are `0` pause, and incomplete calibration or a stale input gap is `−2` bad signal. Optional adaptive bounds follow slow posture or strap drift; saving classifier settings restarts only this module's calibration.
 
-Chest-worn accelerometers can estimate respiratory motion and rate, but body movement degrades the signal and methods require validation against a respiratory reference ([Drummond et al., 2021](https://consensus.app/papers/details/9389301a991e52ee9210f51939d318d7/?utm_source=unknown); [Fazio et al., 2022](https://consensus.app/papers/details/7414c3f819b3558482e7001db50189cf/?utm_source=unknown)). The Polar Stream projection is therefore labeled an experimental chest-motion waveform—not lung volume, airflow or a clinically validated phase classifier.
+Chest-worn accelerometers can estimate respiratory motion and rate, but body movement degrades the signal and methods require validation against a respiratory reference ([Drummond et al., 2021](https://consensus.app/papers/details/9389301a991e52ee9210f51939d318d7/?utm_source=unknown); [Yuasa et al., 2019](https://consensus.app/papers/details/887e8140a6cf5376ab302f44f8b80fb6/?utm_source=unknown); [Schipper et al., 2021](https://consensus.app/papers/details/01e1c8095a4d50c2ab0c5281604ac729/?utm_source=unknown)). Signal-quality rejection can improve respiratory estimates when movement makes windows unreliable ([Romano et al., 2023](https://consensus.app/papers/details/ac9a297ef8f6578699fdc7e56e3c9f16/?utm_source=unknown)). Polar Stream's `bad signal` class is deliberately narrower: it reports unavailable calibration or stale tracking and does not claim to detect every motion artifact. The projection remains an experimental chest-motion waveform—not lung volume, airflow, or a clinically validated phase classifier.
 
 ## Breathing dynamics
 
@@ -83,4 +83,4 @@ HRV often changes during stress, but findings and usable metrics depend on popul
 
 ## Normalization
 
-Normalization is an output transform, not a new physiological measure. Sliding mode uses the minimum and maximum observed within the chosen 5–3600 second window; whole-run mode uses extrema since that processor/output configuration began. A zero-range series returns 0.5 until the minimum and maximum separate. Raw ECG/ACC and categorical phase are not normalized.
+Normalization is an output transform, not a new physiological measure. Sliding mode uses the minimum and maximum observed within the chosen 5–3600 second window; whole-run mode uses extrema since that processor/output configuration began. A zero-range series returns 0.5 until the minimum and maximum separate. Raw ECG/ACC and categorical phase are not normalized. Each module separately saves a 1–600 second visualization window; that display-only value does not slow native acquisition or LSL/OSC publishing.

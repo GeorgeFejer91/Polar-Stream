@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use crate::{BreathingSnapshot, MetricSample};
+use crate::{BreathingPhase, BreathingSnapshot, MetricSample};
 
 const RETAINED_BREATHS: usize = 256;
 const MINIMUM_BASIC: usize = 8;
@@ -68,7 +68,7 @@ pub(crate) struct BreathingDynamicsProcessor {
 
 impl BreathingDynamicsProcessor {
     pub(crate) fn push(&mut self, input: BreathingSnapshot) -> Option<BreathingDynamicsSnapshot> {
-        if !input.calibrated {
+        if !input.calibrated || input.phase == BreathingPhase::BadSignal {
             return None;
         }
         let Some((last_time, last_volume)) = self.last else {

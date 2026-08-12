@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use polar_h10_metrics::BreathingSettings;
 pub use polar_h10_metrics::MetricDefinition as MetricSpec;
 use serde::{Deserialize, Serialize};
 
@@ -36,8 +37,20 @@ impl OutputConfig {
             .retain(|id, _| self.outputs.contains(id));
         for (id, options) in &mut self.metric_options {
             options.window_seconds = options.window_seconds.clamp(5, 3_600);
+            options.display_window_seconds = options.display_window_seconds.clamp(1, 600);
             if !MetricSpec::for_id(id).is_some_and(|metric| metric.normalizable) {
                 options.normalization = NormalizationMode::None;
+            }
+            if id == "breathing_phase" {
+                options.processing.breathing_phase = Some(
+                    options
+                        .processing
+                        .breathing_phase
+                        .unwrap_or_default()
+                        .clamped(),
+                );
+            } else {
+                options.processing.breathing_phase = None;
             }
         }
         Ok(self)
@@ -57,13 +70,17 @@ pub enum NormalizationMode {
     Session,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetricOutputOptions {
     #[serde(default)]
     pub normalization: NormalizationMode,
     #[serde(default = "default_window_seconds")]
     pub window_seconds: u32,
+    #[serde(default = "default_display_window_seconds")]
+    pub display_window_seconds: u32,
+    #[serde(default)]
+    pub processing: MetricProcessingOptions,
 }
 
 impl Default for MetricOutputOptions {
@@ -71,12 +88,25 @@ impl Default for MetricOutputOptions {
         Self {
             normalization: NormalizationMode::None,
             window_seconds: default_window_seconds(),
+            display_window_seconds: default_display_window_seconds(),
+            processing: MetricProcessingOptions::default(),
         }
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricProcessingOptions {
+    #[serde(default)]
+    pub breathing_phase: Option<BreathingSettings>,
+}
+
 const fn default_window_seconds() -> u32 {
     60
+}
+
+const fn default_display_window_seconds() -> u32 {
+    5
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -152,6 +182,7 @@ mod tests {
             MetricOutputOptions {
                 normalization: NormalizationMode::SlidingWindow,
                 window_seconds: 2,
+                ..MetricOutputOptions::default()
             },
         );
         metric_options.insert("not_selected".into(), MetricOutputOptions::default());
@@ -163,7 +194,39 @@ mod tests {
         .normalized()
         .unwrap();
         assert_eq!(config.metric_options["rmssd"].window_seconds, 5);
+        assert_eq!(config.metric_options["rmssd"].display_window_seconds, 5);
         assert!(!config.metric_options.contains_key("not_selected"));
+    }
+
+    #[test]
+    fn clamps_and_scopes_breathing_classifier_settings() {
+        let mut metric_options = HashMap::new();
+        metric_options.insert(
+            "breathing_phase".into(),
+            MetricOutputOptions {
+                display_window_seconds: 900,
+                processing: MetricProcessingOptions {
+                    breathing_phase: Some(BreathingSettings {
+                        calibration_window_seconds: 0.1,
+                        phase_delta_threshold: 9.0,
+                        ..BreathingSettings::default()
+                    }),
+                },
+                ..MetricOutputOptions::default()
+            },
+        );
+        let config = OutputConfig {
+            outputs: vec!["breathing_phase".into()],
+            metric_options,
+            ..OutputConfig::default()
+        }
+        .normalized()
+        .unwrap();
+        let options = config.metric_options["breathing_phase"];
+        let classifier = options.processing.breathing_phase.unwrap();
+        assert_eq!(options.display_window_seconds, 600);
+        assert_eq!(classifier.calibration_window_seconds, 1.0);
+        assert_eq!(classifier.phase_delta_threshold, 0.25);
     }
 
     #[test]

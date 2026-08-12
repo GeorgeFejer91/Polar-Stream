@@ -9,6 +9,12 @@ its scientific definition, interpretation limits, evidence level, cited source,
 and exact stream-name preview; an explicit **Save output** action then adds that
 single module to the enabled LSL and/or OSC publisher.
 
+Every output module has a saved visualizer window and, where meaningful,
+normalization controls. The four-state ACC breath classifier adds its own PCA
+calibration, smoothing, threshold, inversion, adaptive-bound and stale-signal
+controls. Its circle visual expands during inhale, contracts during exhale, and
+uses distinct colors for inhale, exhale, pause and bad signal.
+
 > Unofficial research software. Not affiliated with or endorsed by Polar
 > Electro. This is not a medical device.
 
@@ -81,6 +87,18 @@ Prerequisites are Rust 1.88+ and the current
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p polar-stream
+```
+
+Visual validation uses a deterministic Playwright renderer, never a connected
+sensor or the running desktop app. It renders every breath-class target and the
+settings workflow in a background Chromium engine, checks canvas geometry,
+color, labels and saved controls, and writes review images under
+`artifacts/interface-renderer/`:
+
+```bash
+npm ci
+npx playwright install chromium
+npm run validate:interface
 ```
 
 The browser-only frontend preview contains synthetic data and never runs inside

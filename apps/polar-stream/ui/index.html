@@ -159,6 +159,7 @@
         <div class="visual-toolbar">
           <label for="visual-source">Display</label>
           <select id="visual-source"></select>
+          <button class="secondary-button visual-adjust-button" id="adjust-visual" type="button">Adjust</button>
           <div class="visual-value">
             <strong id="visual-current">—</strong>
             <span id="visual-unit">µV</span>
@@ -177,8 +178,8 @@
 
         <div class="chart-footer">
           <span><i class="legend-line"></i><strong id="visual-label">Raw ECG</strong></span>
-          <span>5 second window</span>
-          <span>Auto scale</span>
+          <span id="visual-window-label">5 second window</span>
+          <span id="visual-scale-label">Original scale</span>
         </div>
 
         <div class="pipeline-note">
@@ -222,6 +223,21 @@
         <footer>
           <span id="dialog-output-status">Select one metric to inspect</span>
           <button class="primary-button compact" id="save-metric-output" type="button" disabled>Save output</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="module-dialog" id="module-dialog" aria-labelledby="module-dialog-title">
+      <form method="dialog">
+        <header>
+          <div><p class="eyebrow">Module controls</p><h2 id="module-dialog-title">Adjust output</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </header>
+        <p class="dialog-intro" id="module-dialog-intro">Changes remain a draft until Save module is pressed.</p>
+        <div class="module-settings" id="module-settings"></div>
+        <footer>
+          <span id="module-dialog-status">Saved settings remain active until changed.</span>
+          <button class="primary-button compact" id="save-module-settings" type="button">Save module</button>
         </footer>
       </form>
     </dialog>

@@ -15,7 +15,7 @@ mod hrv;
 use polar_h10_core::AccSample;
 use serde::Serialize;
 
-pub use breathing::{BreathingPhase, BreathingSnapshot};
+pub use breathing::{BreathingPhase, BreathingSettings, BreathingSnapshot};
 pub use breathing_dynamics::{BreathingDynamicsSnapshot, FeatureSet};
 pub use catalog::{METRIC_CATALOG, MetricDefinition, metric_definition};
 pub use coherence::CoherenceSnapshot;
@@ -49,6 +49,13 @@ pub struct MetricEngine {
 }
 
 impl MetricEngine {
+    /// Applies saved classifier controls. Tuning changes intentionally restart
+    /// calibration, matching the original tracker and avoiding mixed settings.
+    pub fn apply_breathing_settings(&mut self, settings: BreathingSettings) {
+        self.breathing.apply_settings(settings);
+        self.breathing_dynamics = BreathingDynamicsProcessor::default();
+    }
+
     pub fn process_heart_rate(&mut self, bpm: u16, rr_intervals_ms: &[f32]) -> Vec<MetricSample> {
         let mut output = vec![MetricSample {
             id: "heart_rate",
