@@ -9,10 +9,12 @@ output, and live visualization.
 
 ## Download
 
-Use the [Polar Stream download page](https://georgefejer91.github.io/Polar-Stream/)
-or the repository's [latest release](https://github.com/GeorgeFejer91/Polar-Stream/releases/latest).
-Because the source repository is private, GitHub may ask you to sign in before
-serving an installer.
+Use the repository's authenticated
+[Polar Stream download page](https://github.com/GeorgeFejer91/Polar-Stream/releases/latest).
+Because the source repository is private, GitHub asks authorized users to sign
+in before serving an installer. A branded static download-page design is also
+maintained in `download/`; its optional Pages workflow can be run if private
+GitHub Pages is enabled for the account in the future.
 
 Every published release is held as a draft until CI has built and launch-tested
 the complete package set:

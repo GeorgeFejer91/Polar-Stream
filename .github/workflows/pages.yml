@@ -1,11 +1,6 @@
-name: Publish download page
+name: Publish optional branded download page
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'download/**'
-      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:

@@ -16,6 +16,10 @@ bundled runtime, and launches the packaged application binary. The GitHub
 release remains a draft unless all nine required installer classes exist. This
 prevents `latest` from ever pointing at a partial platform release.
 
+The private repository's latest Release is its authenticated download page.
+The branded static page under `download/` is optional because GitHub only
+serves Pages from private repositories on plans that include that feature.
+
 ## Signing
 
 The initial private preview packages are unsigned (macOS uses an ad-hoc
