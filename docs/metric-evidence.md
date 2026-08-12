@@ -22,8 +22,9 @@ The new engine retains every metric family exposed by the previous repository an
 | Breathing readiness | `breathing_dynamics_confidence` |
 | Breath-interval dynamics | `breath_interval_mean`, `_sd`, `_cv`, `_acw50`, `_psd_slope`, `_lzc`, `_sampen`, `_mse` |
 | Breath-amplitude dynamics | `breath_amplitude_mean`, `_sd`, `_cv`, `_acw50`, `_psd_slope`, `_lzc`, `_sampen`, `_mse` |
+| Excite-O-Meter excitement score | `excitement_score` |
 
-`excitometer` is new. No implementation by that name was present anywhere in the previous repository or its Git history, so it is marked experimental instead of being presented as legacy-compatible or validated.
+`excitement_score` reproduces the formula from the separate open-source Excite-O-Meter project identified by the user's earlier app inventory. `excitometer` remains Polar Stream's newer 65/35 activation composite; it has been relabeled “Activation composite” so the two experimental outputs cannot be mistaken for one another.
 
 ## Signal and ECG features
 
@@ -62,9 +63,21 @@ Accepted alternating peaks/troughs create an amplitude series; accepted same-pol
 
 Entropy and complexity methods describe irregularity and structure across time; a higher number is not inherently “better,” “healthier” or “more relaxed,” and estimates depend on preprocessing, parameters and sample length ([Bará et al., 2024](https://consensus.app/papers/details/de562a29bb8454eda201852b544fd9d7/?utm_source=unknown); [Martins et al., 2020](https://consensus.app/papers/details/474b254cbdb556aa903883f4e838b3cb/?utm_source=unknown)). The feature family follows the previous app and the breathing-dynamics work of [Goheen et al. (2025)](https://pubmed.ncbi.nlm.nih.gov/40932176/), but this app substitutes an ACC-derived waveform for the study's respiration-belt input; it is an experimental adaptation.
 
-## Excitometer
+## Excite-O-Meter excitement score
 
-The experimental excitometer combines within-session standardized heart-rate elevation (65%) and standardized lnRMSSD reduction (35%), then maps the weighted sum through a logistic function to 0–1. It needs sufficient running baseline data and deliberately makes no claim to identify a particular emotion.
+The original Excite-O-Meter computes its score only after a recording ends. It independently z-normalizes paired RR interval and RMSSD values over the complete session, converts both z-scores to standard-normal cumulative probabilities, and calculates:
+
+`excitementScore = 1 − (Φ(zRR) + Φ(zRMSSD)) / 2`
+
+Lower RR (higher instantaneous heart rate) and lower RMSSD relative to the same session therefore raise the score. The source defaults to a rolling 10-beat RMSSD and uses population standard deviation; see the [user manual](https://github.com/luisqtr/exciteometer/blob/main/docs/1_UserManual.md#scientific-disclaimer), [score implementation](https://github.com/luisqtr/exciteometer/blob/main/EoM/Module1_DataProcessing/Scripts/FeaturesCalculation/ExciteOMeterCalculation.cs), and [RMSSD configuration](https://github.com/luisqtr/exciteometer/blob/main/EoM/Module1_DataProcessing/Scripts/SettingsManager/SettingsVariables.cs#L81).
+
+LSL and OSC are live transports and cannot revise already published samples after a session ends. Polar Stream therefore exposes a causal adaptation: after ten paired RR/RMSSD observations, each new value uses the session-to-date population mean and standard deviation. The signal keeps the original equation but remains provisional throughout the session; it will not be numerically identical to a retrospective full-session recalculation, especially near the start.
+
+The original project's manual describes the score as a first-phase experimental estimate and explicitly says it is not an objective measure for medical or psychological trials. Evidence supports that self-reported excitement can coincide with higher heart rate and lower HRV when physical activity is controlled, but the relationship is context-dependent ([Ketonen et al., 2022](https://consensus.app/papers/details/c437e5b166085c89b7fdb2167f37a0a9/?utm_source=unknown)). Ultra-short HRV can contribute to within-person arousal classification, while between-person generalization remains more difficult ([Mohammadpoor Faskhodi et al., 2023](https://consensus.app/papers/details/b78fa11aba56562e98e7bbbe7a5bc239/?utm_source=unknown)). The score should therefore be treated as a protocol-specific visualization or annotation aid, not as a direct measurement of a particular emotion.
+
+## Activation composite
+
+The newer Polar Stream activation composite (`excitometer`) combines within-session standardized heart-rate elevation (65%) and standardized lnRMSSD reduction (35%), then maps the weighted sum through a logistic function to 0–1. It needs sufficient running baseline data and deliberately makes no claim to identify a particular emotion.
 
 HRV often changes during stress, but findings and usable metrics depend on population, task, breathing, artifacts and method, and there is no accepted single-sensor standard for psychological stress ([Immanuel et al., 2023](https://consensus.app/papers/details/14838ea9a9045710b4a676dbb7d595aa/?utm_source=unknown); [Kim et al., 2018](https://consensus.app/papers/details/e365706a153354869319eb190770ea32/?utm_source=unknown)). Consequently the metric remains in an “Excitation (experimental)” filter and should be validated for any intended protocol before use.
 

@@ -49,6 +49,7 @@ characters and applies stable suffixes to every LSL outlet and OSC address:
 participant 07  →  participant_07_rawECG
                 →  participant_07_rawACC
                 →  participant_07_heartRate
+                →  participant_07_excitementScore
 ```
 
 OSC uses the identical name with a leading slash, for example

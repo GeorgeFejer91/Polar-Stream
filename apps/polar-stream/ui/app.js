@@ -14,6 +14,7 @@
     resonance: ["Sévoz-Couche & Laborde (2022)", "https://www.sciencedirect.com/science/article/abs/pii/S0149763422000653"],
     quality: ["Smital et al. (2020)", "https://consensus.app/papers/details/ad2a724fefd55d25baee823438fc672e/?utm_source=unknown"],
     stress: ["Immanuel et al. (2023)", "https://consensus.app/papers/details/14838ea9a9045710b4a676dbb7d595aa/?utm_source=unknown"],
+    exciteometer: ["Excite-O-Meter source implementation", "https://github.com/luisqtr/exciteometer/blob/main/docs/1_UserManual.md#scientific-disclaimer"],
   };
   const fallbackMetric = (id, streamSuffix, label, unit, category, source = "hrv", detail = "Real-time derived metric", raw = false, normalizable = true, rateHz = 0) => ({
     id, streamSuffix, label, detail, unit, category, raw, normalizable, rateHz,
@@ -45,7 +46,8 @@
       const camel = feature.split("_").map((part,index) => index ? part[0].toUpperCase()+part.slice(1) : part).join("");
       return fallbackMetric(`breath_${kind}_${feature}`, `breath${kind[0].toUpperCase()+kind.slice(1)}${camel[0].toUpperCase()+camel.slice(1)}`, `Breath ${kind} ${names[feature]}`, units[feature], "Breathing dynamics", "complexity");
     })),
-    fallbackMetric("excitometer", "excitometer", "Excitometer (experimental)", "0–1", "Excitation (experimental)", "stress", "Within-session HR ↑ plus lnRMSSD ↓"),
+    fallbackMetric("excitement_score", "excitementScore", "Excite-O-Meter excitement score", "0–1", "Excitation (experimental)", "exciteometer", "1 − mean[Φ(zRR), Φ(zRMSSD)] · live provisional", false, false),
+    fallbackMetric("excitometer", "excitometer", "Activation composite (experimental)", "0–1", "Excitation (experimental)", "stress", "Within-session HR ↑ plus lnRMSSD ↓"),
   ];
 
   const visualDefinitions = {
@@ -1116,6 +1118,7 @@
     if (id.includes("lzc")) return 0.58 + wave * 0.05;
     if (id.includes("sampen")) return 1.2 + wave * 0.1;
     if (id.includes("mse")) return 4.2 + wave * 0.3;
+    if (id === "excitement_score") return 0.52 + wave * 0.2;
     if (id === "excitometer") return 0.46 + wave * 0.15;
     if (id === "ecg_mean") return wave * 8;
     if (id === "ecg_rms" || id === "ecg_sd") return 180 + wave * 15;

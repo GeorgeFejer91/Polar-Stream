@@ -26,7 +26,7 @@ use breathing::BreathingProcessor;
 use breathing_dynamics::BreathingDynamicsProcessor;
 use coherence::CoherenceProcessor;
 use ecg::EcgProcessor;
-use excitation::ExcitationProcessor;
+use excitation::{ExcitationProcessor, ExcitementScoreProcessor};
 use hrv::HrvProcessor;
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -45,6 +45,7 @@ pub struct MetricEngine {
     breathing_dynamics: BreathingDynamicsProcessor,
     ecg: EcgProcessor,
     excitation: ExcitationProcessor,
+    excitement_score: ExcitementScoreProcessor,
 }
 
 impl MetricEngine {
@@ -62,6 +63,13 @@ impl MetricEngine {
                 id: "rr_interval",
                 value: rr,
             });
+
+            if let Some(score) = self.excitement_score.update(rr) {
+                output.push(MetricSample {
+                    id: "excitement_score",
+                    value: score,
+                });
+            }
 
             if let Some(hrv) = self.hrv.push(rr) {
                 output.extend(hrv.samples());
