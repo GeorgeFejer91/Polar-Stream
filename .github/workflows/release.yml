@@ -161,7 +161,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api "repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" --jq '.assets' > release-assets.json
+          gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq 'map(select(.tag_name == "${{ github.ref_name }}")) | first | .assets' \
+            > release-assets.json
           python scripts/verify_release_assets.py release-assets.json
       - name: Publish the complete release
         env:
