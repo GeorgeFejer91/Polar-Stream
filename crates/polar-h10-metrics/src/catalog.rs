@@ -51,6 +51,9 @@ const BREATH_COMPLEXITY_URL: &str =
 const STRESS_REVIEW: &str = "Immanuel et al. (2023)";
 const STRESS_URL: &str =
     "https://consensus.app/papers/details/14838ea9a9045710b4a676dbb7d595aa/?utm_source=unknown";
+const EXCITEOMETER_SOURCE: &str = "Excite-O-Meter source implementation";
+const EXCITEOMETER_SOURCE_URL: &str =
+    "https://github.com/luisqtr/exciteometer/blob/main/docs/1_UserManual.md#scientific-disclaimer";
 const ECG_QUALITY: &str = "Smital et al. (2020)";
 const ECG_QUALITY_URL: &str =
     "https://consensus.app/papers/details/ad2a724fefd55d25baee823438fc672e/?utm_source=unknown";
@@ -877,9 +880,27 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         "BreathingDynamics"
     ),
     metric!(
+        "excitement_score",
+        "excitementScore",
+        "Excite-O-Meter excitement score",
+        "1 − mean[Φ(zRR), Φ(zRMSSD)] · live provisional",
+        "0–1",
+        "Excitation (experimental)",
+        "This reproduces the open-source Excite-O-Meter equation: independently standardized RR interval and rolling 10-beat RMSSD are converted through the standard-normal CDF, averaged, and subtracted from one. The source method is retrospective; this live stream uses session-to-date population statistics after a 10-pair baseline, so values are provisional and are not a validated measure of emotion or clinical arousal.",
+        "legacy experimental formula",
+        EXCITEOMETER_SOURCE,
+        EXCITEOMETER_SOURCE_URL,
+        "excite o meter excitement score arousal legacy percentile cdf rr rmssd",
+        false,
+        false,
+        1,
+        0.0,
+        "Experimental"
+    ),
+    metric!(
         "excitometer",
         "excitometer",
-        "Excitometer (experimental)",
+        "Activation composite (experimental)",
         "Within-session HR ↑ plus lnRMSSD ↓",
         "0–1",
         "Excitation (experimental)",

@@ -193,5 +193,9 @@ mod tests {
             output_stream_name(&base, "heart_rate").as_deref(),
             Some("participant_07_heartRate")
         );
+        assert_eq!(
+            output_stream_name(&base, "excitement_score").as_deref(),
+            Some("participant_07_excitementScore")
+        );
     }
 }
