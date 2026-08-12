@@ -82,6 +82,15 @@ descriptions of the native contract, not an independent naming scheme.
 This keeps visualization work proportional to display pixels and refresh rate,
 not to the lifetime of the recording.
 
+## Background interface renderer
+
+Visual validation uses `scripts/render_interface.mjs`. It serves the production
+HTML, CSS, and JavaScript to headless Chromium and injects deterministic named
+scenarios through `window.PolarInterfaceRenderer`. Classifier labels, circle
+colors and geometry, module controls, and Save behavior are checked without
+opening the installed desktop app, scanning Bluetooth, or enabling LSL/OSC. CI
+uploads all rendered classifier targets as review artifacts.
+
 ## Adding outputs
 
 1. Add one evidence-backed `MetricDefinition` in

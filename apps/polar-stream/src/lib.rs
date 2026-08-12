@@ -5,7 +5,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use polar_h10_core::AccSample;
 use polar_h10_input::{DeviceSummary, InputEvent, InputManager};
-use polar_h10_metrics::{METRIC_CATALOG, MetricDefinition, MetricEngine, MetricSample};
+use polar_h10_metrics::{
+    BreathingSettings, METRIC_CATALOG, MetricDefinition, MetricEngine, MetricSample,
+};
 use polar_h10_output::{MetricValue, OutputConfig, OutputHealth, OutputRouter};
 use serde::Serialize;
 use tauri::{Manager, State, ipc::Channel, path::BaseDirectory};
@@ -13,13 +15,16 @@ use tauri::{Manager, State, ipc::Channel, path::BaseDirectory};
 struct AppState {
     input: Arc<InputManager>,
     output: Arc<OutputRouter>,
+    breathing_settings: tokio::sync::watch::Sender<BreathingSettings>,
 }
 
 impl AppState {
     fn new(bundled_lsl: Option<PathBuf>) -> Self {
+        let (breathing_settings, _) = tokio::sync::watch::channel(BreathingSettings::default());
         Self {
             input: Arc::new(InputManager::new()),
             output: Arc::new(OutputRouter::with_bundled_lsl(bundled_lsl)),
+            breathing_settings,
         }
     }
 }
@@ -88,10 +93,15 @@ async fn connect_device(
 ) -> Result<(), String> {
     let mut input_events = state.input.connect(&device_id).await?;
     let output = state.output.clone();
+    let mut breathing_settings = state.breathing_settings.subscribe();
     output.reset_measurement();
     tauri::async_runtime::spawn(async move {
         let mut metrics_engine = MetricEngine::default();
+        metrics_engine.apply_breathing_settings(*breathing_settings.borrow_and_update());
         while let Some(event) = input_events.recv().await {
+            if breathing_settings.has_changed().unwrap_or(false) {
+                metrics_engine.apply_breathing_settings(*breathing_settings.borrow_and_update());
+            }
             let continue_streaming = match event {
                 InputEvent::Status { phase, message } => events
                     .send(AppEvent::Status {
@@ -159,15 +169,26 @@ async fn connect_device(
                 InputEvent::Disconnected {
                     device_name,
                     battery_percent,
-                } => events
-                    .send(AppEvent::Connection {
-                        connected: false,
-                        streaming: false,
-                        device_name,
-                        battery_percent,
-                        message: "Disconnected".into(),
-                    })
-                    .is_ok(),
+                } => {
+                    let phase_sent = publish_metrics(
+                        &output,
+                        &events,
+                        vec![MetricSample {
+                            id: "breathing_phase",
+                            value: -2.0,
+                        }],
+                    );
+                    phase_sent
+                        && events
+                            .send(AppEvent::Connection {
+                                connected: false,
+                                streaming: false,
+                                device_name,
+                                battery_percent,
+                                message: "Disconnected".into(),
+                            })
+                            .is_ok()
+                }
             };
             if !continue_streaming {
                 break;
@@ -206,7 +227,15 @@ async fn update_output_config(
     state: State<'_, Arc<AppState>>,
     config: OutputConfig,
 ) -> Result<OutputHealth, String> {
-    state.output.configure(config).await
+    let breathing_settings = config
+        .metric_options
+        .get("breathing_phase")
+        .and_then(|options| options.processing.breathing_phase)
+        .unwrap_or_default()
+        .clamped();
+    let health = state.output.configure(config).await?;
+    state.breathing_settings.send_replace(breathing_settings);
+    Ok(health)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

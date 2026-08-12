@@ -12,8 +12,8 @@ use std::{
 };
 
 pub use config::{
-    MetricOutputOptions, MetricSpec, NormalizationMode, OutputConfig, OutputHealth,
-    normalize_stream_base, output_stream_name,
+    MetricOutputOptions, MetricProcessingOptions, MetricSpec, NormalizationMode, OutputConfig,
+    OutputHealth, normalize_stream_base, output_stream_name,
 };
 use lsl::LslPublisher;
 use osc::{OSC_TARGET, OscPublisher};
@@ -316,6 +316,7 @@ mod normalization_tests {
         let mut normalizer = Normalizer::new(MetricOutputOptions {
             normalization: NormalizationMode::Session,
             window_seconds: 60,
+            ..MetricOutputOptions::default()
         });
         assert_eq!(normalizer.apply(10.0), 0.5);
         assert_eq!(normalizer.apply(20.0), 1.0);

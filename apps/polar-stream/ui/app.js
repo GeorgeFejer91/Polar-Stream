@@ -6,6 +6,7 @@
   const invoke = nativeCore?.invoke?.bind(nativeCore);
   const NativeChannel = nativeCore?.Channel;
   const preferences = window.PolarPreferences;
+  const isInterfaceRenderer = new URLSearchParams(window.location.search).has("renderer");
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
@@ -35,7 +36,7 @@
     ...[["rmssd","rmssd","RMSSD","ms"],["ln_rmssd","lnRMSSD","lnRMSSD","ln(ms)"],["sdnn","sdnn","SDNN","ms"],["pnn50","pNN50","pNN50","%"],["sd1","sd1","Poincaré SD1","ms"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"HRV & relaxation")),
     ...[["coherence","coherence","Normalized coherence","0–1"],["coherence_confidence","coherenceConfidence","Coherence confidence","0–1"],["heartmath_coherence","heartMathCoherence","HeartMath-style coherence ratio","ratio"],["coherence_peak_frequency","coherencePeakFrequency","Coherence peak frequency","Hz"],["coherence_peak_power","coherencePeakPower","Coherence peak-band power","ms²"],["coherence_total_power","coherenceTotalPower","Coherence total power","ms²"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"Coherence","resonance")),
     fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing waveform", "0–1", "Breathing", "breathing", "Calibrated chest-motion projection", false, true, 20),
-    fallbackMetric("breathing_phase", "breathingPhase", "Inhale / exhale phase", "class", "Breathing", "breathing", "+1 inhale · −1 exhale · 0 pause", false, false, 20),
+    fallbackMetric("breathing_phase", "breathingPhase", "Breath phase classifier", "class", "Breathing", "breathing", "+1 inhale · −1 exhale · 0 pause · −2 bad signal", false, false, 20),
     fallbackMetric("breathing_calibration", "breathingCalibration", "Breathing calibration", "0–1", "Breathing", "breathing", "Principal-axis calibration progress", false, false, 4),
     fallbackMetric("breathing_axis_range", "breathingAxisRange", "Breathing axis range", "g", "Breathing", "breathing"),
     fallbackMetric("breathing_rate", "breathingRate", "Breathing rate", "breaths/min", "Breathing", "breathing"),
@@ -112,6 +113,8 @@
     "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "dialog-output-status", "save-metric-output", "toast-region",
     "stream-name-preview", "metric-search", "metric-filters", "metric-library-summary",
+    "adjust-visual", "visual-window-label", "visual-scale-label", "module-dialog", "module-dialog-title",
+    "module-dialog-intro", "module-settings", "module-dialog-status", "save-module-settings",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
 
@@ -125,6 +128,8 @@
     metricOptions: {},
     visualNormalizers: {},
     selectedMetricId: null,
+    editingModuleId: null,
+    moduleDraft: null,
     metricFilter: "All",
     metricSearch: "",
     streamName: "Polar-H10",
@@ -215,17 +220,22 @@
     }
 
     app.catalog = bootstrap.metricCatalog || fallbackCatalog;
-    app.outputs = new Set(bootstrap.config?.outputs || ["raw_ecg", "raw_acc"]);
-    app.metricOptions = structuredClone(bootstrap.config?.metricOptions || {});
+    const initialConfig = app.preferences.outputConfig || bootstrap.config || {};
+    app.outputs = new Set(initialConfig.outputs || ["raw_ecg", "raw_acc"]);
+    app.metricOptions = structuredClone(initialConfig.metricOptions || {});
     installCatalogVisuals();
     app.streamName = normalizeStreamBase(app.preferences.streamName)
-      || normalizeStreamBase(bootstrap.config?.streamName)
+      || normalizeStreamBase(initialConfig.streamName)
       || "Polar-H10";
     elements["stream-name"].value = app.streamName;
-    elements["lsl-toggle"].checked = Boolean(bootstrap.config?.lslEnabled);
-    elements["osc-toggle"].checked = Boolean(bootstrap.config?.oscEnabled);
-    elements["platform-label"].textContent = String(bootstrap.platform || "local").toUpperCase();
-    if (!isNative) elements["scan-caption"].textContent = "Interactive browser preview";
+    elements["lsl-toggle"].checked = Boolean(initialConfig.lslEnabled);
+    elements["osc-toggle"].checked = Boolean(initialConfig.oscEnabled);
+    elements["platform-label"].textContent = isInterfaceRenderer ? "RENDERER" : String(bootstrap.platform || "local").toUpperCase();
+    if (!isNative) {
+      elements["scan-caption"].textContent = isInterfaceRenderer
+        ? "Deterministic background render"
+        : "Interactive browser preview";
+    }
 
     renderMetricFilters();
     renderMetricOptions();
@@ -233,7 +243,7 @@
     installInteractions();
     await configureOutputs({ quiet: true });
     resizeCanvas();
-    window.requestAnimationFrame(drawFrame);
+    if (!isInterfaceRenderer) window.requestAnimationFrame(drawFrame);
     if (app.preferences.lastDevice) void scanDevices({ automatic: true });
   }
 
@@ -281,6 +291,8 @@
       app.selectedVisual = elements["visual-source"].value;
       updateVisualLabels();
     });
+    elements["adjust-visual"].addEventListener("click", () => openModuleSettings(optionIdForVisual(app.selectedVisual)));
+    elements["save-module-settings"].addEventListener("click", saveModuleSettings);
 
     const observer = new ResizeObserver(resizeCanvas);
     observer.observe(elements["chart-shell"]);
@@ -744,55 +756,20 @@
 
       const controls = document.createElement("div");
       controls.className = "metric-controls";
-      if (metric.normalizable) {
-        const options = metricOptionFor(id);
-        const normalizeLabel = document.createElement("label");
-        normalizeLabel.textContent = "Scale";
-        const select = document.createElement("select");
-        select.setAttribute("aria-label", `${metric.label} normalization`);
-        [["none", "Original"], ["slidingWindow", "0–1 sliding"], ["session", "0–1 whole run"]].forEach(([value, text]) => {
-          const option = document.createElement("option");
-          option.value = value;
-          option.textContent = text;
-          select.append(option);
-        });
-        select.value = options.normalization || "none";
-        select.addEventListener("change", () => {
-          app.metricOptions[id] = { ...metricOptionFor(id), normalization: select.value };
-          resetVisualTransform(id);
-          renderOutputs();
-          configureOutputs();
-        });
-        normalizeLabel.append(select);
-        controls.append(normalizeLabel);
-        if (select.value === "slidingWindow") {
-          const windowLabel = document.createElement("label");
-          windowLabel.textContent = "Window";
-          const input = document.createElement("input");
-          input.type = "number";
-          input.min = "5";
-          input.max = "3600";
-          input.step = "5";
-          input.value = String(options.windowSeconds || 60);
-          input.setAttribute("aria-label", `${metric.label} normalization window in seconds`);
-          input.addEventListener("change", () => {
-            const seconds = Math.max(5, Math.min(3600, Number(input.value) || 60));
-            input.value = String(seconds);
-            app.metricOptions[id] = { ...metricOptionFor(id), windowSeconds: seconds };
-            resetVisualTransform(id);
-            configureOutputs();
-          });
-          const unit = document.createElement("span");
-          unit.textContent = "s";
-          windowLabel.append(input, unit);
-          controls.append(windowLabel);
-        }
-      } else {
-        const fixed = document.createElement("span");
-        fixed.className = "fixed-output-note";
-        fixed.textContent = metric.raw ? "Native samples" : "Categorical · scaling off";
-        controls.append(fixed);
-      }
+      const options = metricOptionFor(id);
+      const summary = document.createElement("span");
+      summary.className = "module-summary";
+      const scaling = options.normalization === "slidingWindow"
+        ? `0–1 / ${options.windowSeconds}s`
+        : options.normalization === "session" ? "0–1 / whole run" : "original scale";
+      summary.textContent = `${options.displayWindowSeconds}s view · ${scaling}${id === "breathing_phase" ? ` · ${options.processing.breathingPhase.calibrationWindowSeconds}s calibration` : ""}`;
+      const tune = document.createElement("button");
+      tune.type = "button";
+      tune.className = "module-tune-button";
+      tune.textContent = "Adjust";
+      tune.setAttribute("aria-label", `Adjust ${metric.label} module`);
+      tune.addEventListener("click", () => openModuleSettings(id));
+      controls.append(summary, tune);
       card.append(controls);
       return card;
     }).filter(Boolean);
@@ -805,7 +782,198 @@
   }
 
   function metricOptionFor(id) {
-    return app.metricOptions[id] || { normalization: "none", windowSeconds: 60 };
+    const stored = app.metricOptions[id] || {};
+    const breathing = stored.processing?.breathingPhase || {};
+    const options = {
+      normalization: stored.normalization || "none",
+      windowSeconds: Number(stored.windowSeconds) || 60,
+      displayWindowSeconds: Number(stored.displayWindowSeconds) || 5,
+      processing: {},
+    };
+    if (id === "breathing_phase") {
+      options.processing.breathingPhase = {
+        calibrationWindowSeconds: numberOr(breathing.calibrationWindowSeconds, 12),
+        minimumAxisRangeG: numberOr(breathing.minimumAxisRangeG, 0.01),
+        sampleEmaAlpha: numberOr(breathing.sampleEmaAlpha, 0.10),
+        projectionEmaAlpha: numberOr(breathing.projectionEmaAlpha, 0.10),
+        phaseDeltaThreshold: numberOr(breathing.phaseDeltaThreshold, 0.003),
+        staleTimeoutSeconds: numberOr(breathing.staleTimeoutSeconds, 3),
+        invertDirection: Boolean(breathing.invertDirection),
+        adaptiveBounds: breathing.adaptiveBounds !== false,
+        adaptiveWindowSeconds: numberOr(breathing.adaptiveWindowSeconds, 20),
+        lowerQuantile: numberOr(breathing.lowerQuantile, 0.05),
+        upperQuantile: numberOr(breathing.upperQuantile, 0.95),
+      };
+    }
+    return options;
+  }
+
+  function numberOr(value, fallback) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+  }
+
+  function optionIdForVisual(id) {
+    return visualDefinitions[id]?.parent || id;
+  }
+
+  function openModuleSettings(id) {
+    const metric = app.catalog.find((candidate) => candidate.id === id);
+    if (!metric || !app.outputs.has(id)) return;
+    app.editingModuleId = id;
+    app.moduleDraft = structuredClone(metricOptionFor(id));
+    elements["module-dialog-title"].textContent = `Adjust ${metric.label}`;
+    elements["module-dialog-intro"].textContent = id === "breathing_phase"
+      ? "Tune the ACC classifier and its circle visualizer. Saving restarts breathing calibration; output changes are then applied to the matching LSL and OSC stream."
+      : "Tune this visualizer and output transform. Changes remain a draft until Save module is pressed.";
+    renderModuleSettings();
+    elements["module-dialog"].showModal();
+  }
+
+  function renderModuleSettings() {
+    const metric = app.catalog.find((candidate) => candidate.id === app.editingModuleId);
+    if (!metric || !app.moduleDraft) return;
+    const general = settingsSection("Visualizer and output", "The display window controls only the chart history. Normalization changes both the chart values and values published over LSL or OSC.");
+    general.append(numberSetting("Display window", "Seconds visible in the low-latency visualizer.", app.moduleDraft.displayWindowSeconds, 1, 600, 1, (value) => {
+      app.moduleDraft.displayWindowSeconds = clampNumber(value, 1, 600, 5);
+    }));
+    if (metric.normalizable) {
+      general.append(selectSetting("Normalization", "Choose original units or a 0–1 transform.", app.moduleDraft.normalization, [
+        ["none", "Original units"], ["slidingWindow", "0–1 sliding window"], ["session", "0–1 whole run"],
+      ], (value) => {
+        app.moduleDraft.normalization = value;
+        renderModuleSettings();
+      }));
+      if (app.moduleDraft.normalization === "slidingWindow") {
+        general.append(numberSetting("Normalization window", "Seconds used for running minimum and maximum.", app.moduleDraft.windowSeconds, 5, 3600, 5, (value) => {
+          app.moduleDraft.windowSeconds = clampNumber(value, 5, 3600, 60);
+        }));
+      }
+    } else {
+      const note = document.createElement("div");
+      note.className = "settings-note";
+      note.textContent = metric.raw
+        ? "Raw device streams stay in native units; only their visualizer history can be adjusted."
+        : "This is a categorical or quality signal, so its published class values remain unscaled.";
+      general.append(note);
+    }
+
+    const sections = [general];
+    if (metric.id === "breathing_phase") {
+      const classifier = app.moduleDraft.processing.breathingPhase;
+      const processing = settingsSection("ACC breath-phase classifier", "These controls follow the original Polar tracker. The PCA axis is recalibrated whenever saved processing settings change.");
+      processing.append(
+        numberSetting("Calibration window", "Quiet chest-motion data used to learn the principal axis (seconds).", classifier.calibrationWindowSeconds, 1, 60, 1, (value) => classifier.calibrationWindowSeconds = clampNumber(value, 1, 60, 12)),
+        numberSetting("Minimum motion range", "Required robust range on the learned axis (g).", classifier.minimumAxisRangeG, 0.001, 0.25, 0.001, (value) => classifier.minimumAxisRangeG = clampNumber(value, 0.001, 0.25, 0.01)),
+        numberSetting("ACC smoothing", "EMA alpha; lower values smooth more strongly.", classifier.sampleEmaAlpha, 0.01, 1, 0.01, (value) => classifier.sampleEmaAlpha = clampNumber(value, 0.01, 1, 0.1)),
+        numberSetting("Projection smoothing", "EMA alpha applied after PCA projection.", classifier.projectionEmaAlpha, 0.01, 1, 0.01, (value) => classifier.projectionEmaAlpha = clampNumber(value, 0.01, 1, 0.1)),
+        numberSetting("Phase threshold", "Minimum 0–1 waveform change for inhale or exhale.", classifier.phaseDeltaThreshold, 0.0001, 0.25, 0.0001, (value) => classifier.phaseDeltaThreshold = clampNumber(value, 0.0001, 0.25, 0.003)),
+        numberSetting("Stale timeout", "A longer data gap marks the next class as bad signal (seconds).", classifier.staleTimeoutSeconds, 0.25, 30, 0.25, (value) => classifier.staleTimeoutSeconds = clampNumber(value, 0.25, 30, 3)),
+        checkSetting("Invert inhale / exhale", "Flips the learned movement axis when sensor orientation reverses the phases.", classifier.invertDirection, (value) => classifier.invertDirection = value),
+        checkSetting("Adaptive normalization bounds", "Slowly follows posture and strap drift after calibration.", classifier.adaptiveBounds, (value) => {
+          classifier.adaptiveBounds = value;
+          renderModuleSettings();
+        }),
+      );
+      if (classifier.adaptiveBounds) {
+        processing.append(
+          numberSetting("Adaptive window", "Recent projections used to refresh robust bounds (seconds).", classifier.adaptiveWindowSeconds, 5, 300, 1, (value) => classifier.adaptiveWindowSeconds = clampNumber(value, 5, 300, 20)),
+          numberSetting("Lower quantile", "Robust lower projection bound.", classifier.lowerQuantile, 0, 0.4, 0.01, (value) => classifier.lowerQuantile = clampNumber(value, 0, 0.4, 0.05)),
+          numberSetting("Upper quantile", "Robust upper projection bound.", classifier.upperQuantile, 0.6, 1, 0.01, (value) => classifier.upperQuantile = clampNumber(value, 0.6, 1, 0.95)),
+        );
+      }
+      const warning = document.createElement("div");
+      warning.className = "settings-note";
+      warning.textContent = "Bad signal (−2) means calibration is incomplete or tracking became stale. It does not guarantee detection of every motion artifact; inspect the raw ACC and calibration output when signal quality matters.";
+      processing.append(warning);
+      sections.push(processing);
+    }
+    elements["module-settings"].replaceChildren(...sections);
+    elements["module-dialog-status"].textContent = "Draft settings · press Save module to apply";
+  }
+
+  function settingsSection(titleText, descriptionText) {
+    const section = document.createElement("section");
+    section.className = "settings-section";
+    const title = document.createElement("h3");
+    title.textContent = titleText;
+    const description = document.createElement("p");
+    description.textContent = descriptionText;
+    section.append(title, description);
+    return section;
+  }
+
+  function numberSetting(labelText, helpText, value, min, max, step, onInput) {
+    const field = settingField(labelText, helpText);
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(value);
+    input.addEventListener("input", () => onInput(input.value));
+    field.insertBefore(input, field.lastChild);
+    return field;
+  }
+
+  function selectSetting(labelText, helpText, value, choices, onChange) {
+    const field = settingField(labelText, helpText);
+    const select = document.createElement("select");
+    for (const [choiceValue, choiceText] of choices) {
+      const option = document.createElement("option");
+      option.value = choiceValue;
+      option.textContent = choiceText;
+      select.append(option);
+    }
+    select.value = value;
+    select.addEventListener("change", () => onChange(select.value));
+    field.insertBefore(select, field.lastChild);
+    return field;
+  }
+
+  function checkSetting(labelText, helpText, value, onChange) {
+    const field = settingField(labelText, helpText);
+    field.classList.add("setting-check");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = value;
+    input.addEventListener("change", () => onChange(input.checked));
+    field.prepend(input);
+    return field;
+  }
+
+  function settingField(labelText, helpText) {
+    const field = document.createElement("label");
+    field.className = "setting-field";
+    const label = document.createElement("span");
+    label.textContent = labelText;
+    const help = document.createElement("small");
+    help.textContent = helpText;
+    field.append(label, help);
+    return field;
+  }
+
+  function clampNumber(value, minimum, maximum, fallback) {
+    const number = Number(value);
+    return Math.max(minimum, Math.min(maximum, Number.isFinite(number) ? number : fallback));
+  }
+
+  async function saveModuleSettings() {
+    const id = app.editingModuleId;
+    const metric = app.catalog.find((candidate) => candidate.id === id);
+    if (!id || !metric || !app.moduleDraft) return;
+    const draft = structuredClone(app.moduleDraft);
+    if (!metric.normalizable) draft.normalization = "none";
+    app.metricOptions[id] = draft;
+    resetVisualTransform(id);
+    for (const [visualId, definition] of Object.entries(visualDefinitions)) {
+      if (definition.parent === id) resetVisualTransform(visualId);
+    }
+    renderOutputs();
+    updateVisualLabels();
+    await configureOutputs();
+    elements["module-dialog"].close();
+    toast(`${metric.label} settings saved${id === "breathing_phase" ? " · calibration restarted" : ""}`);
   }
 
   function resetVisualTransform(id) {
@@ -823,7 +991,7 @@
   function visualValue(id, input) {
     const value = Number(input);
     if (!Number.isFinite(value)) return value;
-    const options = metricOptionFor(id);
+    const options = metricOptionFor(optionIdForVisual(id));
     if (!options || options.normalization === "none") return value;
     const modeKey = `${options.normalization}:${options.windowSeconds || 60}`;
     let state = app.visualNormalizers[id];
@@ -893,9 +1061,16 @@
 
   function updateVisualLabels() {
     const definition = visualDefinitions[app.selectedVisual];
-    const normalized = metricOptionFor(app.selectedVisual).normalization !== "none";
+    const options = metricOptionFor(optionIdForVisual(app.selectedVisual));
+    const normalized = options.normalization !== "none";
     elements["visual-label"].textContent = definition?.label || "No output selected";
-    elements["visual-unit"].textContent = normalized ? "0–1" : definition?.unit || "";
+    elements["visual-unit"].textContent = app.selectedVisual === "breathing_phase" ? "" : normalized ? "0–1" : definition?.unit || "";
+    elements["visual-window-label"].textContent = app.selectedVisual === "breathing_phase" ? "Live phase" : `${options.displayWindowSeconds} second window`;
+    elements["visual-scale-label"].textContent = normalized
+      ? options.normalization === "session" ? "0–1 whole run" : `0–1 / ${options.windowSeconds}s`
+      : "Original scale";
+    elements["adjust-visual"].disabled = !definition;
+    elements["chart-shell"].classList.toggle("phase-visual", app.selectedVisual === "breathing_phase");
     document.querySelector(".legend-line").style.background = definition?.color || "#87958d";
   }
 
@@ -917,7 +1092,7 @@
     };
     if (!isNative) {
       elements["stream-name"].value = streamName;
-      app.preferences = preferences.saveStreamName(streamName);
+      app.preferences = preferences.saveOutputConfig(config);
       renderOutputs();
       elements["lsl-detail"].textContent = config.lslEnabled ? "Preview · liblsl is checked in the native app" : "Local network · time synchronized";
       elements["osc-detail"].textContent = config.oscEnabled ? "Preview · UDP localhost:9000" : "UDP · localhost:9000";
@@ -930,7 +1105,8 @@
       if (sequence !== app.outputSequence) return;
       app.streamName = health.streamName || streamName;
       elements["stream-name"].value = app.streamName;
-      app.preferences = preferences.saveStreamName(app.streamName);
+      config.streamName = app.streamName;
+      app.preferences = preferences.saveOutputConfig(config);
       renderOutputs();
       updateDestinationHealth(health);
     } catch (error) {
@@ -985,9 +1161,15 @@
       return;
     }
 
-    const visibleCount = Math.max(10, Math.ceil(definition.rate * 5));
+    const options = metricOptionFor(optionIdForVisual(app.selectedVisual));
+    if (app.selectedVisual === "breathing_phase") {
+      drawBreathingPhase(context, canvas, buffer);
+      return;
+    }
+
+    const visibleCount = Math.max(10, Math.ceil(definition.rate * options.displayWindowSeconds));
     const values = buffer.tail(visibleCount);
-    const normalized = metricOptionFor(app.selectedVisual).normalization !== "none";
+    const normalized = options.normalization !== "none";
     elements["chart-empty"].hidden = values.length > 1;
     elements["visual-current"].textContent = formatValue(buffer.latest(), normalized ? 3 : definition.unit === "g" ? 3 : definition.unit === "bpm" ? 0 : 1);
     if (values.length < 2) {
@@ -1035,6 +1217,61 @@
     context.lineJoin = "round";
     context.lineCap = "round";
     context.stroke();
+  }
+
+  function drawBreathingPhase(context, canvas, phaseBuffer) {
+    const phase = phaseBuffer.latest();
+    const width = canvas.width;
+    const height = canvas.height;
+    context.clearRect(0, 0, width, height);
+    const descriptor = breathingPhaseDescriptor(phase);
+    const hasPhase = phase != null;
+    elements["chart-empty"].hidden = hasPhase;
+    elements["visual-current"].textContent = hasPhase ? descriptor.label : "—";
+    elements["y-max"].textContent = "";
+    elements["y-min"].textContent = "";
+    if (!hasPhase) return;
+
+    const volume = Math.max(0, Math.min(1, Number(buffers.breathing_volume?.latest()) || 0.5));
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const radius = Math.min(width, height) * (descriptor.bad ? 0.20 : 0.14 + volume * 0.20);
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const glow = context.createRadialGradient(centerX, centerY, radius * 0.25, centerX, centerY, radius * 1.35);
+    glow.addColorStop(0, `${descriptor.color}d9`);
+    glow.addColorStop(0.68, `${descriptor.color}8c`);
+    glow.addColorStop(1, `${descriptor.color}00`);
+    context.beginPath();
+    context.arc(centerX, centerY, radius * 1.35, 0, Math.PI * 2);
+    context.fillStyle = glow;
+    context.fill();
+    context.beginPath();
+    context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    context.fillStyle = descriptor.textColor;
+    context.globalAlpha = descriptor.bad ? 0.18 : 0.22;
+    context.fill();
+    context.globalAlpha = 1;
+    context.strokeStyle = descriptor.color;
+    context.lineWidth = Math.max(2, pixelRatio * 2);
+    if (descriptor.bad) context.setLineDash([8 * pixelRatio, 7 * pixelRatio]);
+    context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = descriptor.color;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = `800 ${Math.max(13, Math.min(width, height) * 0.045)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    context.fillText(descriptor.label, centerX, centerY);
+    context.font = `600 ${Math.max(9, Math.min(width, height) * 0.026)}px system-ui, sans-serif`;
+    context.globalAlpha = 0.72;
+    context.fillText(descriptor.hint, centerX, centerY + Math.max(22, radius * 0.27));
+    context.globalAlpha = 1;
+  }
+
+  function breathingPhaseDescriptor(value) {
+    if (value <= -1.5) return { label: "BAD SIGNAL", hint: "calibrate or inspect ACC", color: "#b94b40", textColor: "#6f211b", bad: true };
+    if (value > 0.5) return { label: "INHALE", hint: "chest projection rising", color: "#168259", textColor: "#083d29", bad: false };
+    if (value < -0.5) return { label: "EXHALE", hint: "chest projection falling", color: "#d17a28", textColor: "#673605", bad: false };
+    return { label: "PAUSE", hint: "change below threshold", color: "#3b78aa", textColor: "#173f62", bad: false };
   }
 
   function updateSparkline() {
@@ -1144,5 +1381,61 @@
     return Math.round(value).toString();
   }
 
-  initialize();
+  async function renderInterfaceScenario(name) {
+    const targets = {
+      "breathing-phase-inhale": { phase: 1, volume: 0.82, label: "INHALE" },
+      "breathing-phase-exhale": { phase: -1, volume: 0.18, label: "EXHALE" },
+      "breathing-phase-pause": { phase: 0, volume: 0.50, label: "PAUSE" },
+      "breathing-phase-bad-signal": { phase: -2, volume: 0.50, label: "BAD SIGNAL" },
+    };
+    const target = targets[name] || targets["breathing-phase-inhale"];
+    app.outputs.add("breathing_phase");
+    app.metricOptions.breathing_phase = structuredClone(metricOptionFor("breathing_phase"));
+    renderOutputs();
+    app.selectedVisual = "breathing_phase";
+    elements["visual-source"].value = app.selectedVisual;
+    updateVisualLabels();
+    resizeCanvas();
+    ensureBuffer("breathing_phase").clear();
+    ensureBuffer("breathing_volume").clear();
+    ensureBuffer("breathing_volume").push(target.volume);
+    ensureBuffer("breathing_phase").push(target.phase);
+    drawSignal();
+
+    if (name === "breathing-phase-settings") {
+      openModuleSettings("breathing_phase");
+    } else if (elements["module-dialog"].open) {
+      elements["module-dialog"].close();
+    }
+    await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+    resizeCanvas();
+    drawSignal();
+    return {
+      scenario: name,
+      expectedLabel: target.label,
+      currentLabel: elements["visual-current"].textContent,
+      selectedVisual: app.selectedVisual,
+      streamName: streamOutputName(app.catalog.find((metric) => metric.id === "breathing_phase")),
+      dialogOpen: elements["module-dialog"].open,
+    };
+  }
+
+  const initialization = initialize();
+  if (isInterfaceRenderer) {
+    window.PolarInterfaceRenderer = Object.freeze({
+      scenarios: Object.freeze([
+        "breathing-phase-inhale",
+        "breathing-phase-exhale",
+        "breathing-phase-pause",
+        "breathing-phase-bad-signal",
+        "breathing-phase-settings",
+      ]),
+      ready: () => initialization,
+      render: async (scenario) => {
+        await initialization;
+        return renderInterfaceScenario(scenario);
+      },
+      metricOptions: (id) => structuredClone(metricOptionFor(id)),
+    });
+  }
 })();

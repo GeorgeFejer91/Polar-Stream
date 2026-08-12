@@ -35,13 +35,22 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   frontend:
-    name: Frontend syntax
+    name: Frontend renderer
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: node --check apps/polar-stream/ui/preferences.js
       - run: node --check apps/polar-stream/ui/app.js
       - run: node --check download/downloads.js
+      - run: npm run validate:interface
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: interface-renderer
+          path: artifacts/interface-renderer/
