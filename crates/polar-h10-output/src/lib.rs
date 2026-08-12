@@ -4,10 +4,16 @@ mod config;
 mod lsl;
 mod osc;
 
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 pub use config::{
-    MetricSpec, OutputConfig, OutputHealth, normalize_stream_base, output_stream_name,
+    MetricOutputOptions, MetricSpec, NormalizationMode, OutputConfig, OutputHealth,
+    normalize_stream_base, output_stream_name,
 };
 use lsl::LslPublisher;
 use osc::{OSC_TARGET, OscPublisher};
@@ -27,6 +33,7 @@ struct RouterInner {
     config: OutputConfig,
     osc: Option<OscPublisher>,
     lsl: LslPublisher,
+    normalizers: HashMap<String, Normalizer>,
 }
 
 impl Default for OutputRouter {
@@ -46,6 +53,7 @@ impl OutputRouter {
                 config: OutputConfig::default(),
                 osc: None,
                 lsl: LslPublisher::new(library_path),
+                normalizers: HashMap::new(),
             }),
         }
     }
@@ -59,6 +67,7 @@ impl OutputRouter {
         };
 
         let mut inner = self.inner.lock().map_err(|_| "Output router lock failed")?;
+        inner.reconcile_normalizers(&config);
         inner.config = config;
         inner.osc = osc;
         inner.rebuild_lsl();
@@ -70,6 +79,16 @@ impl OutputRouter {
             .lock()
             .map(|inner| inner.config.clone())
             .unwrap_or_default()
+    }
+
+    /// Starts fresh whole-run and sliding normalization state for a new sensor session.
+    pub fn reset_measurement(&self) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        inner.normalizers.clear();
+        let config = inner.config.clone();
+        inner.reconcile_normalizers(&config);
     }
 
     pub fn publish_ecg(&self, sensor_timestamp_ns: u64, samples: &[i32]) {
@@ -102,20 +121,6 @@ impl OutputRouter {
                 osc.send_accelerometer(&inner.config.stream_name, sensor_timestamp_ns, samples);
             }
         }
-        if inner.config.includes("acc_magnitude") {
-            inner.lsl.push_scalar_series(
-                "acc_magnitude",
-                samples.iter().map(|sample| sample.magnitude_g()),
-            );
-            if let Some(osc) = &inner.osc {
-                osc.send_series(
-                    &inner.config.stream_name,
-                    "acc_magnitude",
-                    sensor_timestamp_ns,
-                    samples.iter().map(|sample| sample.magnitude_g()),
-                );
-            }
-        }
     }
 
     pub fn publish_metrics(&self, values: &[MetricValue<'_>]) {
@@ -126,13 +131,14 @@ impl OutputRouter {
             if !inner.config.includes(metric.id) {
                 continue;
             }
-            inner.lsl.push_scalar(metric.id, metric.value);
+            let value = inner.transform(metric.id, metric.value);
+            inner.lsl.push_scalar(metric.id, value);
             if let Some(osc) = &inner.osc {
                 osc.send_series(
                     &inner.config.stream_name,
                     metric.id,
                     0,
-                    std::iter::once(metric.value),
+                    std::iter::once(value),
                 );
             }
         }
@@ -140,6 +146,27 @@ impl OutputRouter {
 }
 
 impl RouterInner {
+    fn reconcile_normalizers(&mut self, config: &OutputConfig) {
+        self.normalizers.retain(|id, _| config.outputs.contains(id));
+        for id in &config.outputs {
+            let options = config.metric_options.get(id).copied().unwrap_or_default();
+            if options.normalization == NormalizationMode::None {
+                self.normalizers.remove(id);
+                continue;
+            }
+            self.normalizers
+                .entry(id.clone())
+                .and_modify(|normalizer| normalizer.reconfigure(options))
+                .or_insert_with(|| Normalizer::new(options));
+        }
+    }
+
+    fn transform(&mut self, id: &str, value: f32) -> f32 {
+        self.normalizers
+            .get_mut(id)
+            .map_or(value, |normalizer| normalizer.apply(value))
+    }
+
     fn rebuild_lsl(&mut self) {
         self.lsl.clear();
         if !self.config.lsl_enabled {
@@ -168,5 +195,131 @@ impl RouterInner {
                 "Unavailable".into()
             },
         }
+    }
+}
+
+struct Normalizer {
+    options: MetricOutputOptions,
+    session_min: f32,
+    session_max: f32,
+    sequence: u64,
+    window: VecDeque<WindowPoint>,
+    window_min: VecDeque<(u64, f32)>,
+    window_max: VecDeque<(u64, f32)>,
+}
+
+struct WindowPoint {
+    sequence: u64,
+    time: Instant,
+}
+
+impl Normalizer {
+    fn new(options: MetricOutputOptions) -> Self {
+        Self {
+            options,
+            session_min: f32::INFINITY,
+            session_max: f32::NEG_INFINITY,
+            sequence: 0,
+            window: VecDeque::new(),
+            window_min: VecDeque::new(),
+            window_max: VecDeque::new(),
+        }
+    }
+
+    fn reconfigure(&mut self, options: MetricOutputOptions) {
+        if self.options != options {
+            *self = Self::new(options);
+        }
+    }
+
+    fn apply(&mut self, value: f32) -> f32 {
+        if !value.is_finite() {
+            return value;
+        }
+        match self.options.normalization {
+            NormalizationMode::None => value,
+            NormalizationMode::Session => {
+                self.session_min = self.session_min.min(value);
+                self.session_max = self.session_max.max(value);
+                min_max(value, self.session_min, self.session_max)
+            }
+            NormalizationMode::SlidingWindow => {
+                let now = Instant::now();
+                self.sequence = self.sequence.wrapping_add(1);
+                let sequence = self.sequence;
+                self.window.push_back(WindowPoint {
+                    sequence,
+                    time: now,
+                });
+                while self
+                    .window_min
+                    .back()
+                    .is_some_and(|(_, candidate)| *candidate >= value)
+                {
+                    self.window_min.pop_back();
+                }
+                self.window_min.push_back((sequence, value));
+                while self
+                    .window_max
+                    .back()
+                    .is_some_and(|(_, candidate)| *candidate <= value)
+                {
+                    self.window_max.pop_back();
+                }
+                self.window_max.push_back((sequence, value));
+                let span = Duration::from_secs(u64::from(self.options.window_seconds));
+                while self
+                    .window
+                    .front()
+                    .is_some_and(|point| now.duration_since(point.time) > span)
+                {
+                    let Some(expired) = self.window.pop_front().map(|point| point.sequence) else {
+                        break;
+                    };
+                    if self
+                        .window_min
+                        .front()
+                        .is_some_and(|(candidate, _)| *candidate == expired)
+                    {
+                        self.window_min.pop_front();
+                    }
+                    if self
+                        .window_max
+                        .front()
+                        .is_some_and(|(candidate, _)| *candidate == expired)
+                    {
+                        self.window_max.pop_front();
+                    }
+                }
+                let minimum = self.window_min.front().map_or(value, |(_, value)| *value);
+                let maximum = self.window_max.front().map_or(value, |(_, value)| *value);
+                min_max(value, minimum, maximum)
+            }
+        }
+    }
+}
+
+fn min_max(value: f32, minimum: f32, maximum: f32) -> f32 {
+    if (maximum - minimum).abs() < f32::EPSILON {
+        0.5
+    } else {
+        ((value - minimum) / (maximum - minimum)).clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod normalization_tests {
+    use super::*;
+
+    #[test]
+    fn session_normalization_tracks_measurement_extrema() {
+        let mut normalizer = Normalizer::new(MetricOutputOptions {
+            normalization: NormalizationMode::Session,
+            window_seconds: 60,
+        });
+        assert_eq!(normalizer.apply(10.0), 0.5);
+        assert_eq!(normalizer.apply(20.0), 1.0);
+        assert_eq!(normalizer.apply(15.0), 0.5);
+        assert_eq!(normalizer.apply(5.0), 0.0);
     }
 }

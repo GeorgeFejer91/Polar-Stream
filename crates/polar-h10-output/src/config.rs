@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+pub use polar_h10_metrics::MetricDefinition as MetricSpec;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -7,6 +10,8 @@ pub struct OutputConfig {
     pub lsl_enabled: bool,
     pub osc_enabled: bool,
     pub outputs: Vec<String>,
+    #[serde(default)]
+    pub metric_options: HashMap<String, MetricOutputOptions>,
 }
 
 impl Default for OutputConfig {
@@ -16,6 +21,7 @@ impl Default for OutputConfig {
             lsl_enabled: false,
             osc_enabled: false,
             outputs: vec!["raw_ecg".into(), "raw_acc".into()],
+            metric_options: HashMap::new(),
         }
     }
 }
@@ -26,6 +32,14 @@ impl OutputConfig {
         self.outputs.sort();
         self.outputs.dedup();
         self.outputs.retain(|id| MetricSpec::for_id(id).is_some());
+        self.metric_options
+            .retain(|id, _| self.outputs.contains(id));
+        for (id, options) in &mut self.metric_options {
+            options.window_seconds = options.window_seconds.clamp(5, 3_600);
+            if !MetricSpec::for_id(id).is_some_and(|metric| metric.normalizable) {
+                options.normalization = NormalizationMode::None;
+            }
+        }
         Ok(self)
     }
 
@@ -34,89 +48,43 @@ impl OutputConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NormalizationMode {
+    #[default]
+    None,
+    SlidingWindow,
+    Session,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricOutputOptions {
+    #[serde(default)]
+    pub normalization: NormalizationMode,
+    #[serde(default = "default_window_seconds")]
+    pub window_seconds: u32,
+}
+
+impl Default for MetricOutputOptions {
+    fn default() -> Self {
+        Self {
+            normalization: NormalizationMode::None,
+            window_seconds: default_window_seconds(),
+        }
+    }
+}
+
+const fn default_window_seconds() -> u32 {
+    60
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputHealth {
     pub stream_name: String,
     pub lsl: String,
     pub osc: String,
-}
-
-#[derive(Clone, Copy)]
-pub struct MetricSpec {
-    pub(crate) id: &'static str,
-    pub(crate) label: &'static str,
-    pub(crate) stream_type: &'static str,
-    pub(crate) unit: &'static str,
-    pub(crate) channels: i32,
-    pub(crate) rate_hz: f64,
-    suffix: &'static str,
-}
-
-impl MetricSpec {
-    pub fn for_id(id: &str) -> Option<Self> {
-        Some(match id {
-            "raw_ecg" => Self {
-                id: "raw_ecg",
-                label: "ECG",
-                stream_type: "ECG",
-                unit: "microvolts",
-                channels: 1,
-                rate_hz: 130.0,
-                suffix: "rawECG",
-            },
-            "raw_acc" => Self {
-                id: "raw_acc",
-                label: "ACC",
-                stream_type: "Accelerometer",
-                unit: "milli-g",
-                channels: 3,
-                rate_hz: 200.0,
-                suffix: "rawACC",
-            },
-            "heart_rate" => Self {
-                id: "heart_rate",
-                label: "Heart-rate",
-                stream_type: "HeartRate",
-                unit: "bpm",
-                channels: 1,
-                rate_hz: 0.0,
-                suffix: "heartRate",
-            },
-            "rr_interval" => Self {
-                id: "rr_interval",
-                label: "RR-interval",
-                stream_type: "RR",
-                unit: "milliseconds",
-                channels: 1,
-                rate_hz: 0.0,
-                suffix: "rrInterval",
-            },
-            "acc_magnitude" => Self {
-                id: "acc_magnitude",
-                label: "ACC-magnitude",
-                stream_type: "AccelerometerMetric",
-                unit: "g",
-                channels: 1,
-                rate_hz: 200.0,
-                suffix: "accMagnitude",
-            },
-            "rmssd" => Self {
-                id: "rmssd",
-                label: "RMSSD",
-                stream_type: "HRV",
-                unit: "milliseconds",
-                channels: 1,
-                rate_hz: 0.0,
-                suffix: "rmssd",
-            },
-            _ => return None,
-        })
-    }
-
-    pub fn suffix(self) -> &'static str {
-        self.suffix
-    }
 }
 
 /// Produces a protocol-safe base shared by LSL stream names and OSC paths.
@@ -174,6 +142,28 @@ mod tests {
         .unwrap();
         assert_eq!(config.stream_name, "Lab_A");
         assert_eq!(config.outputs, ["rmssd"]);
+    }
+
+    #[test]
+    fn clamps_normalization_windows_and_drops_orphaned_options() {
+        let mut metric_options = HashMap::new();
+        metric_options.insert(
+            "rmssd".into(),
+            MetricOutputOptions {
+                normalization: NormalizationMode::SlidingWindow,
+                window_seconds: 2,
+            },
+        );
+        metric_options.insert("not_selected".into(), MetricOutputOptions::default());
+        let config = OutputConfig {
+            outputs: vec!["rmssd".into()],
+            metric_options,
+            ..OutputConfig::default()
+        }
+        .normalized()
+        .unwrap();
+        assert_eq!(config.metric_options["rmssd"].window_seconds, 5);
+        assert!(!config.metric_options.contains_key("not_selected"));
     }
 
     #[test]

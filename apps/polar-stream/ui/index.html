@@ -138,7 +138,7 @@
 
         <div class="outputs-block">
           <div class="mini-heading"><strong>Included outputs</strong><span id="included-count">2 active</span></div>
-          <div class="output-chips" id="output-chips"></div>
+          <div class="output-cards" id="output-chips"></div>
           <button class="add-output-button" id="open-output-dialog">
             <span aria-hidden="true">＋</span>
             Add output
@@ -200,11 +200,28 @@
           <div><p class="eyebrow">Output library</p><h2 id="output-dialog-title">Add signals</h2></div>
           <button class="icon-button" value="cancel" aria-label="Close">×</button>
         </header>
-        <p class="dialog-intro">Choose only what downstream tools need. Raw ECG and accelerometer are the recommended base pair.</p>
-        <div class="metric-options" id="metric-options"></div>
+        <p class="dialog-intro">Choose one raw or preprocessed research output, review what it measures and the current scientific interpretation, then save it as a stream module.</p>
+        <div class="metric-library-tools">
+          <label class="metric-search">
+            <span>Search metrics</span>
+            <input id="metric-search" type="search" placeholder="e.g. entropy, breath, vagal…" autocomplete="off" />
+          </label>
+          <span id="metric-library-summary">0 metrics</span>
+        </div>
+        <nav class="metric-filters" id="metric-filters" aria-label="Metric categories"></nav>
+        <div class="metric-library-body">
+          <div class="metric-options" id="metric-options" aria-label="Available metrics"></div>
+          <aside class="metric-detail" id="metric-detail" aria-live="polite">
+            <div class="metric-detail-empty">
+              <span>SELECT A METRIC</span>
+              <strong>Scientific context appears here</strong>
+              <p>Nothing is added until you review a metric and press Save output.</p>
+            </div>
+          </aside>
+        </div>
         <footer>
-          <span id="dialog-selection-count">2 selected</span>
-          <button class="primary-button compact" value="confirm">Apply outputs</button>
+          <span id="dialog-output-status">Select one metric to inspect</span>
+          <button class="primary-button compact" id="save-metric-output" type="button" disabled>Save output</button>
         </footer>
       </form>
     </dialog>
