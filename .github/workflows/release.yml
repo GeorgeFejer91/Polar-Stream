@@ -71,10 +71,22 @@ jobs:
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $installation = & $vswhere -latest -products * -property installationPath
-          $redist = Get-ChildItem "$installation\VC\Redist\MSVC" -Directory | Sort-Object Name -Descending | Select-Object -First 1
-          $crt = Join-Path $redist.FullName "${{ matrix.vc_arch }}\Microsoft.VC143.CRT"
-          if (-not (Test-Path $crt)) { throw "Microsoft VC runtime not found at $crt" }
-          Copy-Item "$crt\*.dll" apps/polar-stream/resources/
+          $runtime = Get-ChildItem "$installation\VC\Redist\MSVC" -Recurse -File -Filter vcruntime140.dll |
+            Where-Object {
+              $_.Directory.Parent.Name -eq "${{ matrix.vc_arch }}" -and
+              $_.Directory.Name -like "Microsoft.VC*.CRT"
+            } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $runtime) { throw "Microsoft VC runtime not found for ${{ matrix.vc_arch }}" }
+          Copy-Item "$($runtime.Directory.FullName)\*.dll" apps/polar-stream/resources/
+      - name: Normalize and ad-hoc sign the standalone macOS liblsl
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          install_name_tool -id @rpath/liblsl.dylib apps/polar-stream/resources/liblsl.dylib
+          codesign --force --sign - apps/polar-stream/resources/liblsl.dylib
+          otool -L apps/polar-stream/resources/liblsl.dylib
       - name: Verify bundled liblsl can create an outlet
         shell: bash
         run: |

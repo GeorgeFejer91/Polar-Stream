@@ -41,7 +41,7 @@ unsafe impl Send for LslApi {}
 
 impl LslApi {
     fn load(bundled_library: Option<&Path>) -> Result<Self, String> {
-        let mut last_error = String::new();
+        let mut errors = Vec::new();
         let mut candidates = bundled_library
             .map(Path::to_path_buf)
             .into_iter()
@@ -86,10 +86,10 @@ impl LslApi {
                         });
                     }
                 }
-                Err(error) => last_error = format!("{}: {error}", candidate.display()),
+                Err(error) => errors.push(format!("{}: {error}", candidate.display())),
             }
         }
-        Err(format!("liblsl not found ({last_error})"))
+        Err(format!("liblsl not found ({})", errors.join("; ")))
     }
 }
 
