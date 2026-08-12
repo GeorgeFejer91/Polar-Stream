@@ -2,7 +2,12 @@
 
 Polar Stream is a compact, low-latency desktop bridge for Polar H10 raw ECG and
 accelerometer data. Its interface has three focused areas: sensor input, stream
-output, and live visualization.
+output, and live visualization. A searchable metric library adds modular ECG,
+HRV, coherence, breathing, breathing-dynamics, and explicitly experimental
+outputs without expanding the main three-panel surface. Selecting a metric opens
+its scientific definition, interpretation limits, evidence level, cited source,
+and exact stream-name preview; an explicit **Save output** action then adds that
+single module to the enabled LSL and/or OSC publisher.
 
 > Unofficial research software. Not affiliated with or endorsed by Polar
 > Electro. This is not a medical device.
@@ -57,11 +62,14 @@ Acquisition and publication stay native in Rust:
 
 - `polar-h10-core`: PMD and heart-rate decoding.
 - `polar-h10-input`: BLE discovery, connection, and typed sensor events.
+- `polar-h10-metrics`: independent ECG, HRV, coherence, breathing, complexity,
+  and experimental processors plus the evidence-backed metric catalog.
 - `polar-h10-output`: LSL/OSC naming and publication.
 - `apps/polar-stream`: thin Tauri coordinator and three-panel UI.
 
 See [the architecture notes](apps/polar-stream/ARCHITECTURE.md) for the data path
-and latency policy.
+and latency policy. Scientific definitions, formula caveats, and the full
+legacy-output mapping are in [the metric evidence inventory](docs/metric-evidence.md).
 
 ## Develop
 

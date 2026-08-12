@@ -3,9 +3,10 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use polar_h10_core::{AccSample, RrTracker};
+use polar_h10_core::AccSample;
 use polar_h10_input::{DeviceSummary, InputEvent, InputManager};
-use polar_h10_output::{MetricSpec, MetricValue, OutputConfig, OutputHealth, OutputRouter};
+use polar_h10_metrics::{METRIC_CATALOG, MetricDefinition, MetricEngine, MetricSample};
+use polar_h10_output::{MetricValue, OutputConfig, OutputHealth, OutputRouter};
 use serde::Serialize;
 use tauri::{Manager, State, ipc::Channel, path::BaseDirectory};
 
@@ -50,9 +51,7 @@ enum AppEvent {
         samples: Vec<AccSample>,
     },
     Metrics {
-        heart_rate_bpm: u16,
-        rr_intervals_ms: Vec<f32>,
-        rmssd_ms: Option<f32>,
+        values: Vec<MetricSample>,
     },
     Error {
         message: String,
@@ -64,40 +63,7 @@ enum AppEvent {
 struct Bootstrap {
     config: OutputConfig,
     platform: &'static str,
-    metric_catalog: Vec<MetricDescriptor>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MetricDescriptor {
-    id: &'static str,
-    stream_suffix: &'static str,
-    label: &'static str,
-    detail: &'static str,
-    unit: &'static str,
-    raw: bool,
-}
-
-impl MetricDescriptor {
-    fn new(
-        id: &'static str,
-        label: &'static str,
-        detail: &'static str,
-        unit: &'static str,
-        raw: bool,
-    ) -> Self {
-        let stream_suffix = MetricSpec::for_id(id)
-            .expect("application metric must have an output specification")
-            .suffix();
-        Self {
-            id,
-            stream_suffix,
-            label,
-            detail,
-            unit,
-            raw,
-        }
-    }
+    metric_catalog: Vec<MetricDefinition>,
 }
 
 #[tauri::command]
@@ -105,32 +71,7 @@ fn get_bootstrap(state: State<'_, Arc<AppState>>) -> Bootstrap {
     Bootstrap {
         config: state.output.config(),
         platform: std::env::consts::OS,
-        metric_catalog: vec![
-            MetricDescriptor::new("raw_ecg", "Raw ECG", "130 Hz · 1 channel", "µV", true),
-            MetricDescriptor::new(
-                "raw_acc",
-                "Raw accelerometer",
-                "200 Hz · X, Y, Z",
-                "mg",
-                true,
-            ),
-            MetricDescriptor::new("heart_rate", "Heart rate", "Device-derived", "bpm", false),
-            MetricDescriptor::new(
-                "rr_interval",
-                "RR interval",
-                "Beat-to-beat interval",
-                "ms",
-                false,
-            ),
-            MetricDescriptor::new(
-                "acc_magnitude",
-                "ACC magnitude",
-                "√(x² + y² + z²)",
-                "g",
-                false,
-            ),
-            MetricDescriptor::new("rmssd", "RMSSD", "Rolling 60-beat window", "ms", false),
-        ],
+        metric_catalog: METRIC_CATALOG.to_vec(),
     }
 }
 
@@ -147,32 +88,45 @@ async fn connect_device(
 ) -> Result<(), String> {
     let mut input_events = state.input.connect(&device_id).await?;
     let output = state.output.clone();
+    output.reset_measurement();
     tauri::async_runtime::spawn(async move {
-        let mut rr_tracker = RrTracker::default();
+        let mut metrics_engine = MetricEngine::default();
         while let Some(event) = input_events.recv().await {
-            let frontend_event = match event {
-                InputEvent::Status { phase, message } => AppEvent::Status {
-                    phase: phase.into(),
-                    message,
-                },
+            let continue_streaming = match event {
+                InputEvent::Status { phase, message } => events
+                    .send(AppEvent::Status {
+                        phase: phase.into(),
+                        message,
+                    })
+                    .is_ok(),
                 InputEvent::Connected {
                     device_name,
                     battery_percent,
-                } => AppEvent::Connection {
-                    connected: true,
-                    streaming: true,
-                    device_name,
-                    battery_percent,
-                    message: "Raw ECG and accelerometer are streaming".into(),
-                },
+                } => events
+                    .send(AppEvent::Connection {
+                        connected: true,
+                        streaming: true,
+                        device_name,
+                        battery_percent,
+                        message: "Raw ECG and accelerometer are streaming".into(),
+                    })
+                    .is_ok(),
                 InputEvent::Ecg {
                     sensor_timestamp_ns,
                     microvolts,
                 } => {
                     output.publish_ecg(sensor_timestamp_ns, &microvolts);
-                    AppEvent::Ecg {
-                        sensor_timestamp_ns,
-                        microvolts,
+                    let derived = metrics_engine.process_ecg(&microvolts);
+                    if events
+                        .send(AppEvent::Ecg {
+                            sensor_timestamp_ns,
+                            microvolts,
+                        })
+                        .is_err()
+                    {
+                        false
+                    } else {
+                        publish_metrics(&output, &events, derived)
                     }
                 }
                 InputEvent::Accelerometer {
@@ -180,57 +134,66 @@ async fn connect_device(
                     samples,
                 } => {
                     output.publish_accelerometer(sensor_timestamp_ns, &samples);
-                    AppEvent::Accelerometer {
-                        sensor_timestamp_ns,
-                        samples,
+                    let derived = metrics_engine.process_accelerometer(&samples);
+                    if events
+                        .send(AppEvent::Accelerometer {
+                            sensor_timestamp_ns,
+                            samples,
+                        })
+                        .is_err()
+                    {
+                        false
+                    } else {
+                        publish_metrics(&output, &events, derived)
                     }
                 }
                 InputEvent::HeartRate {
                     beats_per_minute,
                     rr_intervals_ms,
-                } => {
-                    for rr in &rr_intervals_ms {
-                        rr_tracker.push(*rr);
-                    }
-                    let rmssd_ms = rr_tracker.rmssd();
-                    let mut metrics = vec![MetricValue {
-                        id: "heart_rate",
-                        value: f32::from(beats_per_minute),
-                    }];
-                    if let Some(rr) = rr_intervals_ms.last() {
-                        metrics.push(MetricValue {
-                            id: "rr_interval",
-                            value: *rr,
-                        });
-                    }
-                    if let Some(value) = rmssd_ms {
-                        metrics.push(MetricValue { id: "rmssd", value });
-                    }
-                    output.publish_metrics(&metrics);
-                    AppEvent::Metrics {
-                        heart_rate_bpm: beats_per_minute,
-                        rr_intervals_ms,
-                        rmssd_ms,
-                    }
-                }
-                InputEvent::Error(message) => AppEvent::Error { message },
+                } => publish_metrics(
+                    &output,
+                    &events,
+                    metrics_engine.process_heart_rate(beats_per_minute, &rr_intervals_ms),
+                ),
+                InputEvent::Error(message) => events.send(AppEvent::Error { message }).is_ok(),
                 InputEvent::Disconnected {
                     device_name,
                     battery_percent,
-                } => AppEvent::Connection {
-                    connected: false,
-                    streaming: false,
-                    device_name,
-                    battery_percent,
-                    message: "Disconnected".into(),
-                },
+                } => events
+                    .send(AppEvent::Connection {
+                        connected: false,
+                        streaming: false,
+                        device_name,
+                        battery_percent,
+                        message: "Disconnected".into(),
+                    })
+                    .is_ok(),
             };
-            if events.send(frontend_event).is_err() {
+            if !continue_streaming {
                 break;
             }
         }
     });
     Ok(())
+}
+
+fn publish_metrics(
+    output: &OutputRouter,
+    events: &Channel<AppEvent>,
+    values: Vec<MetricSample>,
+) -> bool {
+    if values.is_empty() {
+        return true;
+    }
+    let routed = values
+        .iter()
+        .map(|metric| MetricValue {
+            id: metric.id,
+            value: metric.value,
+        })
+        .collect::<Vec<_>>();
+    output.publish_metrics(&routed);
+    events.send(AppEvent::Metrics { values }).is_ok()
 }
 
 #[tauri::command]

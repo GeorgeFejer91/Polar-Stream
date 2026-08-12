@@ -33,6 +33,9 @@ polar-h10-input
    │ typed InputEvent values
    ▼
 apps/polar-stream (thin coordinator)
+   ├────────► polar-h10-metrics
+   │                    │ scalar MetricSample values
+   │                    ▼
    ├────────► polar-h10-output ─────► LSL outlets
    │                    └───────────► OSC/UDP
    │
@@ -47,16 +50,18 @@ Rules enforced by the crate graph:
 - Input does not know whether the consumer is a UI, recorder, LSL, or OSC.
 - Output does not know where samples came from.
 - Protocol decoding can be unit-tested without an adapter or runtime.
+- Every derived processor and its formula tests live in `polar-h10-metrics`.
 - The HTML layer never republishes scientific data.
-- Adding a custom metric means registering its descriptor and feeding a
-  `MetricValue`; it does not change BLE acquisition.
+- Adding a custom metric means registering one `MetricDefinition` and feeding a
+  `MetricSample`; it does not change BLE acquisition or output transports.
 - UI preferences are isolated in `ui/preferences.js`; Bluetooth and output
   crates remain free of WebView storage concerns.
 
 ## Stable discovery names
 
-`polar-h10-output` owns the metric suffix catalog and the single canonical name
-function used by both publishers. A normalized base such as `participant_07`
+`polar-h10-metrics` owns the metric/evidence/suffix catalog;
+`polar-h10-output` owns the single canonical name function used by both
+publishers. A normalized base such as `participant_07`
 produces `participant_07_rawECG`, `participant_07_rawACC`, and one equivalent
 name per optional metric. LSL uses that full string as its outlet name; OSC uses
 the same string as its address with a leading slash.
@@ -79,10 +84,15 @@ not to the lifetime of the recording.
 
 ## Adding outputs
 
-1. Add the output ID and sample metadata in
-   `crates/polar-h10-output/src/config.rs`.
-2. Produce the value in the coordinator or a future independent metrics crate.
-3. Add its label to the bootstrap catalog in `apps/polar-stream/src/lib.rs`.
-4. Add a visualization definition only if the value should be chartable.
+1. Add one evidence-backed `MetricDefinition` in
+   `crates/polar-h10-metrics/src/catalog.rs`.
+2. Produce a `MetricSample` in an appropriate processor module.
+3. Add or update formula tests in that module and the evidence inventory.
+
+The UI and output router consume the same bootstrap catalog, so every registered
+metric automatically receives a stream name, metric-library entry, output card,
+and visualizer choice. The library is deliberately a one-output transaction:
+selecting a row reveals the catalog's scientific interpretation and citation,
+while **Save output** adds the metric to the router configuration.
 
 Raw input and output destinations remain unchanged.

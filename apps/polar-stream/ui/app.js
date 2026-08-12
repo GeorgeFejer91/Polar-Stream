@@ -7,13 +7,45 @@
   const NativeChannel = nativeCore?.Channel;
   const preferences = window.PolarPreferences;
 
+  const evidenceLinks = {
+    hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
+    breathing: ["Drummond et al. (2021)", "https://consensus.app/papers/details/9389301a991e52ee9210f51939d318d7/?utm_source=unknown"],
+    complexity: ["Bará et al. (2024)", "https://consensus.app/papers/details/de562a29bb8454eda201852b544fd9d7/?utm_source=unknown"],
+    resonance: ["Sévoz-Couche & Laborde (2022)", "https://www.sciencedirect.com/science/article/abs/pii/S0149763422000653"],
+    quality: ["Smital et al. (2020)", "https://consensus.app/papers/details/ad2a724fefd55d25baee823438fc672e/?utm_source=unknown"],
+    stress: ["Immanuel et al. (2023)", "https://consensus.app/papers/details/14838ea9a9045710b4a676dbb7d595aa/?utm_source=unknown"],
+  };
+  const fallbackMetric = (id, streamSuffix, label, unit, category, source = "hrv", detail = "Real-time derived metric", raw = false, normalizable = true, rateHz = 0) => ({
+    id, streamSuffix, label, detail, unit, category, raw, normalizable, rateHz,
+    evidence: raw ? "device signal" : "research metric",
+    citationLabel: evidenceLinks[source][0], citationUrl: evidenceLinks[source][1],
+    keywords: `${label} ${category}`.toLowerCase(),
+    explainer: `${label} is exposed as a descriptive research signal using the formula named in this card. Its physiological meaning depends on signal quality, recording context and the cited method; it is not a diagnosis or a standalone emotional-state measure.`,
+  });
   const fallbackCatalog = [
-    { id: "raw_ecg", streamSuffix: "rawECG", label: "Raw ECG", detail: "130 Hz · 1 channel", unit: "µV", raw: true },
-    { id: "raw_acc", streamSuffix: "rawACC", label: "Raw accelerometer", detail: "200 Hz · X, Y, Z", unit: "mg", raw: true },
-    { id: "heart_rate", streamSuffix: "heartRate", label: "Heart rate", detail: "Device-derived", unit: "bpm", raw: false },
-    { id: "rr_interval", streamSuffix: "rrInterval", label: "RR interval", detail: "Beat-to-beat interval", unit: "ms", raw: false },
-    { id: "acc_magnitude", streamSuffix: "accMagnitude", label: "ACC magnitude", detail: "√(x² + y² + z²)", unit: "g", raw: false },
-    { id: "rmssd", streamSuffix: "rmssd", label: "RMSSD", detail: "Rolling 60-beat window", unit: "ms", raw: false },
+    fallbackMetric("raw_ecg", "rawECG", "Raw ECG", "µV", "Raw signals", "quality", "Unfiltered H10 voltage · 130 Hz", true, false, 130),
+    fallbackMetric("raw_acc", "rawACC", "Raw accelerometer", "mg", "Raw signals", "breathing", "X, Y and Z · 200 Hz", true, false, 200),
+    fallbackMetric("acc_magnitude", "accMagnitude", "ACC magnitude", "g", "Raw signals", "breathing", "√(x²+y²+z²)", false, true, 200),
+    ...[["ecg_mean","ecgMean","ECG window mean"],["ecg_rms","ecgRms","ECG RMS amplitude"],["ecg_peak_to_peak","ecgPeakToPeak","ECG peak-to-peak"],["ecg_sd","ecgSd","ECG standard deviation"]].map(([id,suffix,label]) => fallbackMetric(id,suffix,label,"µV","ECG features","quality","Five-second rolling signal feature",false,true,2)),
+    fallbackMetric("heart_rate", "heartRate", "Heart rate", "bpm", "Heart rate", "hrv", "H10 device-derived", false, true),
+    fallbackMetric("rr_interval", "rrInterval", "RR interval", "ms", "Heart rate", "hrv", "Accepted beat-to-beat interval"),
+    fallbackMetric("mean_nn", "meanNN", "Mean NN interval", "ms", "Heart rate"),
+    fallbackMetric("mean_heart_rate", "meanHeartRate", "Mean heart rate", "bpm", "Heart rate"),
+    ...[["rmssd","rmssd","RMSSD","ms"],["ln_rmssd","lnRMSSD","lnRMSSD","ln(ms)"],["sdnn","sdnn","SDNN","ms"],["pnn50","pNN50","pNN50","%"],["sd1","sd1","Poincaré SD1","ms"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"HRV & relaxation")),
+    ...[["coherence","coherence","Normalized coherence","0–1"],["coherence_confidence","coherenceConfidence","Coherence confidence","0–1"],["heartmath_coherence","heartMathCoherence","HeartMath-style coherence ratio","ratio"],["coherence_peak_frequency","coherencePeakFrequency","Coherence peak frequency","Hz"],["coherence_peak_power","coherencePeakPower","Coherence peak-band power","ms²"],["coherence_total_power","coherenceTotalPower","Coherence total power","ms²"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"Coherence","resonance")),
+    fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing waveform", "0–1", "Breathing", "breathing", "Calibrated chest-motion projection", false, true, 20),
+    fallbackMetric("breathing_phase", "breathingPhase", "Inhale / exhale phase", "class", "Breathing", "breathing", "+1 inhale · −1 exhale · 0 pause", false, false, 20),
+    fallbackMetric("breathing_calibration", "breathingCalibration", "Breathing calibration", "0–1", "Breathing", "breathing", "Principal-axis calibration progress", false, false, 4),
+    fallbackMetric("breathing_axis_range", "breathingAxisRange", "Breathing axis range", "g", "Breathing", "breathing"),
+    fallbackMetric("breathing_rate", "breathingRate", "Breathing rate", "breaths/min", "Breathing", "breathing"),
+    fallbackMetric("breathing_dynamics_confidence", "breathingDynamicsConfidence", "Breathing-dynamics confidence", "0–1", "Breathing dynamics", "complexity"),
+    ...["mean","sd","cv","acw50","psd_slope","lzc","sampen","mse"].flatMap((feature) => ["interval","amplitude"].map((kind) => {
+      const names = { mean:"mean", sd:"SD", cv:"CV", acw50:"ACW50", psd_slope:"PSD slope", lzc:"Lempel–Ziv", sampen:"sample entropy", mse:"multiscale entropy" };
+      const units = kind === "interval" ? {mean:"s",sd:"s",cv:"ratio",acw50:"breaths",psd_slope:"slope",lzc:"0–1",sampen:"entropy",mse:"entropy AUC"} : {mean:"0–1",sd:"0–1",cv:"ratio",acw50:"breaths",psd_slope:"slope",lzc:"0–1",sampen:"entropy",mse:"entropy AUC"};
+      const camel = feature.split("_").map((part,index) => index ? part[0].toUpperCase()+part.slice(1) : part).join("");
+      return fallbackMetric(`breath_${kind}_${feature}`, `breath${kind[0].toUpperCase()+kind.slice(1)}${camel[0].toUpperCase()+camel.slice(1)}`, `Breath ${kind} ${names[feature]}`, units[feature], "Breathing dynamics", "complexity");
+    })),
+    fallbackMetric("excitometer", "excitometer", "Excitometer (experimental)", "0–1", "Excitation (experimental)", "stress", "Within-session HR ↑ plus lnRMSSD ↓"),
   ];
 
   const visualDefinitions = {
@@ -59,6 +91,11 @@
     latest() {
       return this.length ? this.values[(this.cursor - 1 + this.capacity) % this.capacity] : null;
     }
+
+    clear() {
+      this.length = 0;
+      this.cursor = 0;
+    }
   }
 
   const buffers = Object.fromEntries(Object.keys(visualDefinitions).map((id) => [id, new RingBuffer()]));
@@ -71,7 +108,8 @@
     "lsl-detail", "osc-detail", "included-count", "output-chips", "open-output-dialog", "visual-source",
     "visual-current", "visual-unit", "visual-label", "render-rate", "chart-shell", "signal-canvas",
     "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
-    "metric-options", "dialog-selection-count", "toast-region", "stream-name-preview",
+    "metric-options", "metric-detail", "dialog-output-status", "save-metric-output", "toast-region",
+    "stream-name-preview", "metric-search", "metric-filters", "metric-library-summary",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
 
@@ -82,6 +120,11 @@
     configuring: false,
     catalog: fallbackCatalog,
     outputs: new Set(["raw_ecg", "raw_acc"]),
+    metricOptions: {},
+    visualNormalizers: {},
+    selectedMetricId: null,
+    metricFilter: "All",
+    metricSearch: "",
     streamName: "Polar-H10",
     selectedVisual: "raw_ecg",
     sampleCount: 0,
@@ -157,7 +200,7 @@
 
   async function initialize() {
     let bootstrap = {
-      config: { streamName: "Polar-H10", lslEnabled: false, oscEnabled: false, outputs: ["raw_ecg", "raw_acc"] },
+      config: { streamName: "Polar-H10", lslEnabled: false, oscEnabled: false, outputs: ["raw_ecg", "raw_acc"], metricOptions: {} },
       platform: "browser preview",
       metricCatalog: fallbackCatalog,
     };
@@ -171,6 +214,8 @@
 
     app.catalog = bootstrap.metricCatalog || fallbackCatalog;
     app.outputs = new Set(bootstrap.config?.outputs || ["raw_ecg", "raw_acc"]);
+    app.metricOptions = structuredClone(bootstrap.config?.metricOptions || {});
+    installCatalogVisuals();
     app.streamName = normalizeStreamBase(app.preferences.streamName)
       || normalizeStreamBase(bootstrap.config?.streamName)
       || "Polar-H10";
@@ -180,6 +225,7 @@
     elements["platform-label"].textContent = String(bootstrap.platform || "local").toUpperCase();
     if (!isNative) elements["scan-caption"].textContent = "Interactive browser preview";
 
+    renderMetricFilters();
     renderMetricOptions();
     renderOutputs();
     installInteractions();
@@ -204,15 +250,30 @@
     });
 
     elements["open-output-dialog"].addEventListener("click", () => {
-      syncDialogSelection();
+      app.selectedMetricId = null;
+      renderMetricOptions();
+      renderMetricDetail();
       elements["output-dialog"].showModal();
     });
-    elements["output-dialog"].addEventListener("close", () => {
-      if (elements["output-dialog"].returnValue !== "confirm") return;
-      const selected = elements["metric-options"].querySelectorAll("input:checked");
-      app.outputs = new Set([...selected].map((input) => input.value));
+    elements["save-metric-output"].addEventListener("click", () => {
+      const metric = app.catalog.find((candidate) => candidate.id === app.selectedMetricId);
+      if (!metric || app.outputs.has(metric.id)) return;
+      app.outputs.add(metric.id);
       renderOutputs();
       configureOutputs();
+      elements["output-dialog"].close();
+      toast(`${metric.label} added as ${streamOutputName(metric)}`);
+    });
+    elements["metric-search"].addEventListener("input", () => {
+      app.metricSearch = elements["metric-search"].value.trim().toLowerCase();
+      renderMetricOptions();
+    });
+    elements["metric-filters"].addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-category]");
+      if (!button) return;
+      app.metricFilter = button.dataset.category;
+      renderMetricFilters();
+      renderMetricOptions();
     });
     elements["visual-source"].addEventListener("change", () => {
       app.selectedVisual = elements["visual-source"].value;
@@ -423,6 +484,7 @@
     app.connecting = false;
     app.pendingDevice = null;
     if (app.connected) {
+      resetMeasurementVisuals();
       const connectedDevice = device || app.devices.find((candidate) => candidate.name === event.deviceName);
       app.currentDeviceId = connectedDevice?.id || null;
       if (connectedDevice) {
@@ -461,7 +523,7 @@
       buffers.acc_x.push(x);
       buffers.acc_y.push(y);
       buffers.acc_z.push(z);
-      buffers.acc_magnitude.push(Math.hypot(x, y, z) / 1000);
+      ensureBuffer("acc_magnitude").push(visualValue("acc_magnitude", Math.hypot(x, y, z) / 1000));
     }
     const last = samples[samples.length - 1];
     elements["raw-acc-x"].textContent = formatValue(last.xMg ?? last.x_mg, 0);
@@ -472,79 +534,322 @@
   }
 
   function ingestMetrics(event) {
-    buffers.heart_rate.push(event.heartRateBpm ?? event.heart_rate_bpm);
-    buffers.rr_interval.pushMany(event.rrIntervalsMs ?? event.rr_intervals_ms ?? []);
+    if (Array.isArray(event.values)) {
+      for (const metric of event.values) ensureBuffer(metric.id).push(visualValue(metric.id, Number(metric.value)));
+      return;
+    }
+    // Backward compatibility for early v0.1 event payloads.
+    ensureBuffer("heart_rate").push(visualValue("heart_rate", event.heartRateBpm ?? event.heart_rate_bpm));
+    for (const value of event.rrIntervalsMs ?? event.rr_intervals_ms ?? []) {
+      ensureBuffer("rr_interval").push(visualValue("rr_interval", value));
+    }
     const rmssd = event.rmssdMs ?? event.rmssd_ms;
-    if (rmssd != null) buffers.rmssd.push(rmssd);
+    if (rmssd != null) ensureBuffer("rmssd").push(visualValue("rmssd", rmssd));
   }
 
   function updateSampleCounter() {
     elements["sample-counter"].textContent = `${app.sampleCount.toLocaleString()} samples`;
   }
 
+  function installCatalogVisuals() {
+    const palette = {
+      "Raw signals": "#d85151", "ECG features": "#b24e68", "Heart rate": "#d85151",
+      "HRV & relaxation": "#168259", Coherence: "#6c62a8", Breathing: "#3b78aa",
+      "Breathing dynamics": "#a66d19", "Excitation (experimental)": "#b94b40",
+    };
+    for (const metric of app.catalog) {
+      if (!visualDefinitions[metric.id]) {
+        visualDefinitions[metric.id] = {
+          label: metric.label, unit: metric.unit, rate: Number(metric.rateHz) || 1,
+          color: palette[metric.category] || "#168259",
+          symmetric: metric.id === "breathing_phase" || /^ecg_(mean|sd)$/.test(metric.id),
+        };
+      }
+      ensureBuffer(metric.id);
+    }
+  }
+
+  function ensureBuffer(id) {
+    if (!buffers[id]) buffers[id] = new RingBuffer();
+    return buffers[id];
+  }
+
+  function renderMetricFilters() {
+    const categories = ["All", ...new Set(app.catalog.map((metric) => metric.category))];
+    const buttons = categories.map((category) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.category = category;
+      button.className = category === app.metricFilter ? "active" : "";
+      button.textContent = category;
+      button.setAttribute("aria-pressed", String(category === app.metricFilter));
+      return button;
+    });
+    elements["metric-filters"].replaceChildren(...buttons);
+  }
+
   function renderMetricOptions() {
-    const options = app.catalog.map((metric) => {
-      const label = document.createElement("label");
-      label.className = "metric-option";
+    const visible = app.catalog.filter((metric) => {
+      const categoryMatches = app.metricFilter === "All" || metric.category === app.metricFilter;
+      const haystack = `${metric.label} ${metric.detail} ${metric.category} ${metric.keywords || ""}`.toLowerCase();
+      return categoryMatches && (!app.metricSearch || haystack.includes(app.metricSearch));
+    });
+    const options = visible.map((metric) => {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = `metric-option${app.selectedMetricId === metric.id ? " selected" : ""}`;
+      option.setAttribute("aria-pressed", String(app.selectedMetricId === metric.id));
       const mark = document.createElement("span");
-      mark.textContent = metric.raw ? "RAW" : "FX";
+      mark.textContent = metric.raw ? "RAW" : metric.category.startsWith("Excitation") ? "EXP" : "FX";
       const copy = document.createElement("span");
+      copy.className = "metric-option-copy";
+      const heading = document.createElement("span");
+      heading.className = "metric-option-heading";
       const name = document.createElement("strong");
       name.textContent = metric.label;
+      const evidence = document.createElement("em");
+      evidence.textContent = metric.evidence || "research metric";
+      heading.append(name, evidence);
       const detail = document.createElement("small");
       detail.textContent = `${metric.detail} · ${metric.unit} · _${metric.streamSuffix}`;
-      copy.append(name, detail);
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.value = metric.id;
-      checkbox.addEventListener("change", updateDialogCount);
-      label.append(mark, copy, checkbox);
-      return label;
+      copy.append(heading, detail);
+      const state = document.createElement("span");
+      state.className = app.outputs.has(metric.id) ? "metric-added" : "metric-chevron";
+      state.textContent = app.outputs.has(metric.id) ? "ADDED" : "›";
+      option.addEventListener("click", () => {
+        app.selectedMetricId = metric.id;
+        renderMetricOptions();
+        renderMetricDetail();
+      });
+      option.append(mark, copy, state);
+      return option;
     });
-    elements["metric-options"].replaceChildren(...options);
+    if (!options.length) {
+      const empty = document.createElement("p");
+      empty.className = "metric-library-empty";
+      empty.textContent = "No metrics match this filter.";
+      elements["metric-options"].replaceChildren(empty);
+    } else {
+      elements["metric-options"].replaceChildren(...options);
+    }
+    elements["metric-library-summary"].textContent = `${visible.length} of ${app.catalog.length} metrics`;
+    renderMetricDetail();
   }
 
-  function syncDialogSelection() {
-    elements["metric-options"].querySelectorAll("input").forEach((input) => {
-      input.checked = app.outputs.has(input.value);
-    });
-    updateDialogCount();
-  }
+  function renderMetricDetail() {
+    const metric = app.catalog.find((candidate) => candidate.id === app.selectedMetricId);
+    const save = elements["save-metric-output"];
+    const status = elements["dialog-output-status"];
+    if (!metric) {
+      const empty = document.createElement("div");
+      empty.className = "metric-detail-empty";
+      const kicker = document.createElement("span");
+      kicker.textContent = "SELECT A METRIC";
+      const title = document.createElement("strong");
+      title.textContent = "Scientific context appears here";
+      const copy = document.createElement("p");
+      copy.textContent = "Nothing is added until you review a metric and press Save output.";
+      empty.append(kicker, title, copy);
+      elements["metric-detail"].replaceChildren(empty);
+      save.disabled = true;
+      save.textContent = "Save output";
+      status.textContent = "Select one metric to inspect";
+      return;
+    }
 
-  function updateDialogCount() {
-    const count = elements["metric-options"].querySelectorAll("input:checked").length;
-    elements["dialog-selection-count"].textContent = `${count} selected`;
+    const article = document.createElement("article");
+    const header = document.createElement("header");
+    const category = document.createElement("p");
+    category.className = "metric-detail-category";
+    category.textContent = metric.category;
+    const title = document.createElement("h3");
+    title.textContent = metric.label;
+    const evidence = document.createElement("span");
+    evidence.className = "evidence-badge";
+    evidence.textContent = metric.evidence || "research metric";
+    header.append(category, title, evidence);
+
+    const measurement = document.createElement("section");
+    const measurementTitle = document.createElement("h4");
+    measurementTitle.textContent = "What this output measures";
+    const measurementCopy = document.createElement("p");
+    measurementCopy.textContent = metric.detail;
+    measurement.append(measurementTitle, measurementCopy);
+
+    const consensus = document.createElement("section");
+    const consensusTitle = document.createElement("h4");
+    consensusTitle.textContent = "Current scientific view";
+    const consensusCopy = document.createElement("p");
+    consensusCopy.textContent = metric.explainer;
+    consensus.append(consensusTitle, consensusCopy);
+
+    const source = document.createElement("section");
+    source.className = "metric-source";
+    const sourceTitle = document.createElement("h4");
+    sourceTitle.textContent = "Research source";
+    const citation = document.createElement("a");
+    citation.href = metric.citationUrl;
+    citation.target = "_blank";
+    citation.rel = "noreferrer";
+    citation.textContent = `${metric.citationLabel} ↗`;
+    source.append(sourceTitle, citation);
+
+    const stream = document.createElement("section");
+    stream.className = "metric-stream-preview";
+    const streamTitle = document.createElement("h4");
+    streamTitle.textContent = "Output created on save";
+    const streamName = document.createElement("code");
+    streamName.textContent = streamOutputName(metric, elements["stream-name"].value);
+    const streamMeta = document.createElement("p");
+    const transports = [elements["lsl-toggle"].checked ? "LSL" : null, elements["osc-toggle"].checked ? "OSC" : null].filter(Boolean);
+    streamMeta.textContent = `${metric.channels} channel${metric.channels === 1 ? "" : "s"} · ${metric.unit} · ${transports.length ? transports.join(" + ") : "enable LSL or OSC in Output"}`;
+    stream.append(streamTitle, streamName, streamMeta);
+
+    article.append(header, measurement, consensus, source, stream);
+    elements["metric-detail"].replaceChildren(article);
+    const alreadyAdded = app.outputs.has(metric.id);
+    save.disabled = alreadyAdded;
+    save.textContent = alreadyAdded ? "Already added" : "Save output";
+    status.textContent = alreadyAdded ? `${metric.label} is already in Output` : `Ready to add ${metric.label}`;
   }
 
   function renderOutputs() {
     const byId = new Map(app.catalog.map((metric) => [metric.id, metric]));
-    const chips = [...app.outputs].map((id) => {
+    const cards = [...app.outputs].map((id) => {
       const metric = byId.get(id);
       if (!metric) return null;
-      const chip = document.createElement("span");
-      chip.className = "output-chip";
-      const dot = document.createElement("i");
-      const label = document.createElement("span");
-      label.textContent = streamOutputName(metric, elements["stream-name"].value);
-      chip.title = metric.label;
+      const card = document.createElement("article");
+      card.className = `output-card${metric.raw ? " raw-output-card" : ""}`;
+      const header = document.createElement("header");
+      const identity = document.createElement("span");
+      const label = document.createElement("strong");
+      label.textContent = metric.label;
+      const stream = document.createElement("small");
+      stream.textContent = streamOutputName(metric, elements["stream-name"].value);
+      identity.append(label, stream);
       const remove = document.createElement("button");
       remove.type = "button";
       remove.setAttribute("aria-label", `Remove ${metric.label}`);
       remove.textContent = "×";
       remove.addEventListener("click", () => {
         app.outputs.delete(id);
+        delete app.metricOptions[id];
         renderOutputs();
         configureOutputs();
       });
-      chip.append(dot, label, remove);
-      return chip;
+      header.append(identity, remove);
+      card.append(header);
+
+      const controls = document.createElement("div");
+      controls.className = "metric-controls";
+      if (metric.normalizable) {
+        const options = metricOptionFor(id);
+        const normalizeLabel = document.createElement("label");
+        normalizeLabel.textContent = "Scale";
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", `${metric.label} normalization`);
+        [["none", "Original"], ["slidingWindow", "0–1 sliding"], ["session", "0–1 whole run"]].forEach(([value, text]) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = text;
+          select.append(option);
+        });
+        select.value = options.normalization || "none";
+        select.addEventListener("change", () => {
+          app.metricOptions[id] = { ...metricOptionFor(id), normalization: select.value };
+          resetVisualTransform(id);
+          renderOutputs();
+          configureOutputs();
+        });
+        normalizeLabel.append(select);
+        controls.append(normalizeLabel);
+        if (select.value === "slidingWindow") {
+          const windowLabel = document.createElement("label");
+          windowLabel.textContent = "Window";
+          const input = document.createElement("input");
+          input.type = "number";
+          input.min = "5";
+          input.max = "3600";
+          input.step = "5";
+          input.value = String(options.windowSeconds || 60);
+          input.setAttribute("aria-label", `${metric.label} normalization window in seconds`);
+          input.addEventListener("change", () => {
+            const seconds = Math.max(5, Math.min(3600, Number(input.value) || 60));
+            input.value = String(seconds);
+            app.metricOptions[id] = { ...metricOptionFor(id), windowSeconds: seconds };
+            resetVisualTransform(id);
+            configureOutputs();
+          });
+          const unit = document.createElement("span");
+          unit.textContent = "s";
+          windowLabel.append(input, unit);
+          controls.append(windowLabel);
+        }
+      } else {
+        const fixed = document.createElement("span");
+        fixed.className = "fixed-output-note";
+        fixed.textContent = metric.raw ? "Native samples" : "Categorical · scaling off";
+        controls.append(fixed);
+      }
+      card.append(controls);
+      return card;
     }).filter(Boolean);
-    elements["output-chips"].replaceChildren(...chips);
+    elements["output-chips"].replaceChildren(...cards);
     const count = app.outputs.size;
     elements["included-count"].textContent = `${count} active`;
     elements["output-state"].textContent = `${count} signal${count === 1 ? "" : "s"}`;
     updateStreamNamePreview();
     rebuildVisualOptions();
+  }
+
+  function metricOptionFor(id) {
+    return app.metricOptions[id] || { normalization: "none", windowSeconds: 60 };
+  }
+
+  function resetVisualTransform(id) {
+    delete app.visualNormalizers[id];
+    ensureBuffer(id).clear();
+  }
+
+  function resetMeasurementVisuals() {
+    app.visualNormalizers = {};
+    for (const buffer of Object.values(buffers)) buffer.clear();
+    app.sampleCount = 0;
+    updateSampleCounter();
+  }
+
+  function visualValue(id, input) {
+    const value = Number(input);
+    if (!Number.isFinite(value)) return value;
+    const options = metricOptionFor(id);
+    if (!options || options.normalization === "none") return value;
+    const modeKey = `${options.normalization}:${options.windowSeconds || 60}`;
+    let state = app.visualNormalizers[id];
+    if (!state || state.modeKey !== modeKey) {
+      state = { modeKey, minimum: Infinity, maximum: -Infinity, sequence: 0, minQueue: [], maxQueue: [], minHead: 0, maxHead: 0 };
+      app.visualNormalizers[id] = state;
+    }
+    if (options.normalization === "session") {
+      state.minimum = Math.min(state.minimum, value);
+      state.maximum = Math.max(state.maximum, value);
+      return minMaxValue(value, state.minimum, state.maximum);
+    }
+    const now = performance.now();
+    state.sequence += 1;
+    while (state.minQueue.length > state.minHead && state.minQueue.at(-1).value >= value) state.minQueue.pop();
+    while (state.maxQueue.length > state.maxHead && state.maxQueue.at(-1).value <= value) state.maxQueue.pop();
+    state.minQueue.push({ at: now, value });
+    state.maxQueue.push({ at: now, value });
+    const cutoff = now - Math.max(5, Number(options.windowSeconds) || 60) * 1000;
+    while (state.minQueue[state.minHead]?.at < cutoff) state.minHead += 1;
+    while (state.maxQueue[state.maxHead]?.at < cutoff) state.maxHead += 1;
+    if (state.minHead > 1024) { state.minQueue = state.minQueue.slice(state.minHead); state.minHead = 0; }
+    if (state.maxHead > 1024) { state.maxQueue = state.maxQueue.slice(state.maxHead); state.maxHead = 0; }
+    return minMaxValue(value, state.minQueue[state.minHead]?.value ?? value, state.maxQueue[state.maxHead]?.value ?? value);
+  }
+
+  function minMaxValue(value, minimum, maximum) {
+    return Math.abs(maximum - minimum) < Number.EPSILON ? 0.5 : Math.max(0, Math.min(1, (value - minimum) / (maximum - minimum)));
   }
 
   function updateStreamNamePreview() {
@@ -586,8 +891,9 @@
 
   function updateVisualLabels() {
     const definition = visualDefinitions[app.selectedVisual];
+    const normalized = metricOptionFor(app.selectedVisual).normalization !== "none";
     elements["visual-label"].textContent = definition?.label || "No output selected";
-    elements["visual-unit"].textContent = definition?.unit || "";
+    elements["visual-unit"].textContent = normalized ? "0–1" : definition?.unit || "";
     document.querySelector(".legend-line").style.background = definition?.color || "#87958d";
   }
 
@@ -605,6 +911,7 @@
       lslEnabled: elements["lsl-toggle"].checked,
       oscEnabled: elements["osc-toggle"].checked,
       outputs: [...app.outputs],
+      metricOptions: Object.fromEntries([...app.outputs].map((id) => [id, metricOptionFor(id)])),
     };
     if (!isNative) {
       elements["stream-name"].value = streamName;
@@ -678,8 +985,9 @@
 
     const visibleCount = Math.max(10, Math.ceil(definition.rate * 5));
     const values = buffer.tail(visibleCount);
+    const normalized = metricOptionFor(app.selectedVisual).normalization !== "none";
     elements["chart-empty"].hidden = values.length > 1;
-    elements["visual-current"].textContent = formatValue(buffer.latest(), definition.unit === "g" ? 3 : definition.unit === "bpm" ? 0 : 1);
+    elements["visual-current"].textContent = formatValue(buffer.latest(), normalized ? 3 : definition.unit === "g" ? 3 : definition.unit === "bpm" ? 0 : 1);
     if (values.length < 2) {
       context.clearRect(0, 0, canvas.width, canvas.height);
       return;
@@ -691,7 +999,10 @@
       if (value < min) min = value;
       if (value > max) max = value;
     }
-    if (definition.symmetric) {
+    if (normalized) {
+      min = 0;
+      max = 1;
+    } else if (definition.symmetric) {
       const extent = Math.max(Math.abs(min), Math.abs(max), 1) * 1.08;
       min = -extent;
       max = extent;
@@ -765,11 +1076,51 @@
       app.demoPhase += 0.05;
       handleNativeEvent({ kind: "ecg", sensorTimestampNs: 0, microvolts: ecg });
       handleNativeEvent({ kind: "accelerometer", sensorTimestampNs: 0, samples: acc });
+      handleNativeEvent({ kind: "metrics", values: [
+        { id: "breathing_calibration", value: 1 },
+        { id: "breathing_volume", value: 0.5 + Math.sin(app.demoPhase * 1.25) * 0.42 },
+        { id: "breathing_phase", value: Math.cos(app.demoPhase * 1.25) > 0.08 ? 1 : Math.cos(app.demoPhase * 1.25) < -0.08 ? -1 : 0 },
+        { id: "breathing_axis_range", value: 0.034 },
+      ] });
       if (app.demoPhase - lastMetric >= 1) {
         lastMetric = app.demoPhase;
-        handleNativeEvent({ kind: "metrics", heartRateBpm: 71, rrIntervalsMs: [845 + Math.sin(app.demoPhase) * 18], rmssdMs: 28.4 });
+        const values = app.catalog
+          .filter((metric) => !metric.raw && !["acc_magnitude", "breathing_calibration", "breathing_volume", "breathing_phase", "breathing_axis_range"].includes(metric.id))
+          .map((metric) => ({ id: metric.id, value: demoMetricValue(metric.id, app.demoPhase) }));
+        handleNativeEvent({ kind: "metrics", values });
       }
     }, 50);
+  }
+
+  function demoMetricValue(id, phase) {
+    const wave = Math.sin(phase * 0.7);
+    if (id === "heart_rate" || id === "mean_heart_rate") return 71 + wave * 3;
+    if (id === "rr_interval" || id === "mean_nn") return 60000 / (71 + wave * 3);
+    if (id === "rmssd") return 31 + wave * 4;
+    if (id === "ln_rmssd") return Math.log(31 + wave * 4);
+    if (id === "sdnn") return 42 + wave * 5;
+    if (id === "pnn50") return 18 + wave * 4;
+    if (id === "sd1") return (31 + wave * 4) / Math.SQRT2;
+    if (id === "coherence") return 0.62 + wave * 0.12;
+    if (id === "coherence_confidence" || id === "breathing_dynamics_confidence") return 0.92;
+    if (id === "heartmath_coherence") return 2.4 + wave * 0.5;
+    if (id === "coherence_peak_frequency") return 0.1 + wave * 0.005;
+    if (id.includes("coherence_") && id.includes("power")) return 1_200 + wave * 120;
+    if (id === "breathing_rate") return 12 + wave;
+    if (id.startsWith("breath_interval_mean")) return 5 + wave * 0.2;
+    if (id.startsWith("breath_amplitude_mean")) return 0.72 + wave * 0.05;
+    if (id.includes("_sd")) return id.includes("interval") ? 0.22 + wave * 0.03 : 0.08 + wave * 0.01;
+    if (id.includes("_cv")) return 0.12 + wave * 0.02;
+    if (id.includes("acw50")) return 2 + wave * 0.2;
+    if (id.includes("psd_slope")) return -1.1 + wave * 0.12;
+    if (id.includes("lzc")) return 0.58 + wave * 0.05;
+    if (id.includes("sampen")) return 1.2 + wave * 0.1;
+    if (id.includes("mse")) return 4.2 + wave * 0.3;
+    if (id === "excitometer") return 0.46 + wave * 0.15;
+    if (id === "ecg_mean") return wave * 8;
+    if (id === "ecg_rms" || id === "ecg_sd") return 180 + wave * 15;
+    if (id === "ecg_peak_to_peak") return 1_050 + wave * 60;
+    return 0.5 + wave * 0.1;
   }
 
   function stopDemoSignal() {
