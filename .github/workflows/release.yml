@@ -112,7 +112,7 @@ jobs:
           prerelease: false
           uploadUpdaterJson: false
           retryAttempts: 2
-          releaseAssetNamePattern: Polar-Stream_[version]_[platform]_[arch][_setup].[ext]
+          releaseAssetNamePattern: Polar-Stream_[version]_[platform]_[arch][_setup][ext]
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
       - name: Smoke-test Linux executable
         if: runner.os == 'Linux'
@@ -127,7 +127,16 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          "target/${{ matrix.target }}/release/bundle/macos/Polar Stream.app/Contents/MacOS/polar-stream" > smoke.log 2>&1 &
+          dmg=$(find "target/${{ matrix.target }}/release/bundle/dmg" -name '*.dmg' -print -quit)
+          test -n "$dmg"
+          mount_point=$(mktemp -d)
+          cleanup() {
+            hdiutil detach "$mount_point" -quiet || true
+            rmdir "$mount_point" || true
+          }
+          trap cleanup EXIT
+          hdiutil attach "$dmg" -mountpoint "$mount_point" -nobrowse -quiet
+          "$mount_point/Polar Stream.app/Contents/MacOS/polar-stream" > smoke.log 2>&1 &
           pid=$!
           sleep 8
           kill -0 "$pid" || { cat smoke.log; exit 1; }

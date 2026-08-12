@@ -10,11 +10,11 @@ import re
 
 
 REQUIRED = {
-    "Windows x64 installer": r"windows.*(?:x86_64|x64|amd64).*\.exe$",
-    "Windows ARM64 installer": r"windows.*(?:aarch64|arm64).*\.exe$",
-    "Windows x64 MSI": r"windows.*(?:x86_64|x64|amd64).*\.msi$",
-    "Windows ARM64 MSI": r"windows.*(?:aarch64|arm64).*\.msi$",
-    "macOS universal DMG": r"macos.*universal.*\.dmg$",
+    "Windows x64 installer": r"(?:windows|win32).*(?:x86_64|x64|amd64).*\.exe$",
+    "Windows ARM64 installer": r"(?:windows|win32).*(?:aarch64|arm64).*\.exe$",
+    "Windows x64 MSI": r"(?:windows|win32).*(?:x86_64|x64|amd64).*\.msi$",
+    "Windows ARM64 MSI": r"(?:windows|win32).*(?:aarch64|arm64).*\.msi$",
+    "macOS universal DMG": r"(?:macos|darwin).*universal.*\.dmg$",
     "Linux x64 AppImage": r"linux.*(?:x86_64|x64|amd64).*\.appimage$",
     "Linux ARM64 AppImage": r"linux.*(?:aarch64|arm64).*\.appimage$",
     "Linux x64 DEB": r"linux.*(?:x86_64|x64|amd64).*\.deb$",
