@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#14241c" />
+    <title>Download Polar Stream</title>
+    <link rel="icon" href="favicon.svg" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="downloads.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="https://github.com/GeorgeFejer91/Polar-Stream">
+        <span class="pulse" aria-hidden="true">⌁</span>
+        <span><strong>Polar Stream</strong><small>H10 signal bridge</small></span>
+      </a>
+      <a class="repo-link" href="https://github.com/GeorgeFejer91/Polar-Stream">Private repository ↗</a>
+    </header>
+
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Native desktop downloads</p>
+        <h1>One quiet bridge from Polar H10 to LSL and OSC.</h1>
+        <p class="intro">Choose your operating system. Every release includes raw ECG and accelerometer streaming, the low-latency visualizer, and a bundled liblsl runtime.</p>
+        <div class="hero-actions">
+          <a class="primary" id="recommended-download" href="https://github.com/GeorgeFejer91/Polar-Stream/releases/latest">Open latest release</a>
+          <span id="platform-note">GitHub sign-in is required for private downloads.</span>
+        </div>
+      </section>
+
+      <section class="downloads" aria-labelledby="downloads-heading">
+        <div class="section-title">
+          <div><p class="eyebrow">Release 0.1.0</p><h2 id="downloads-heading">Installers by platform</h2></div>
+          <span class="complete">9 package classes required</span>
+        </div>
+
+        <div class="cards">
+          <article class="download-card" data-platform="windows">
+            <span class="os-mark">WIN</span>
+            <div><h3>Windows</h3><p>Windows 10/11 x64 or Windows 11 ARM64</p></div>
+            <ul><li>Guided NSIS setup (.exe)</li><li>Enterprise installer (.msi)</li><li>Offline WebView2 included</li></ul>
+            <a href="https://github.com/GeorgeFejer91/Polar-Stream/releases/latest">Choose x64 or ARM64 →</a>
+          </article>
+
+          <article class="download-card" data-platform="macos">
+            <span class="os-mark">MAC</span>
+            <div><h3>macOS</h3><p>One universal build for Intel and Apple Silicon</p></div>
+            <ul><li>Universal DMG</li><li>macOS 10.15 or later</li><li>Bluetooth permission included</li></ul>
+            <a href="https://github.com/GeorgeFejer91/Polar-Stream/releases/latest">Download universal DMG →</a>
+          </article>
+
+          <article class="download-card" data-platform="linux">
+            <span class="os-mark">LNX</span>
+            <div><h3>Linux</h3><p>x64 and ARM64 native builds</p></div>
+            <ul><li>Portable AppImage</li><li>Debian/Ubuntu package (.deb)</li><li>BlueZ Bluetooth backend</li></ul>
+            <a href="https://github.com/GeorgeFejer91/Polar-Stream/releases/latest">Choose x64 or ARM64 →</a>
+          </article>
+        </div>
+      </section>
+
+      <section class="install-notes">
+        <div><p class="eyebrow">Before first launch</p><h2>Private preview installation</h2></div>
+        <div class="notes-grid">
+          <article><strong>Windows</strong><p>If SmartScreen appears, choose “More info” and “Run anyway.” The installer is not yet Authenticode-signed.</p></article>
+          <article><strong>macOS</strong><p>Open the DMG and move Polar Stream to Applications. If Gatekeeper blocks it, right-click Open or allow it in Privacy &amp; Security.</p></article>
+          <article><strong>Linux</strong><p>For AppImage, run <code>chmod +x Polar-Stream*.AppImage</code>. Your account needs permission to access the Bluetooth adapter.</p></article>
+        </div>
+      </section>
+
+      <section class="release-policy">
+        <span class="shield">✓</span>
+        <div><strong>No partial “latest” releases</strong><p>CI keeps each release in draft until Windows x64/ARM64, macOS universal, and Linux x64/ARM64 packages all build and pass their native launch checks.</p></div>
+      </section>
+    </main>
+
+    <footer><span>Polar Stream is an unofficial research tool, not a medical device.</span><a href="https://github.com/GeorgeFejer91/Polar-Stream/releases/latest">Release notes</a></footer>
+  </body>
+</html>

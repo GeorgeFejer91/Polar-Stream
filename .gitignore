@@ -1,0 +1,87 @@
+## Build results
+[Bb]uild/
+[Oo]bj/
+[Bb]in/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+log/
+[Ll]og/
+[Ll]ogs/
+
+## NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+
+## Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.rsuser
+[Tt]est[Rr]esult*/
+[Dd]ebugPublic/
+[Rr]eleases/
+BenchmarkDotNet.Artifacts/
+
+## Project files
+*.csproj.user
+project.lock.json
+
+## Rider
+.idea/
+
+## dotnet tool
+.config/dotnet-tools.json
+
+## OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
+
+## Node (diagram toolchain)
+node_modules/
+/site/
+/out/
+/.codex-build/
+__pycache__/
+*.pyc
+
+## Swift Package Manager
+**/.build/
+**/.swiftpm/
+
+## Rust / Tauri
+target/
+**/target/
+apps/polar-stream/gen/
+
+## Local preview and publish scratch
+/artifacts/
+/src/PolarH10.App.Package/AppPackages/
+/src/PolarH10.App.Package/*.pfx
+
+## Platform runtimes downloaded and checksum-verified during packaging
+apps/polar-stream/resources/liblsl.so
+apps/polar-stream/resources/liblsl.dylib
+apps/polar-stream/resources/lsl.dll
+apps/polar-stream/resources/msvcp*.dll
+apps/polar-stream/resources/vcruntime*.dll
+apps/polar-stream/resources/concrt*.dll
+
+## Local captures and third-party reference files
+session/
+tmp-live-check/
+Polar Measurement Data Specification for 3rd Party.pdf
+The Newer, the More Secure Standards-Compliant Bluetooth Low Energy Man-in-the-Middle Attacks on Fitness Trackers.pdf
+PolarH10 Public Repo.txt

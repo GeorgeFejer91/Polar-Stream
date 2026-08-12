@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#17221d" />
+    <title>Polar Stream</title>
+    <link rel="icon" href="favicon.svg" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="preferences.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#input-section">Skip to workspace</a>
+
+    <header class="app-bar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+          <rect x="1" y="1" width="38" height="38" rx="10" />
+          <path d="M8 21h5l2.5-7 4.1 15 3.4-11 2.4 5H32" />
+        </svg>
+        <span class="brand-copy"><strong>Polar Stream</strong><small>H10 signal bridge</small></span>
+      </div>
+      <div class="app-state" aria-live="polite">
+        <span class="state-dot" id="app-state-dot"></span>
+        <span id="app-state-text">Ready to connect</span>
+      </div>
+      <div class="latency-note">
+        <span id="platform-label">LOCAL</span>
+        <strong>Native data path</strong>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="workspace-panel input-panel" id="input-section" aria-labelledby="input-heading">
+        <header class="section-heading">
+          <span class="section-number">01</span>
+          <div>
+            <p class="eyebrow">Input</p>
+            <h1 id="input-heading">Polar H10</h1>
+          </div>
+          <span class="section-state" id="input-state">Idle</span>
+        </header>
+
+        <div class="connection-card" id="connection-card">
+          <div class="sensor-glyph" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><path d="M8 24c4-8 9-12 16-12s12 4 16 12c-4 8-9 12-16 12S12 32 8 24Z"/><path d="M15 24h5l2-6 4 12 2-6h5"/></svg>
+          </div>
+          <div class="connection-copy">
+            <strong id="device-name">No sensor connected</strong>
+            <span id="connection-detail">Scan for a nearby chest strap.</span>
+          </div>
+          <button class="text-button danger" id="disconnect-button" hidden>Disconnect</button>
+        </div>
+
+        <div class="connection-meta" id="connection-meta" hidden>
+          <span><small>BATTERY</small><strong id="battery-value">—</strong></span>
+          <span><small>ECG</small><strong>130 Hz</strong></span>
+          <span><small>ACC</small><strong>200 Hz</strong></span>
+        </div>
+
+        <div class="scan-row">
+          <button class="primary-button" id="scan-button">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M6.5 6.5 10 3l3.5 3.5M6.5 13.5 10 17l3.5-3.5"/></svg>
+            <span>Scan for sensors</span>
+          </button>
+          <span class="scan-caption" id="scan-caption">Bluetooth Low Energy</span>
+        </div>
+
+        <div class="device-list" id="device-list" aria-live="polite">
+          <div class="empty-state" id="device-empty">
+            <span class="empty-orbit" aria-hidden="true"></span>
+            <p>Your H10 will appear here.</p>
+            <small>Wear the strap and wet the electrodes before scanning.</small>
+          </div>
+        </div>
+
+        <div class="activity-block">
+          <div class="mini-heading"><strong>Connection activity</strong><span>Latest</span></div>
+          <ol class="activity-list" id="activity-list">
+            <li><time>NOW</time><span>Bluetooth interface ready</span></li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="workspace-panel output-panel" id="output-section" aria-labelledby="output-heading">
+        <header class="section-heading">
+          <span class="section-number">02</span>
+          <div>
+            <p class="eyebrow">Output</p>
+            <h2 id="output-heading">Signals &amp; streams</h2>
+          </div>
+          <span class="section-state live-state" id="output-state">2 signals</span>
+        </header>
+
+        <div class="raw-grid" aria-label="Latest raw sensor values">
+          <article class="raw-card ecg-card">
+            <header><span class="signal-swatch"></span><strong>Raw ECG</strong><small>µV</small></header>
+            <div class="raw-reading"><span id="raw-ecg-value">—</span><small id="ecg-rate">130 samples/s</small></div>
+            <svg class="spark-placeholder" viewBox="0 0 280 44" preserveAspectRatio="none" aria-hidden="true"><path id="ecg-spark" d="M0 24h280" /></svg>
+          </article>
+          <article class="raw-card acc-card">
+            <header><span class="signal-swatch"></span><strong>Raw accelerometer</strong><small>mg</small></header>
+            <div class="acc-reading">
+              <span><small>X</small><strong id="raw-acc-x">—</strong></span>
+              <span><small>Y</small><strong id="raw-acc-y">—</strong></span>
+              <span><small>Z</small><strong id="raw-acc-z">—</strong></span>
+            </div>
+            <small class="sample-rate">200 samples/s · 3 axes</small>
+          </article>
+        </div>
+
+        <div class="config-block">
+          <label class="field-label" for="stream-name">Stream base name</label>
+          <div class="name-field">
+            <input id="stream-name" maxlength="64" value="Polar-H10" spellcheck="false" />
+            <span class="valid-mark" aria-hidden="true">✓</span>
+          </div>
+          <p class="field-help" id="stream-name-preview">Publishes Polar-H10_rawECG · Polar-H10_rawACC</p>
+        </div>
+
+        <div class="destination-block">
+          <div class="mini-heading"><strong>Make available through</strong><span>Optional</span></div>
+          <label class="destination-row">
+            <span class="protocol-mark lsl-mark">LSL</span>
+            <span><strong>Lab Streaming Layer</strong><small id="lsl-detail">Local network · time synchronized</small></span>
+            <input id="lsl-toggle" class="switch-input" type="checkbox" />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+          <label class="destination-row">
+            <span class="protocol-mark osc-mark">OSC</span>
+            <span><strong>Open Sound Control</strong><small id="osc-detail">UDP · localhost:9000</small></span>
+            <input id="osc-toggle" class="switch-input" type="checkbox" />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+        </div>
+
+        <div class="outputs-block">
+          <div class="mini-heading"><strong>Included outputs</strong><span id="included-count">2 active</span></div>
+          <div class="output-chips" id="output-chips"></div>
+          <button class="add-output-button" id="open-output-dialog">
+            <span aria-hidden="true">＋</span>
+            Add output
+          </button>
+        </div>
+      </section>
+
+      <section class="workspace-panel visual-panel" id="visual-section" aria-labelledby="visual-heading">
+        <header class="section-heading">
+          <span class="section-number">03</span>
+          <div>
+            <p class="eyebrow">Visualization</p>
+            <h2 id="visual-heading">Live signal</h2>
+          </div>
+          <span class="section-state" id="render-rate">60 fps</span>
+        </header>
+
+        <div class="visual-toolbar">
+          <label for="visual-source">Display</label>
+          <select id="visual-source"></select>
+          <div class="visual-value">
+            <strong id="visual-current">—</strong>
+            <span id="visual-unit">µV</span>
+          </div>
+        </div>
+
+        <div class="chart-shell" id="chart-shell">
+          <canvas id="signal-canvas" aria-label="Live selected Polar H10 signal"></canvas>
+          <div class="chart-y-labels" aria-hidden="true"><span id="y-max">—</span><span>0</span><span id="y-min">—</span></div>
+          <div class="chart-empty" id="chart-empty">
+            <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M7 35h10l5-14 8 28 7-23 5 9h15"/></svg>
+            <strong>Waiting for signal</strong>
+            <span>Connect a Polar H10 to begin.</span>
+          </div>
+        </div>
+
+        <div class="chart-footer">
+          <span><i class="legend-line"></i><strong id="visual-label">Raw ECG</strong></span>
+          <span>5 second window</span>
+          <span>Auto scale</span>
+        </div>
+
+        <div class="pipeline-note">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 5 14h6l-1 8 9-13h-6V2Z"/></svg>
+          <div><strong>Acquisition stays native</strong><span>The chart receives display-rate batches; LSL and OSC do not wait for rendering.</span></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="status-bar">
+      <span><i class="footer-dot"></i><span id="footer-status">Engine ready</span></span>
+      <span id="sample-counter">0 samples</span>
+      <span>Polar H10 · unofficial research tool</span>
+    </footer>
+
+    <dialog class="output-dialog" id="output-dialog" aria-labelledby="output-dialog-title">
+      <form method="dialog">
+        <header>
+          <div><p class="eyebrow">Output library</p><h2 id="output-dialog-title">Add signals</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </header>
+        <p class="dialog-intro">Choose only what downstream tools need. Raw ECG and accelerometer are the recommended base pair.</p>
+        <div class="metric-options" id="metric-options"></div>
+        <footer>
+          <span id="dialog-selection-count">2 selected</span>
+          <button class="primary-button compact" value="confirm">Apply outputs</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite"></div>
+  </body>
+</html>
