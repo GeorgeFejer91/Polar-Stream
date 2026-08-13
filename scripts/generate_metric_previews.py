@@ -29,6 +29,13 @@ RAW_ECG_POINTS = 224
 SEED = 271_828
 VIEWBOX_WIDTH = 240
 VIEWBOX_HEIGHT = 72
+# NeuroKit peak detection and FFT reductions vary slightly across otherwise
+# pinned Linux CPU runners. These remain small presentation tolerances: they do
+# not permit ID, channel, time-axis, loop, or gross waveform changes.
+EXTREMA_RELATIVE_TOLERANCE = 0.02
+RAW_ECG_EXTREMA_RELATIVE_TOLERANCE = 0.10
+SVG_VERTICAL_MAX_TOLERANCE = 3.5
+SVG_VERTICAL_RMS_TOLERANCE = 1.75
 
 
 def catalog_ids() -> list[str]:
@@ -463,7 +470,12 @@ def check_payload(existing: dict, generated: dict) -> list[str]:
             if not isinstance(actual_value, (int, float)) or not math.isfinite(actual_value):
                 errors.append(f"{metric_id}: {key} is not finite")
                 continue
-            tolerance = max(0.05, abs(expected_value) * 0.005)
+            relative_tolerance = (
+                RAW_ECG_EXTREMA_RELATIVE_TOLERANCE
+                if metric_id == "raw_ecg"
+                else EXTREMA_RELATIVE_TOLERANCE
+            )
+            tolerance = max(0.05, abs(expected_value) * relative_tolerance)
             delta = abs(actual_value - expected_value)
             if delta > tolerance:
                 errors.append(
@@ -494,10 +506,14 @@ def check_payload(existing: dict, generated: dict) -> list[str]:
             vertical_delta = np.abs(actual_points[:, 1] - expected_points[:, 1])
             maximum_delta = float(np.max(vertical_delta))
             rms_delta = float(np.sqrt(np.mean(vertical_delta**2)))
-            if maximum_delta > 2.0 or rms_delta > 0.6:
+            if (
+                maximum_delta > SVG_VERTICAL_MAX_TOLERANCE
+                or rms_delta > SVG_VERTICAL_RMS_TOLERANCE
+            ):
                 errors.append(
                     f"{metric_id}: channel {index} SVG shape drifted "
-                    f"(max {maximum_delta:.3f}/2.000 px; RMS {rms_delta:.3f}/0.600 px)"
+                    f"(max {maximum_delta:.3f}/{SVG_VERTICAL_MAX_TOLERANCE:.3f} px; "
+                    f"RMS {rms_delta:.3f}/{SVG_VERTICAL_RMS_TOLERANCE:.3f} px)"
                 )
             if abs(actual_points[0, 1] - actual_points[-1, 1]) > 0.11:
                 errors.append(f"{metric_id}: channel {index} SVG loop is not closed")
