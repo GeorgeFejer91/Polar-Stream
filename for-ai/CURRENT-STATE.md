@@ -14,6 +14,7 @@ Last verified: 2026-08-13
 - Low-latency renderer scheduling capped at 30 Hz and paused while hidden.
 - One raw accelerometer visualizer with stacked, independently scaled X/Y/Z
   lanes on the active development branch.
+- Public dedicated GitHub repository at `GeorgeFejer91/Polar-Stream`.
 
 ## Active branch context
 

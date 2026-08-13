@@ -1,5 +1,12 @@
 # Decision log
 
+## 2026-08-13 — The dedicated repository is public
+
+`GeorgeFejer91/Polar-Stream` is publicly readable. Keep credentials,
+participant-identifying data, recordings, local preferences, signing material,
+and unpublished research data out of Git history; public visibility makes the
+existing data-minimization and secret-scanning rules release-critical.
+
 ## 2026-08-13 — Startup requires the Tauri-Rust developer skill
 
 Every future repository agent must invoke the installed `tauri-rust developer`

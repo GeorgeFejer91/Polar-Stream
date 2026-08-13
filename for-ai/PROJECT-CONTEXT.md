@@ -50,6 +50,6 @@ operational contract for that ordering.
 ## Repository and releases
 
 - Canonical repository: `https://github.com/GeorgeFejer91/Polar-Stream`
-- The repository is private as of the current state snapshot.
+- The repository is public as of the current state snapshot.
 - Tagged releases use GitHub Actions to build platform packages and remain draft
   until the package matrix and launch checks are complete.
