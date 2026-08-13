@@ -55,6 +55,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: node --check apps/polar-stream/ui/runtime-api.js
       - run: node --check apps/polar-stream/ui/polar-web-bluetooth.js
+      - run: node --check apps/polar-stream/ui/browser-session.js
       - run: node --check apps/polar-stream/ui/preferences.js
       - run: node --check apps/polar-stream/ui/metric-previews.js
       - run: node --check apps/polar-stream/ui/demo-data.js

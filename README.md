@@ -59,6 +59,19 @@ connections.
 The browser demo is deliberately self-contained: Bluetooth acquisition, mock
 replay, selected browser-supported metrics, and visualization all run in the
 tab without Tauri, Python, a localhost service, or another installed process.
+After connecting either input, **Start recording** captures the selected raw and
+derived outputs before chart decimation. **Download CSV** saves timestamped ECG,
+ACC, and selected metric rows locally from the browser. Files are bounded to
+300,000 rows (about 15 minutes with the default raw ECG + ACC outputs); reaching
+the limit stops visibly instead of dropping rows or growing memory without a
+bound. Export or discard that file before starting the next segment, and always
+download it before closing the tab.
+
+The site also publishes the same event batches as a `polar-stream-data` browser
+event and on the same-origin `polar-stream-live-v1` `BroadcastChannel`. This is
+a browser-native integration surface for another page or script in the same
+browser profile. It is deliberately called a live channel, not LSL.
+
 LSL and OSC are not shown as browser destinations because ordinary web pages
 cannot open the raw UDP discovery/multicast and TCP/UDP sockets those native
 protocols require. Native LSL/OSC remain features of the separately installed
@@ -151,7 +164,8 @@ Visual validation uses deterministic Playwright renderers, never a connected
 sensor or the running desktop app. They render every breath-class target, the
 settings workflow, all metric-library SVGs, the staged Pages application, and
 touch layouts. Checks cover canvas geometry, color, labels, saved controls,
-preview coverage, Pages parity, NeuroKit replay, and responsive overflow:
+preview coverage, Pages parity, NeuroKit replay, bounded browser recording and
+CSV download, the tab-local live event contract, and responsive overflow:
 
 ```bash
 npm ci

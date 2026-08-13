@@ -18,6 +18,7 @@ REQUIRED_ASSETS = (
     "index.html",
     "styles.css",
     "polar-web-bluetooth.js",
+    "browser-session.js",
     "runtime-api.js",
     "preferences.js",
     "app.js",
@@ -39,6 +40,7 @@ def validate_sources() -> None:
     for name in (
         "styles.css",
         "polar-web-bluetooth.js",
+        "browser-session.js",
         "runtime-api.js",
         "preferences.js",
         "app.js",

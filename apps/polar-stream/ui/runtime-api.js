@@ -37,6 +37,7 @@
   let activeInput = null;
 
   function deliverInputEvent(callback, event) {
+    if (mode === "browser-demo") window.PolarBrowserSession?.publish(event);
     callback(event);
   }
 
@@ -306,6 +307,7 @@
     async updateOutputConfig(config) {
       demo.config = structuredClone(config);
       demo.outputs = new Set(config.outputs || []);
+      if (mode === "browser-demo") window.PolarBrowserSession?.configure(config);
       if (activeInput === "web-bluetooth") webBluetooth.updateConfig(config);
       if (!isNative) {
         return {

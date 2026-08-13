@@ -179,7 +179,47 @@ try {
   assert.equal(await desktop.locator("#lsl-destination-row").isHidden(), true, "browser mode must not offer native LSL");
   assert.equal(await desktop.locator("#osc-destination-row").isHidden(), true, "browser mode must not offer native OSC");
   assert.equal(await desktop.evaluate(() => "PolarBrowserLslBridge" in window), false, "browser build still exposes the native bridge adapter");
+  await desktop.evaluate(() => {
+    window.__polarBrowserEvents = 0;
+    window.__polarChannelEvents = 0;
+    window.addEventListener("polar-stream-data", () => { window.__polarBrowserEvents += 1; });
+    window.__polarChannelReceiver = new BroadcastChannel(window.PolarBrowserSession.channelName);
+    window.__polarChannelReceiver.addEventListener("message", () => { window.__polarChannelEvents += 1; });
+  });
   await connectMock(desktop);
+  await desktop.waitForFunction(() => window.__polarBrowserEvents > 3 && window.__polarChannelEvents > 3);
+  assert.equal(await desktop.locator("#browser-record-button").isEnabled(), true, "browser recorder is unavailable after connecting");
+  await desktop.locator("#browser-record-button").click();
+  await desktop.locator("#browser-recorder-status").filter({ hasText: "REC" }).waitFor();
+  await desktop.waitForFunction(() => window.PolarBrowserSession.status().rowCount >= 20);
+  await desktop.locator("#browser-record-button").click();
+  await desktop.locator("#browser-recorder-status").filter({ hasText: "FILE" }).waitFor();
+  const [recordingDownload] = await Promise.all([
+    desktop.waitForEvent("download"),
+    desktop.locator("#browser-export-button").click(),
+  ]);
+  assert.match(recordingDownload.suggestedFilename(), /^Polar-H10_.*Z\.csv$/);
+  const recordingPath = await recordingDownload.path();
+  const recordingCsv = await readFile(recordingPath, "utf8");
+  assert.match(recordingCsv, /^# Polar Stream browser recording/m);
+  assert.match(recordingCsv, /host_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream/);
+  assert.match(recordingCsv, /,raw_ecg,/);
+  assert.match(recordingCsv, /,raw_acc,/);
+  const boundedRecorder = await desktop.evaluate(async () => {
+    let now = 1_000;
+    const recorder = window.PolarBrowserSession.createRecorder({ maxRows: 2, now: () => now });
+    recorder.configure({ streamName: "Bounded test", outputs: ["raw_ecg"] });
+    recorder.start({ deviceName: "Fixture", inputKind: "mock" });
+    now = 1_100;
+    recorder.capture({ kind: "ecg", sensorTimestampNs: "1000000000", microvolts: [1, 2, 3] }, now);
+    const status = recorder.snapshot();
+    const csv = await recorder.createBlob().text();
+    return { status, csv };
+  });
+  assert.equal(boundedRecorder.status.state, "stopped");
+  assert.equal(boundedRecorder.status.stopReason, "capacity");
+  assert.equal(boundedRecorder.status.rowCount, 2);
+  assert.match(boundedRecorder.csv, /,raw_ecg,0,,,,1,uV/);
   const fixture = await desktop.evaluate(() => ({
     source: window.PolarDemoData?.source,
     ecgSamples: window.PolarDemoData?.ecg?.microvolts?.length,

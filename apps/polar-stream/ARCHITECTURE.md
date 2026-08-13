@@ -91,6 +91,18 @@ outputs. Deterministic Playwright GATT emulation verifies chooser options,
 commands, decoders, HR/RR, battery, breathing calibration, and responsive UI.
 Physical-H10 browser validation remains an explicit release boundary.
 
+`ui/browser-session.js` owns the Pages-only live/recording destination. The
+runtime publishes each un-decimated browser input event to it before the chart
+callback. It then exposes the typed batch on the same-tab `polar-stream-data`
+event and same-origin `polar-stream-live-v1` `BroadcastChannel`. Recording is
+demand-driven, includes only selected outputs, preserves raw ECG microvolts and
+ACC milligravity, and reconstructs timestamps backwards from a PMD frame's final
+sensor timestamp. CSV rows and their in-memory chunks have a hard 300,000-row
+limit; the recorder stops and reports `FULL` at the boundary rather than
+discarding data or growing indefinitely. A disconnect also stops an active
+recording. This browser export is an experimental Pages acquisition artifact,
+not the authoritative native output path.
+
 Web Bluetooth requires a secure context, an explicit browser permission
 chooser, and a compatible browser/OS. The adapter is visibly disabled with a
 reason when any prerequisite is absent. It is experimental and not the
@@ -99,6 +111,12 @@ tabs cannot open their native sockets. Browser acquisition, processing, and
 visualization are self-contained and do not call a localhost companion, native
 wrapper, or remote relay. Native Tauri acquisition remains isolated in Rust and
 unchanged by this browser adapter.
+
+An ordinary GitHub Pages tab still cannot implement native LSL discovery and
+transport: it has no general UDP multicast or raw TCP/UDP socket API. The live
+channel above is intentionally browser-scoped and must never be presented as an
+LSL outlet. A native LabRecorder requirement continues to use the installed
+Tauri application's liblsl outlets.
 
 ## Windows BLE link policy
 

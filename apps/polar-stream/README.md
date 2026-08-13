@@ -44,6 +44,16 @@ The Pages workflow is entirely in-browser and never connects to a localhost
 companion; native destinations are hidden instead of presented as unavailable
 switches.
 
+The Pages output panel instead contains a browser-native session recorder. It
+captures the selected ECG, ACC, and browser-computed metric events before UI
+decimation, retains raw units, reconstructs per-sample PMD timestamps from the
+frame timestamp when available, and downloads a tidy CSV. Its 300,000-row cap
+stops the recording visibly and requires export or discard before reuse. The
+same incoming batches are exposed to same-tab code through the
+`polar-stream-data` event and to other same-origin tabs through the
+`polar-stream-live-v1` `BroadcastChannel`. Neither interface is described as
+LSL and neither is discoverable by native LabRecorder.
+
 ```bash
 npm run build:browser-demo
 python3 -m http.server 8000 --directory artifacts/browser-demo
