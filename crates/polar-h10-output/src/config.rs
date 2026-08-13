@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use polar_h10_metrics::BreathingSettings;
 pub use polar_h10_metrics::MetricDefinition as MetricSpec;
+use polar_h10_metrics::{BreathingSettings, METRIC_CATALOG};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -28,6 +28,54 @@ impl Default for OutputConfig {
 }
 
 impl OutputConfig {
+    /// Tolerant one-time migration for preferences produced by an older app.
+    /// Size bounds still apply, but retired metric IDs may be discarded.
+    pub fn migrated(self) -> Result<Self, String> {
+        self.validate_collection_bounds()?;
+        self.normalized()
+    }
+
+    /// Validates an untrusted renderer submission before normalizing it. The
+    /// separate migration path below remains tolerant of retired metric IDs in
+    /// preferences written by an older application version.
+    pub fn validated(self) -> Result<Self, String> {
+        self.validate_collection_bounds()?;
+        if let Some(unknown) = self
+            .outputs
+            .iter()
+            .find(|id| MetricSpec::for_id(id).is_none())
+        {
+            return Err(format!("Unknown output module: {unknown}"));
+        }
+        if let Some(orphaned) = self
+            .metric_options
+            .keys()
+            .find(|id| !self.outputs.contains(id))
+        {
+            return Err(format!(
+                "Output options were provided for an unselected module: {orphaned}"
+            ));
+        }
+        self.normalized()
+    }
+
+    fn validate_collection_bounds(&self) -> Result<(), String> {
+        if self.outputs.len() > METRIC_CATALOG.len()
+            || self.metric_options.len() > METRIC_CATALOG.len()
+        {
+            return Err(format!(
+                "At most {} output modules can be configured.",
+                METRIC_CATALOG.len()
+            ));
+        }
+        if self.outputs.iter().any(|id| id.len() > 64)
+            || self.metric_options.keys().any(|id| id.len() > 64)
+        {
+            return Err("Output identifiers must be 64 bytes or fewer.".into());
+        }
+        Ok(())
+    }
+
     pub fn normalized(mut self) -> Result<Self, String> {
         self.stream_name = normalize_stream_base(&self.stream_name)?;
         self.outputs.sort();
@@ -168,6 +216,41 @@ mod tests {
         .unwrap();
         assert_eq!(config.stream_name, "Lab_A");
         assert_eq!(config.outputs, ["rmssd"]);
+    }
+
+    #[test]
+    fn renderer_validation_rejects_unknown_outputs() {
+        let config = OutputConfig {
+            outputs: vec!["raw_ecg".into(), "not_a_metric".into()],
+            ..OutputConfig::default()
+        };
+        assert_eq!(
+            config.validated().unwrap_err(),
+            "Unknown output module: not_a_metric"
+        );
+    }
+
+    #[test]
+    fn renderer_validation_rejects_orphaned_options() {
+        let mut config = OutputConfig::default();
+        config
+            .metric_options
+            .insert("rmssd".into(), MetricOutputOptions::default());
+        assert_eq!(
+            config.validated().unwrap_err(),
+            "Output options were provided for an unselected module: rmssd"
+        );
+    }
+
+    #[test]
+    fn legacy_migration_drops_retired_outputs_within_bounds() {
+        let config = OutputConfig {
+            outputs: vec!["raw_ecg".into(), "retired_metric".into()],
+            ..OutputConfig::default()
+        }
+        .migrated()
+        .unwrap();
+        assert_eq!(config.outputs, ["raw_ecg"]);
     }
 
     #[test]

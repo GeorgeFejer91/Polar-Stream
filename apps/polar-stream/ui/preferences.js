@@ -33,10 +33,6 @@
     return preferences;
   }
 
-  function saveStreamName(streamName) {
-    return write({ ...load(), streamName });
-  }
-
   function saveLastDevice(device) {
     return write({ ...load(), lastDevice: { id: device.id, name: device.name } });
   }
@@ -48,7 +44,6 @@
   window.PolarPreferences = Object.freeze({
     STORAGE_KEY,
     load,
-    saveStreamName,
     saveLastDevice,
     saveOutputConfig,
   });

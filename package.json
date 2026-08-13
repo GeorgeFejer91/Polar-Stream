@@ -11,6 +11,7 @@
     "check:previews": "python3 scripts/generate_metric_previews.py --check"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
     "playwright": "1.62.1"
   }
 }

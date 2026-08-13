@@ -1,10 +1,8 @@
 (() => {
   "use strict";
 
-  const nativeCore = window.__TAURI__?.core;
-  const isNative = Boolean(nativeCore?.invoke && nativeCore?.Channel);
-  const invoke = nativeCore?.invoke?.bind(nativeCore);
-  const NativeChannel = nativeCore?.Channel;
+  const runtime = window.PolarRuntimeApi;
+  const isNative = runtime.isNative;
   const preferences = window.PolarPreferences;
   let metricPreviews = null;
   let metricPreviewsPromise = null;
@@ -149,7 +147,9 @@
     currentDeviceId: null,
     pendingDevice: null,
     devices: [],
-    preferences: preferences.load(),
+    preferences: isNative
+      ? { streamName: null, lastDevice: null, outputConfig: null }
+      : preferences.load(),
     activity: [{ time: "NOW", message: "Bluetooth interface ready" }],
   };
 
@@ -239,16 +239,40 @@
       platform: "browser preview",
       metricCatalog: fallbackCatalog,
     };
-    if (isNative) {
-      try {
-        bootstrap = await invoke("get_bootstrap");
-      } catch (error) {
-        toast(String(error), true);
-      }
+    try {
+      bootstrap = await runtime.getBootstrap(bootstrap);
+    } catch (error) {
+      toast(runtime.formatError(error), true);
     }
 
     app.catalog = bootstrap.metricCatalog || fallbackCatalog;
-    const initialConfig = app.preferences.outputConfig || bootstrap.config || {};
+    if (isNative && !bootstrap.hasSavedPreferences) {
+      const legacy = preferences.load();
+      const outputConfig = legacy.outputConfig || (legacy.streamName
+        ? { ...structuredClone(bootstrap.config), streamName: legacy.streamName }
+        : null);
+      if (outputConfig || legacy.lastDevice) {
+        try {
+          bootstrap.preferences = await runtime.migrateLegacyPreferences({
+            outputConfig,
+            lastDevice: legacy.lastDevice,
+          });
+          bootstrap.config = bootstrap.preferences.outputConfig;
+        } catch (error) {
+          toast(`Previous preferences could not be imported. ${runtime.formatError(error)}`, true);
+        }
+      }
+    }
+    if (isNative && bootstrap.preferences) {
+      app.preferences = {
+        streamName: bootstrap.preferences.outputConfig?.streamName || null,
+        outputConfig: bootstrap.preferences.outputConfig || null,
+        lastDevice: bootstrap.preferences.lastDevice || null,
+      };
+    }
+    const initialConfig = isNative
+      ? bootstrap.preferences?.outputConfig || bootstrap.config || {}
+      : app.preferences.outputConfig || bootstrap.config || {};
     app.outputs = new Set(initialConfig.outputs || ["raw_ecg", "raw_acc"]);
     app.metricOptions = structuredClone(initialConfig.metricOptions || {});
     installCatalogVisuals();
@@ -360,12 +384,7 @@
     addActivity(automatic ? "Looking for last used sensor" : "BLE scan started");
 
     try {
-      const devices = isNative
-        ? await invoke("scan_devices")
-        : await new Promise((resolve) => window.setTimeout(() => resolve([
-            { id: "preview-h10-a", name: "Polar H10 8F3A2C1B", rssi: -48 },
-            { id: "preview-h10-b", name: "Polar H10 4D9E7A20", rssi: -63 },
-          ]), 850));
+      const devices = await runtime.scanDevices();
       app.devices = devices;
       renderDevices(devices);
       const count = devices.length;
@@ -389,7 +408,7 @@
       setTopStatus(app.connected ? "Sensor connected · choose another to switch" : count ? "Choose a sensor to connect" : "No Polar sensor found", app.connected ? "connected" : "idle");
       addActivity(count ? `${count} compatible sensor${count === 1 ? "" : "s"} found` : "Scan finished with no sensors");
     } catch (error) {
-      const message = String(error);
+      const message = runtime.formatError(error);
       setTopStatus("Bluetooth scan failed", "error");
       elements["input-state"].textContent = "Error";
       addActivity(message);
@@ -473,14 +492,10 @@
     addActivity(`${automatic ? "Reconnecting" : "Connecting"} to ${device.name}`);
 
     try {
-      if (isNative) {
-        const channel = new NativeChannel();
-        channel.onmessage = (event) => {
-          if (generation === app.connectionGeneration) handleNativeEvent(event, device);
-        };
-        await invoke("connect_device", { deviceId: device.id, events: channel });
-      } else {
-        await new Promise((resolve) => window.setTimeout(resolve, 450));
+      await runtime.connectDevice(device.id, (event) => {
+        if (generation === app.connectionGeneration) handleNativeEvent(event, device);
+      });
+      if (!isNative) {
         handleNativeEvent({
           kind: "connection", connected: true, streaming: true, deviceName: device.name,
           batteryPercent: 86, message: "Raw ECG and accelerometer are streaming",
@@ -493,9 +508,10 @@
       app.pendingDevice = null;
       setTopStatus("Connection failed", "error");
       elements["input-state"].textContent = "Error";
-      elements["connection-detail"].textContent = String(error);
-      addActivity(String(error));
-      toast(String(error), true);
+      const message = runtime.formatError(error);
+      elements["connection-detail"].textContent = message;
+      addActivity(message);
+      toast(message, true);
       renderDevices(app.devices);
     }
   }
@@ -504,7 +520,7 @@
     const previousGeneration = app.connectionGeneration;
     app.connectionGeneration += 1;
     try {
-      if (isNative) await invoke("disconnect_device");
+      await runtime.disconnectDevice();
       stopDemoSignal();
       handleNativeEvent({
         kind: "connection", connected: false, streaming: false,
@@ -512,7 +528,7 @@
       });
     } catch (error) {
       app.connectionGeneration = previousGeneration;
-      toast(String(error), true);
+      toast(runtime.formatError(error), true);
     }
   }
 
@@ -553,7 +569,8 @@
       const connectedDevice = device || app.devices.find((candidate) => candidate.name === event.deviceName);
       app.currentDeviceId = connectedDevice?.id || null;
       if (connectedDevice) {
-        app.preferences = preferences.saveLastDevice(connectedDevice);
+        app.preferences = { ...app.preferences, lastDevice: { id: connectedDevice.id, name: connectedDevice.name } };
+        if (!isNative) app.preferences = preferences.saveLastDevice(connectedDevice);
       }
     } else {
       app.currentDeviceId = null;
@@ -887,10 +904,17 @@
     const sourceTitle = document.createElement("h4");
     sourceTitle.textContent = "Research source";
     const citation = document.createElement("a");
-    citation.href = metric.citationUrl;
-    citation.target = "_blank";
-    citation.rel = "noreferrer";
+    citation.href = isNative ? `#citation-${metric.id}` : metric.citationUrl;
+    if (!isNative) {
+      citation.target = "_blank";
+      citation.rel = "noreferrer";
+    }
     citation.textContent = `${metric.citationLabel} ↗`;
+    citation.addEventListener("click", (event) => {
+      event.preventDefault();
+      runtime.openMetricCitation(metric.id, metric.citationUrl)
+        .catch((error) => toast(runtime.formatError(error), true));
+    });
     source.append(sourceTitle, citation);
 
     const stream = document.createElement("section");
@@ -1287,16 +1311,16 @@
 
     const sequence = ++app.outputSequence;
     try {
-      const health = await invoke("update_output_config", { config });
+      const health = await runtime.updateOutputConfig(config);
       if (sequence !== app.outputSequence) return;
       app.streamName = health.streamName || streamName;
       elements["stream-name"].value = app.streamName;
       config.streamName = app.streamName;
-      app.preferences = preferences.saveOutputConfig(config);
+      app.preferences = { ...app.preferences, streamName: config.streamName, outputConfig: structuredClone(config) };
       renderOutputs();
       updateDestinationHealth(health);
     } catch (error) {
-      if (!quiet) toast(String(error), true);
+      if (!quiet) toast(runtime.formatError(error), true);
     }
   }
 

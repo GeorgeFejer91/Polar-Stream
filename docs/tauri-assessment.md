@@ -25,12 +25,13 @@ was not Bluetooth or Rust: the original UI recursively requested animation
 frames even while disconnected. After more than an hour idle, the v0.4.0
 AppImage's WebKit content process was still using approximately **73% CPU** on
 this Linux machine (an earlier sample was 81%). The revised data-driven renderer
-requested no further idle frames; a three-sample `top` check measured **0.5%
-WebKit CPU and 0.0% native-app CPU** after startup.
+requested no further idle frames; the final packaged build requested no more
+work during a five-sample `top` check: the WebKit, network, and native processes
+each measured **0.0% CPU** after startup.
 
 These point-in-time measurements are not a formal benchmark, but the order-of-
 magnitude change directly matches the removed perpetual repaint. The revised
-process group used about 475 MB RSS (158 MB app, 74 MB network process, 243 MB
+process group used about 470 MB RSS (162 MB app, 74 MB network process, 234 MB
 content process). An earlier old-build sample used about 572 MB; RSS comparisons
 between the AppImage's bundled WebKit and system WebKit remain approximate
 because mapped/shared pages and page reclamation differ.
@@ -61,9 +62,96 @@ The structural changes behind that result are:
   Cargo artifacts, reinforcing that build/cache cost is a genuine downside even
   for a compact Tauri application.
 
-The optimized native executable is 7.2 MB on this machine. The waveform icon is
-now generated into native PNG, ICO, ICNS, Windows AppX, Android, and iOS sizes;
-the running Linux window exposes it through `_NET_WM_ICON` for taskbar/pin use.
+The final stripped native executable is 9.2 MB on this machine. Approximately
+2 MB of the increase from the earlier performance build comes with the official
+system-browser opener and its Linux desktop-bus dependencies; that code is not
+on the streaming path. The waveform icon is generated into native PNG, ICO,
+ICNS, Windows AppX, Android, and iOS sizes; the running Linux window exposes it
+through `_NET_WM_ICON` for taskbar/pin use.
+
+## Expanded 74-source production audit
+
+The follow-up review used the expanded Tauri + Rust Developer skill's complete
+architecture, IPC, persistence, security, performance, testing, mobile, and
+release routes. It confirmed the native/display split, but found several
+production defects that the earlier render-performance pass did not cover.
+
+| Finding | Risk | Resolution in this branch |
+| --- | --- | --- |
+| BLE scan held the shared device-map mutex while awaiting OS property reads | Connect/disconnect could stall behind slow BlueZ/WinRT/CoreBluetooth calls | Build a private scan snapshot, then replace the shared map under one short lock |
+| Output updates could overlap | An older OSC setup could finish after a newer UI choice and become the effective configuration | Serialize the rare configuration lifecycle; publication never takes this lock |
+| Native settings were owned by WebView `localStorage` | Weak schema/migration guarantees and unnecessary trust in renderer storage | One typed Rust owner, schema version 1, bounded normalization, flushed temporary-file replacement, and corruption fallback; native builds perform one guarded import of legacy local storage, which otherwise remains preview-only |
+| Commands returned arbitrary strings and raw invokes were spread through the UI | Fragile error UX and a larger integration surface | Stable `{code, message, retryable}` command errors and a single `runtime-api.js` adapter |
+| Renderer config silently dropped unknown outputs | Bad/stale input could look successfully applied | Strict live-command validation with a separate tolerant migration path |
+| LSL outlets omitted channel metadata despite knowing units/labels | Lower interoperability in LabRecorder/XDF and downstream tools | Add Polar model/application metadata plus channel labels, units, and stream types before outlet creation |
+| Citation anchors could navigate a WebView to remote content | Remote content should never inherit or coexist with the local privileged UI | Resolve metric IDs against the Rust catalog and open the fixed HTTPS URL through the official system-browser plugin |
+| Every release build inherited `contents: write` and the action references floated by major tag | A compromised build step had unnecessary release authority; action code could change without review | Build/test jobs are read-only, all action commits and the Tauri CLI are pinned, and only the final publisher has write access |
+| Linux and Windows smoke tests launched loose build binaries | Tests did not prove that downloadable packages contained a runnable app | Stage deterministic assets and launch/extract the actual AppImage, DEB, MSI, and DMG before artifact upload |
+
+The release workflow now moves packages between jobs as GitHub workflow
+artifacts. Only after all five native runners pass does the publisher verify the
+nine-package set, generate SHA-256 checksums, create/update a draft release,
+verify the uploaded assets, and promote it. This is a substantial supply-chain
+improvement, but it is not equivalent to code signing.
+
+The current official Tauri release index reports runtime 2.11.5 and CLI 2.11.4;
+this repository locks the npm CLI to 2.11.4 and Cargo.lock resolves the runtime
+to 2.11.5. Tauri officially recommends channels for ordered high-throughput
+native-to-frontend delivery, while liblsl documents that `pushthrough` sends the
+current call without waiting for a later chunk. Polar Stream continues to send
+one already-delivered BLE notification per immediate publisher call—no timer or
+application accumulation was introduced.
+
+The frontend intentionally remains plain HTML/CSS/JavaScript. Replacing it with
+React, Vue, or another component runtime would not improve this three-panel
+interface or the native data path. `withGlobalTauri` remains enabled because
+there is no production bundler, but the global is referenced in exactly one
+adapter file; application UI code depends on that narrow adapter instead of the
+Tauri global. This keeps startup and shipped frontend code smaller while making
+the native/browser boundary explicit and testable.
+
+Authoritative references:
+
+- [Current Tauri ecosystem releases](https://v2.tauri.app/release/)
+- [Tauri command and channel guidance](https://v2.tauri.app/develop/calling-rust/)
+- [Tauri capabilities](https://v2.tauri.app/security/capabilities/)
+- [Tauri distribution and signing](https://v2.tauri.app/distribute/)
+- [liblsl outlet pushthrough semantics](https://labstreaminglayer.readthedocs.io/projects/liblsl/ref/outlet.html)
+- [liblsl stream metadata recommendations](https://labstreaminglayer.readthedocs.io/projects/liblsl/ref/streaminfo.html)
+
+### Critical holes that remain
+
+1. **Packages are not trusted releases yet.** Windows Authenticode signing and
+   Apple Developer ID signing/notarization still require credentials and policy
+   decisions. The updater is intentionally absent until signed update artifacts,
+   key custody, rollback, and channels are defined.
+2. **The cross-platform workflow must run after this branch is pushed.** Linux
+   can be packaged and launched locally, but Windows x64/ARM64 and macOS
+   universal packages can only be proven by their native runners. A launch test
+   also does not validate Bluetooth hardware; real H10 tests are still required
+   per operating system and adapter family.
+3. **Android is an architecture path, not a delivered product.** The repository
+   still lacks generated mobile projects, runtime Bluetooth permission flows,
+   Android-specific `btleplug`/JNI validation, lifecycle recovery, Android
+   liblsl packaging, device tests, signing, and an APK/AAB release lane.
+4. **Timing quality is not yet measured end-to-end.** Native publication is
+   isolated from the renderer and has no added batching delay, but the app does
+   not yet log a calibrated distribution from Polar sensor timestamp through
+   BLE arrival to LSL/OSC receive time. LSL currently timestamps notification
+   arrival in its local clock domain and backfills regular samples at the
+   declared nominal rate.
+5. **UDP has no delivery guarantee.** OSC remains deliberately immediate and
+   local (`127.0.0.1:9000`), but packet loss is not currently shown as a live
+   diagnostic. Applications needing acknowledged delivery need another
+   transport rather than hidden OSC buffering.
+6. **Metric tests are formula tests, not clinical validation.** Synthetic
+   NeuroKit SVGs remain previews only. Real-device reference datasets and
+   cross-implementation tolerances should be added before interpreting every
+   derived metric as validated measurement software.
+7. **Binary dependency notices are not yet exhaustive.** The bundled liblsl and
+   NeuroKit preview provenance are documented, and the repository pins source
+   licenses, but release engineering should generate and review a complete
+   Rust/native third-party notice inventory before public distribution.
 
 Implementation references:
 
@@ -81,7 +169,7 @@ Implementation references:
 | HTML/CSS interface in a desktop window | System WebView managed by Tauri | Yes |
 | Typed Rust-to-JS streaming channel | Tauri IPC channel | Yes |
 | OS installers and application metadata | Tauri bundler | Yes |
-| CSP, window capabilities, and a five-command invoke surface | Tauri security/configuration plus app design | Partly |
+| CSP, window capabilities, and a seven-command invoke surface | Tauri security/configuration plus app design | Partly |
 | Shared desktop/mobile shell and Rust library shape | Tauri 2 mobile architecture | Yes, but Android BLE glue remains unfinished |
 
 Tauri's documentation describes its architecture as Rust plus HTML rendered in
@@ -166,7 +254,7 @@ platform-specific testing.
 
 ### 4. Useful defense in depth for a local hardware app
 
-The frontend has a restrictive CSP, loads only packaged assets, and exposes five
+The frontend has a restrictive CSP, loads only packaged assets, and exposes seven
 registered Rust commands. Tauri 2 also provides capability/permission scoping.
 This is stronger by default than an unconstrained localhost server, although it
 does not remove the need to validate command inputs and audit native libraries.

@@ -113,8 +113,7 @@ impl InputManager {
         let _ = adapter.stop_scan().await;
 
         let mut found = Vec::new();
-        let mut map = self.devices.lock().await;
-        map.clear();
+        let mut next_devices = HashMap::new();
         for peripheral in peripherals {
             let Ok(Some(properties)) = peripheral.properties().await else {
                 continue;
@@ -135,8 +134,12 @@ impl InputManager {
                 name,
                 rssi: properties.rssi,
             });
-            map.insert(id, peripheral);
+            next_devices.insert(id, peripheral);
         }
+        // Peripheral property reads can wait on the operating-system Bluetooth
+        // service. Publish the completed snapshot under one short lock instead
+        // of blocking connect/disconnect while those reads are in flight.
+        *self.devices.lock().await = next_devices;
         found.sort_by(|left, right| {
             right
                 .rssi
@@ -322,12 +325,14 @@ impl InputManager {
                 )
                 .await;
             let _ = peripheral.disconnect().await;
-            let mut active = manager.active.lock().await;
-            if active
-                .as_ref()
-                .is_some_and(|connection| connection.id == connection_id)
             {
-                active.take();
+                let mut active = manager.active.lock().await;
+                if active
+                    .as_ref()
+                    .is_some_and(|connection| connection.id == connection_id)
+                {
+                    active.take();
+                }
             }
             let _ = event_tx
                 .send(InputEvent::Disconnected {

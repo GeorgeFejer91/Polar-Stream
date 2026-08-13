@@ -56,8 +56,11 @@ Rules enforced by the crate graph:
 - The HTML layer never republishes scientific data.
 - Adding a custom metric means registering one `MetricDefinition` and feeding a
   `MetricSample`; it does not change BLE acquisition or output transports.
-- UI preferences are isolated in `ui/preferences.js`; Bluetooth and output
-  crates remain free of WebView storage concerns.
+- Native preferences have one typed, schema-versioned Rust owner in
+  `apps/polar-stream/src/preferences.rs`; `ui/preferences.js` is used only by
+  the browser renderer. Bluetooth and output crates remain storage-agnostic.
+- All native calls are isolated behind `ui/runtime-api.js`. Command failures
+  cross IPC as stable code/message/retryable objects rather than Rust strings.
 
 ## Stable discovery names
 
@@ -85,6 +88,10 @@ descriptions of the native contract, not an independent naming scheme.
 6. Request a frame only when data, layout, or controls change, capped at 30 Hz;
    stop requesting frames when idle or hidden.
 7. Never block input on an animation frame.
+
+Output reconfiguration is separately serialized so overlapping UI changes
+cannot let an older asynchronous OSC setup overwrite a newer configuration.
+That lifecycle lock is never taken by the publication hot path.
 
 This keeps visualization work proportional to display pixels and refresh rate,
 not to the lifetime of the recording.

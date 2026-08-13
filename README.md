@@ -85,6 +85,9 @@ Acquisition and publication stay native in Rust:
 Derived processors are demand-driven by the selected output set. Raw batches are
 published immediately in Rust; no timer-based batching is added, and a bounded
 display-only queue prevents a slow WebView from delaying LSL or OSC.
+Native preferences are stored by one schema-versioned Rust service, and the
+frontend reaches the seven-command IPC surface only through a small runtime
+adapter with stable error objects.
 
 See [the architecture notes](apps/polar-stream/ARCHITECTURE.md) for the data path
 and latency policy, and [the Tauri assessment](docs/tauri-assessment.md) for the

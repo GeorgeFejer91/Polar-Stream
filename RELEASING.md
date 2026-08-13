@@ -11,10 +11,18 @@ upstream release and accepted only when its pinned SHA-256 checksum matches.
 3. Push `main`, then create and push a matching version tag such as `v0.1.0`.
 4. Watch **Release native packages** in GitHub Actions.
 
-Each matrix job builds its native installer, creates a real LSL outlet using the
-bundled runtime, and launches the packaged application binary. The GitHub
-release remains a draft unless all nine required installer classes exist. This
-prevents `latest` from ever pointing at a partial platform release.
+Each read-only matrix job builds its native installers with the exact Tauri CLI
+in `package-lock.json`, creates a real LSL outlet using the bundled runtime, and
+smoke-tests the staged package itself (AppImage and DEB on Linux, MSI payload on
+Windows, DMG on macOS). It then uploads workflow artifacts without a repository
+write token. Only the final publisher job has `contents: write`; it downloads
+the complete package set, verifies all nine required installer classes,
+generates `SHA256SUMS.txt`, creates or updates a draft release, verifies the
+uploaded assets, and then publishes. This prevents `latest` from ever pointing
+at a partial platform release.
+
+All reusable GitHub Actions are pinned to full commit SHAs. Review dependency
+updates deliberately rather than replacing these pins with floating major tags.
 
 The private repository's latest Release is its authenticated download page.
 The branded static page under `download/` is optional because GitHub only

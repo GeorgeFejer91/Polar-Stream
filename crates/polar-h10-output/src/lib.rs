@@ -61,7 +61,7 @@ impl OutputRouter {
     }
 
     pub async fn configure(&self, config: OutputConfig) -> Result<OutputHealth, String> {
-        let config = config.normalized()?;
+        let config = config.validated()?;
         let mut osc = if config.osc_enabled {
             Some(OscPublisher::connect(OSC_TARGET).await?)
         } else {
