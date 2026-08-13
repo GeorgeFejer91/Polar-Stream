@@ -225,7 +225,10 @@ try {
     window.__polarFake.emitPmd([0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 1, 0, 254, 255, 3, 0]);
     window.__polarFake.emitHeartRate([0x10, 60, 0x00, 0x04]);
   });
-  await bluetooth.waitForFunction(() => document.querySelector("#raw-ecg-value")?.textContent !== "—");
+  await bluetooth.waitForFunction(() => (
+    document.querySelector("#raw-ecg-value")?.textContent === "-100"
+    && document.querySelector("#raw-acc-x")?.textContent === "1"
+  ));
   assert.equal(await bluetooth.locator("#raw-ecg-value").textContent(), "-100");
   assert.equal(await bluetooth.locator("#raw-acc-x").textContent(), "1");
   const protocolChecks = await bluetooth.evaluate(() => {
