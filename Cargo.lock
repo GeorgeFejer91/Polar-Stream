@@ -2787,7 +2787,6 @@ dependencies = [
 name = "polar-stream"
 version = "0.4.0"
 dependencies = [
- "httparse",
  "polar-h10-core",
  "polar-h10-input",
  "polar-h10-metrics",

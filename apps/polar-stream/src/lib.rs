@@ -1,7 +1,6 @@
 //! Thin application coordinator. Protocol decoding, Bluetooth input, and
 //! network output are independent crates below `crates/`.
 
-mod browser_lsl_bridge;
 mod error;
 mod preferences;
 
@@ -18,14 +17,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, ipc::Channel, path::BaseDirectory};
 use tauri_plugin_opener::OpenerExt;
 
-use browser_lsl_bridge::BrowserLslBridge;
 use error::{CommandError, CommandResult};
 use preferences::{PreferencesSnapshot, PreferencesStore, SavedDevice};
 
 struct AppState {
     input: Arc<InputManager>,
     output: Arc<OutputRouter>,
-    browser_lsl_bridge: BrowserLslBridge,
     preferences: Arc<PreferencesStore>,
     output_configuration: tokio::sync::Mutex<()>,
     processing_settings: tokio::sync::watch::Sender<ProcessingSettings>,
@@ -39,8 +36,7 @@ impl AppState {
             tokio::sync::watch::channel(ProcessingSettings::from_config(&initial_config));
         Self {
             input: Arc::new(InputManager::new()),
-            output: Arc::new(OutputRouter::with_bundled_lsl(bundled_lsl.clone())),
-            browser_lsl_bridge: BrowserLslBridge::new(bundled_lsl),
+            output: Arc::new(OutputRouter::with_bundled_lsl(bundled_lsl)),
             preferences,
             output_configuration: tokio::sync::Mutex::new(()),
             processing_settings,
@@ -410,28 +406,6 @@ async fn update_output_config(
     Ok(health)
 }
 
-#[tauri::command]
-async fn open_browser_lsl_bridge(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> CommandResult<()> {
-    let launch =
-        state.browser_lsl_bridge.start().await.map_err(|message| {
-            CommandError::new("BROWSER_LSL_BRIDGE_START_FAILED", message, true)
-        })?;
-    let url = format!(
-        "https://georgefejer91.github.io/Polar-Stream/#bridgePort={}&bridgeToken={}",
-        launch.port, launch.token
-    );
-    app.opener().open_url(url, None::<&str>).map_err(|message| {
-        CommandError::new(
-            "BROWSER_LSL_BRIDGE_OPEN_FAILED",
-            format!("The bridge started, but the browser demo could not be opened: {message}"),
-            true,
-        )
-    })
-}
-
 #[tauri::command(async)]
 fn open_metric_citation(app: tauri::AppHandle, metric_id: String) -> CommandResult<()> {
     let metric = MetricDefinition::for_id(&metric_id).ok_or_else(|| {
@@ -485,7 +459,6 @@ pub fn run() {
             connect_device,
             disconnect_device,
             update_output_config,
-            open_browser_lsl_bridge,
             open_metric_citation,
         ])
         .run(tauri::generate_context!())

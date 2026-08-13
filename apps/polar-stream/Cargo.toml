@@ -20,7 +20,6 @@ polar-h10-core = { path = "../../crates/polar-h10-core" }
 polar-h10-input = { path = "../../crates/polar-h10-input" }
 polar-h10-metrics = { path = "../../crates/polar-h10-metrics" }
 polar-h10-output = { path = "../../crates/polar-h10-output" }
-httparse.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.11", features = [] }

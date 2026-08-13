@@ -38,8 +38,11 @@ the PMD control/data characteristics, start ECG and 200 Hz ACC, and subscribe to
 standard HR/RR notifications. This experimental frontend adapter mirrors the
 native packet decoder and the two ACC breathing outputs, but it is not the
 authoritative acquisition/publication path and still needs physical-H10
-validation. Browser LSL and OSC controls remain disabled because a normal tab
-does not provide the native socket behavior required by those protocols.
+validation. Browser LSL and OSC destinations are unavailable because a normal
+tab does not provide the native socket behavior required by those protocols.
+The Pages workflow is entirely in-browser and never connects to a localhost
+companion; native destinations are hidden instead of presented as unavailable
+switches.
 
 ```bash
 npm run build:browser-demo

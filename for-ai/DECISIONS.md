@@ -1,5 +1,20 @@
 # Decision log
 
+## 2026-08-13 — GitHub Pages is a self-contained browser application
+
+This supersedes the paired browser-to-native LSL decision below. The browser
+workflow must require only the loaded Pages application and the browser's own
+Web Bluetooth permission. H10/mock acquisition, browser-supported processing,
+and visualization stay in the tab. Pages must not call a localhost companion,
+installed wrapper, or remote relay, and it must not rename WebSocket/HTTP output
+as LSL.
+
+Ordinary hosted pages cannot open the raw UDP discovery/multicast and TCP/UDP
+sockets required by native LSL and OSC. Their destination controls are therefore
+hidden in browser mode rather than shown disabled or conditionally paired.
+Native LSL/OSC remain available in the separately installed Tauri app. The
+removed companion remains documented below only as superseded history.
+
 ## 2026-08-13 — Paired browser sessions may publish through native LSL
 
 This supersedes the earlier blanket rule that Pages must always disable LSL.

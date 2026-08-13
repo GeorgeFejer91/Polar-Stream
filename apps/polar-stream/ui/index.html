@@ -10,7 +10,6 @@
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="stylesheet" href="styles.css" />
     <script src="polar-web-bluetooth.js" defer></script>
-    <script src="browser-lsl-bridge.js" defer></script>
     <script src="runtime-api.js" defer></script>
     <script src="preferences.js" defer></script>
     <script src="app.js" defer></script>
@@ -113,7 +112,7 @@
         </div>
 
         <div class="config-block">
-          <label class="field-label" for="stream-name">Stream base name</label>
+          <label class="field-label" id="stream-name-label" for="stream-name">Stream base name</label>
           <div class="name-field">
             <input id="stream-name" maxlength="64" value="Polar-H10" spellcheck="false" />
             <span class="valid-mark" aria-hidden="true">✓</span>
@@ -123,17 +122,18 @@
 
         <div class="destination-block">
           <div class="mini-heading"><strong>Make available through</strong><span>Optional</span></div>
-          <label class="destination-row">
+          <div class="destination-row browser-local-destination" id="browser-local-destination" hidden>
+            <span class="protocol-mark browser-mark">WEB</span>
+            <span><strong>Browser-only session</strong><small>Bluetooth, processing and visualization stay in this tab</small></span>
+            <strong class="local-only-mark">LOCAL</strong>
+          </div>
+          <label class="destination-row" id="lsl-destination-row">
             <span class="protocol-mark lsl-mark">LSL</span>
             <span><strong>Lab Streaming Layer</strong><small id="lsl-detail">Local network · time synchronized</small></span>
             <input id="lsl-toggle" class="switch-input" type="checkbox" />
             <span class="switch" aria-hidden="true"></span>
           </label>
-          <button class="bridge-launch" id="open-browser-lsl-bridge" type="button" hidden>
-            <span aria-hidden="true">↗</span>
-            Open browser with authenticated LSL bridge
-          </button>
-          <label class="destination-row">
+          <label class="destination-row" id="osc-destination-row">
             <span class="protocol-mark osc-mark">OSC</span>
             <span><strong>Open Sound Control</strong><small id="osc-detail">UDP · localhost:9000</small></span>
             <input id="osc-toggle" class="switch-input" type="checkbox" />
