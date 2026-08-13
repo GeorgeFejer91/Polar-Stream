@@ -6,7 +6,10 @@
   const invoke = nativeCore?.invoke?.bind(nativeCore);
   const NativeChannel = nativeCore?.Channel;
   const preferences = window.PolarPreferences;
+  const metricPreviews = window.PolarMetricPreviews;
   const isInterfaceRenderer = new URLSearchParams(window.location.search).has("renderer");
+  const svgNamespace = "http://www.w3.org/2000/svg";
+  let metricPreviewSequence = 0;
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
@@ -588,6 +591,117 @@
     return buffers[id];
   }
 
+  function svgElement(name, attributes = {}) {
+    const element = document.createElementNS(svgNamespace, name);
+    for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
+    return element;
+  }
+
+  function createMetricPreview(metric, { compact = false, animated = false } = {}) {
+    const data = metricPreviews?.metrics?.[metric.id];
+    const figure = document.createElement("figure");
+    figure.className = `metric-preview${compact ? " metric-preview-compact" : " metric-preview-large"}`;
+    figure.dataset.metricId = metric.id;
+    if (!data?.channels?.length) {
+      figure.classList.add("metric-preview-missing");
+      figure.textContent = "Preview unavailable";
+      return figure;
+    }
+
+    const [, , width, height] = metricPreviews.viewBox;
+    figure.dataset.minimum = String(data.minimum);
+    figure.dataset.maximum = String(data.maximum);
+    figure.dataset.durationSeconds = String(data.durationSeconds);
+
+    const svg = svgElement("svg", {
+      class: "metric-preview-svg",
+      viewBox: `0 0 ${width} ${height}`,
+      preserveAspectRatio: "none",
+      role: compact ? "presentation" : "img",
+      "aria-hidden": compact ? "true" : "false",
+      "aria-label": compact ? "" : `Synthetic NeuroKit preview of ${metric.label}`,
+    });
+    const title = svgElement("title");
+    title.textContent = `${metric.label}: looped synthetic signal preview`;
+    svg.append(title, svgElement("rect", { class: "metric-preview-background", width, height, rx: compact ? 5 : 8 }));
+    for (const fraction of [0.25, 0.5, 0.75]) {
+      svg.append(svgElement("line", {
+        class: "metric-preview-grid",
+        x1: 0,
+        y1: (height * fraction).toFixed(2),
+        x2: width,
+        y2: (height * fraction).toFixed(2),
+      }));
+    }
+
+    const clipId = `metric-preview-clip-${metricPreviewSequence += 1}`;
+    const definitions = svgElement("defs");
+    const clipPath = svgElement("clipPath", { id: clipId });
+    clipPath.append(svgElement("rect", { width, height, rx: compact ? 5 : 8 }));
+    definitions.append(clipPath);
+    svg.append(definitions);
+    const group = svgElement("g", { "clip-path": `url(#${clipId})` });
+    for (const channel of data.channels) {
+      for (const offset of animated ? [0, width] : [0]) {
+        group.append(svgElement("path", {
+          class: "metric-preview-line",
+          d: channel.path,
+          stroke: channel.color,
+          "stroke-width": compact ? 1.3 : 2,
+          transform: offset ? `translate(${offset} 0)` : "",
+        }));
+      }
+    }
+    if (animated && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      group.classList.add("metric-preview-loop");
+      const animation = svgElement("animateTransform", {
+        attributeName: "transform",
+        type: "translate",
+        from: "0 0",
+        to: `${-width} 0`,
+        dur: "8s",
+        repeatCount: "indefinite",
+      });
+      group.append(animation);
+    }
+    svg.append(group);
+    figure.append(svg);
+
+    if (!compact) {
+      const caption = document.createElement("figcaption");
+      const legend = data.channels.map((channel) => channel.label).join(" · ");
+      caption.textContent = metric.id === "breathing_phase"
+        ? `${legend} · −2 bad signal · −1 exhale · 0 pause · +1 inhale`
+        : `${legend} · ${data.durationSeconds}s loop · ${formatPreviewRange(data.minimum, data.maximum, metric.unit)}`;
+      figure.append(caption);
+    }
+    return figure;
+  }
+
+  function formatPreviewRange(minimum, maximum, unit) {
+    const significant = (value) => Math.abs(value) >= 100
+      ? Math.round(value).toLocaleString()
+      : Number(value).toLocaleString(undefined, { maximumFractionDigits: Math.abs(value) < 1 ? 3 : 1 });
+    return `${significant(minimum)}–${significant(maximum)} ${unit}`;
+  }
+
+  function createMetricPreviewPanel(metric) {
+    const section = document.createElement("section");
+    section.className = "metric-preview-panel";
+    const header = document.createElement("div");
+    const title = document.createElement("h4");
+    title.textContent = "Synthetic signal preview";
+    const provenance = document.createElement("span");
+    provenance.className = "metric-preview-provenance";
+    provenance.textContent = `${metricPreviews?.source?.library || "NeuroKit2"} ${metricPreviews?.source?.version || ""} · ${metricPreviews?.source?.model || "synthetic"}`;
+    header.append(title, provenance);
+    const note = document.createElement("p");
+    note.className = "metric-preview-note";
+    note.textContent = "Illustrative loop generated from synthetic ECG and respiration. It shows the output form, not expected personal values or validation accuracy.";
+    section.append(header, createMetricPreview(metric, { animated: true }), note);
+    return section;
+  }
+
   function renderMetricFilters() {
     const categories = ["All", ...new Set(app.catalog.map((metric) => metric.category))];
     const buttons = categories.map((category) => {
@@ -630,12 +744,13 @@
       const state = document.createElement("span");
       state.className = app.outputs.has(metric.id) ? "metric-added" : "metric-chevron";
       state.textContent = app.outputs.has(metric.id) ? "ADDED" : "›";
+      const preview = createMetricPreview(metric, { compact: true });
       option.addEventListener("click", () => {
         app.selectedMetricId = metric.id;
         renderMetricOptions();
         renderMetricDetail();
       });
-      option.append(mark, copy, state);
+      option.append(mark, copy, preview, state);
       return option;
     });
     if (!options.length) {
@@ -719,7 +834,7 @@
     streamMeta.textContent = `${metric.channels} channel${metric.channels === 1 ? "" : "s"} · ${metric.unit} · ${transports.length ? transports.join(" + ") : "enable LSL or OSC in Output"}`;
     stream.append(streamTitle, streamName, streamMeta);
 
-    article.append(header, measurement, consensus, source, stream);
+    article.append(header, createMetricPreviewPanel(metric), measurement, consensus, source, stream);
     elements["metric-detail"].replaceChildren(article);
     const alreadyAdded = app.outputs.has(metric.id);
     save.disabled = alreadyAdded;
@@ -1382,6 +1497,25 @@
   }
 
   async function renderInterfaceScenario(name) {
+    if (name === "metric-library-previews") {
+      app.selectedMetricId = "raw_ecg";
+      app.metricFilter = "All";
+      app.metricSearch = "";
+      elements["metric-search"].value = "";
+      renderMetricFilters();
+      renderMetricOptions();
+      if (!elements["output-dialog"].open) elements["output-dialog"].showModal();
+      await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+      const previewIds = Object.keys(metricPreviews?.metrics || {});
+      return {
+        scenario: name,
+        dialogOpen: elements["output-dialog"].open,
+        catalogCount: app.catalog.length,
+        previewCount: previewIds.length,
+        missingPreviewIds: app.catalog.map((metric) => metric.id).filter((id) => !previewIds.includes(id)),
+        source: structuredClone(metricPreviews?.source || {}),
+      };
+    }
     const targets = {
       "breathing-phase-inhale": { phase: 1, volume: 0.82, label: "INHALE" },
       "breathing-phase-exhale": { phase: -1, volume: 0.18, label: "EXHALE" },
@@ -1429,6 +1563,7 @@
         "breathing-phase-pause",
         "breathing-phase-bad-signal",
         "breathing-phase-settings",
+        "metric-library-previews",
       ]),
       ready: () => initialization,
       render: async (scenario) => {

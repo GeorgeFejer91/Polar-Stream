@@ -43,9 +43,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
       - run: npm ci
+      - run: python -m pip install --disable-pip-version-check -r requirements-previews.txt
+      - run: python scripts/generate_metric_previews.py --check
       - run: npx playwright install --with-deps chromium
       - run: node --check apps/polar-stream/ui/preferences.js
+      - run: node --check apps/polar-stream/ui/metric-previews.js
       - run: node --check apps/polar-stream/ui/app.js
       - run: node --check download/downloads.js
       - run: npm run validate:interface

@@ -1,0 +1,7 @@
+# Development-only dependency used to regenerate the checked-in metric preview asset.
+neurokit2==0.2.13
+numpy==2.5.2
+pandas==2.3.3
+PyWavelets==1.9.0
+scikit-learn==1.9.0
+scipy==1.18.0

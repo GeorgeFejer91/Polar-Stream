@@ -13,6 +13,11 @@ The frontend is plain HTML, CSS, and JavaScript. It has no framework runtime.
 The native code is a Rust workspace split into protocol, input, output, and app
 crates; see [ARCHITECTURE.md](ARCHITECTURE.md).
 
+The output library also shows a looped SVG preview for every catalog metric.
+Those paths are produced at development time from a fixed NeuroKit2 ECGSYN and
+respiration simulation; the generated asset is offline, deterministic, and adds
+no Python or scientific-computing dependency to the installed application.
+
 ## Validate the reusable crates
 
 ```bash
@@ -30,6 +35,11 @@ npx browser-sync start --server apps/polar-stream/ui --no-open --no-ui
 ```
 
 Open `http://127.0.0.1:3000`, scan, and select the preview H10.
+
+To rebuild or verify the metric-library previews, install the repository's
+`requirements-previews.txt` in a Python 3.13 virtual environment and run
+`scripts/generate_metric_previews.py` (or pass `--check`). These traces explain
+output shape only; they are not recordings or validation evidence.
 
 ## Run the native desktop app
 
