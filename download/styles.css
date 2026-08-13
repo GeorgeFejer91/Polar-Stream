@@ -7,7 +7,7 @@ a { color: inherit; }
 .brand > span:last-child { display: grid; gap: 3px; }
 .brand strong { font-size: 15px; letter-spacing: .03em; }
 .brand small { color: #9fb2a8; font-size: 9px; letter-spacing: .13em; text-transform: uppercase; }
-.pulse { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid #3f6754; border-radius: 9px; background: #1d3c2d; color: #56d49c; font-size: 25px; }
+.brand-mark { width: 34px; height: 34px; border-radius: 50%; background: #f6f5ef; box-shadow: 0 0 0 1px rgb(255 255 255 / 18%); }
 .repo-link { color: #b9c8c0; font-size: 11px; text-decoration: none; }
 main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
 .hero { max-width: 850px; padding: 82px 0 68px; }
