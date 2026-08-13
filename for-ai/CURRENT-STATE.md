@@ -9,6 +9,10 @@ Last verified: 2026-08-13
   parameter request and reports the observed interval, peripheral latency, and
   read-only negotiated MTU. Older Windows versions continue fail-soft with
   system-managed timing.
+- Before normal Windows service discovery, the input adapter ports MesmerPrism's
+  WinRT PMD access pattern: uncached service access, `RequestAccessAsync`,
+  uncached characteristic discovery, and three bounded retries. This improves
+  AccessDenied/Unreachable reliability but still does not force ATT MTU.
 - Immediate raw LSL/OSC publication with canonical names.
 - Demand-driven ECG, HRV, coherence, breathing, breathing-dynamics, quality,
   and explicitly experimental metric modules.
@@ -41,7 +45,13 @@ Last verified: 2026-08-13
 - The browser adapter includes a JavaScript mirror of the two retained ACC
   breathing outputs. Playwright validates the browser chooser/GATT contract,
   commands, protocol edge cases, breathing calibration, and responsive UI with
-  an emulated device. Browser LSL and OSC controls are disabled.
+  an emulated device.
+- The installed app can open an authenticated Pages session backed by a
+  loopback-only native LSL companion. A 128-bit fragment token, exact
+  origin/Host policy, Chromium Local Network Access, bounded page/server queues,
+  request limits, and a dedicated `OutputRouter` make browser H10 or labeled mock
+  events available as real native LSL outlets. Unpaired Pages sessions keep LSL
+  disabled; browser OSC remains disabled.
 - The ACC breathing add/adjust workflows expose axes, smoothing, sensitivity,
   direction, calibration window/range, stale timeout, adaptive bounds/window,
   and robust quantiles. `docs/acc-breathing-handoff.md` documents provenance,
@@ -76,9 +86,11 @@ Last verified: 2026-08-13
 - The Web Bluetooth adapter has not yet been exercised against a physical H10.
   Browser/OS support remains non-portable, and BLE throughput, reconnect,
   compressed-frame behavior, and timing must be recorded on real hardware.
-- Ordinary browser tabs do not publish LSL or OSC; those transports require the
-  desktop app. The UI must never suggest that a disabled browser switch opens a
-  native outlet.
+- Ordinary browser tabs do not publish LSL or OSC. Real browser-fed LSL requires
+  the installed same-computer companion to stay open and adds JavaScript,
+  serialization, 20 ms batching, loopback HTTP, and host-scheduling latency.
+  Phone browsers cannot reach a companion on a different computer through
+  loopback. Browser OSC remains unavailable.
 - Breathing phase sensitivity is currently applied to normalized change per ACC
   notification batch, not change per second. BLE batch cadence can therefore
   affect classification and must be corrected/versioned before cross-platform

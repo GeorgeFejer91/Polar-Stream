@@ -1,5 +1,42 @@
 # Decision log
 
+## 2026-08-13 — Paired browser sessions may publish through native LSL
+
+This supersedes the earlier blanket rule that Pages must always disable LSL.
+An ordinary page still disables LSL and OSC because browser tabs cannot open
+LSL discovery/data or UDP OSC sockets. The installed app may now explicitly
+start an ephemeral IPv4-loopback companion and open the canonical Pages URL
+with a random 128-bit bearer token in the fragment. The page removes the
+fragment immediately, keeps the token in memory, and must pass exact
+origin/Host/token checks plus Chromium Local Network Access before a dedicated
+native `OutputRouter` accepts bounded ECG, ACC, or metric batches. Each desktop
+launch replaces the prior pairing, and the first authenticated random browser
+client identifier exclusively owns the new session. Browser OSC remains
+unavailable.
+
+The bridge is a separate browser acquisition route, never a detour for native
+H10 data. Its page queue is bounded and observable, the server enforces request
+and concurrency limits, and errors disable publication rather than grow or retry
+without limit. It adds serialization, a 20 ms flush window, HTTP scheduling, and
+receipt-time LSL stamping, so direct native acquisition remains preferred. The
+current companion is same-computer only; a phone cannot reach a desktop's
+loopback listener.
+
+## 2026-08-13 — Port MesmerPrism Windows GATT access, not a forced MTU
+
+MesmerPrism's relevant durable Windows fix is in
+`WindowsGattServiceHandle.GetCharacteristicAsync`: call
+`GattDeviceService.RequestAccessAsync`, discover uncached, and retry short-lived
+`AccessDenied`/`Unreachable` states. Polar Stream primes the PMD service and its
+control/data characteristics with the same bounded three-attempt pattern before
+ordinary `btleplug` discovery. The Windows 11 `ThroughputOptimized` request is
+also moved immediately after connection.
+
+This does not supersede the MTU decision below. MesmerPrism's Windows
+`RequestMtuAsync` only returns read-only `GattSession.MaxPduSize`; neither repo
+can force a smaller ATT MTU through WinRT. Physical Windows H10 evidence is still
+required before claiming an applied connection interval or loss improvement.
+
 ## 2026-08-13 — Windows MTU is observed; connection timing is requested
 
 Do not describe Windows as allowing Polar Stream to force an ATT MTU. WinRT

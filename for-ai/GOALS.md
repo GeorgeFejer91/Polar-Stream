@@ -12,7 +12,9 @@ items into the dated history instead of silently deleting them.
      offline Tauri app, replaying deterministic ECG, ACC, respiration, and
      derived demo values through the shared runtime event contract.
    - Label synthetic input separately from the experimental Web Bluetooth H10
-     adapter, and keep browser LSL/OSC behavior clearly unavailable.
+     adapter. Keep ordinary browser LSL/OSC unavailable; allow LSL only in an
+     explicitly paired, authenticated same-computer companion session and keep
+     browser OSC unavailable.
    - Keep direct browser H10 support feature-detected and permission-gated;
      preserve mock fallback everywhere.
    - Deploy after successful changes to `main`, and fail CI if the staged Pages
@@ -34,6 +36,10 @@ items into the dated history instead of silently deleting them.
 - Validate the Pages Web Bluetooth adapter with a physical H10 on supported
   desktop and Android Chromium, including PMD frame variants, MTU/batch cadence,
   disconnect/reconnect behavior, and long-run sample counts.
+- Validate the browser-to-LSL companion on packaged Windows/macOS/Linux apps
+  with a physical H10 and LabRecorder: permission prompt, outlet discovery,
+  timestamp/latency percentiles, queue high-water/drop counts, reconnect, and
+  long-run sample parity. Keep the phone-to-desktop limitation explicit.
 - Record measured renderer, queue, and output latency under representative MTUs.
 - Measure the p99 runtime of each selected derived processor set against the BLE
   notification interval; isolate derived work if it can delay the next raw batch.
@@ -62,6 +68,9 @@ items into the dated history instead of silently deleting them.
   canonical Pages UI, kept browser LSL/OSC explicitly disabled, mirrored the two
   ACC breathing outputs, exposed advanced experiment parameters, and added the
   algorithm/provenance handoff.
+- 2026-08-13: added an authenticated, loopback-only native LSL companion for
+  explicitly paired Pages sessions and ported MesmerPrism's bounded WinRT PMD
+  access/retry pattern without misrepresenting read-only Windows MTU.
 - 2026-08-13: production hardening, stacked raw X/Y/Z acceleration, and the
   ECG/ACC output-library redesign passed cross-platform CI and merged in PR #5.
 - 2026-08-13: simplified the output library around an ECG/ACC family selector,

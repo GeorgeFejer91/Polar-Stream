@@ -31,7 +31,7 @@ function startServer() {
       response.writeHead(200, {
         "content-type": mime.get(extname(path)) || "application/octet-stream",
         "cache-control": "no-store",
-        "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:",
+        "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:*",
       });
       response.end(body);
     } catch (_error) {
@@ -175,7 +175,7 @@ try {
   assert.equal(await desktop.locator("#runtime-path-label").textContent(), "Browser-local inputs");
   assert.match(await desktop.locator(".device-row.mock").textContent(), /SYNTHETIC/);
   assert.match(await desktop.locator(".device-row.mock").textContent(), /no Polar H10 required/);
-  assert.equal(await desktop.locator("#lsl-toggle").isDisabled(), true, "browser LSL must stay disabled");
+  assert.equal(await desktop.locator("#lsl-toggle").isDisabled(), true, "unpaired browser LSL must stay disabled");
   assert.equal(await desktop.locator("#osc-toggle").isDisabled(), true, "browser OSC must stay disabled");
   await connectMock(desktop);
   const fixture = await desktop.evaluate(() => ({
@@ -200,6 +200,99 @@ try {
   await desktop.screenshot({ path: desktopScreenshot, fullPage: true });
   assert.ok((await stat(desktopScreenshot)).size > 30_000, "desktop browser-demo screenshot is unexpectedly empty");
   await desktop.close();
+
+  const bridgePort = 43123;
+  const bridgeToken = "0123456789abcdef0123456789abcdef";
+  const bridgeRequests = [];
+  const bridgeFailures = [];
+  const paired = await browser.newPage({ viewport: { width: 1280, height: 820 }, deviceScaleFactor: 1 });
+  paired.on("requestfailed", (request) => {
+    if (request.url().startsWith(`http://127.0.0.1:${bridgePort}/`)) {
+      bridgeFailures.push({ url: request.url(), error: request.failure()?.errorText });
+    }
+  });
+  await paired.context().grantPermissions(["local-network-access"], { origin: new URL(baseUrl).origin });
+  await paired.route(`http://127.0.0.1:${bridgePort}/**`, async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const cors = {
+      "Access-Control-Allow-Origin": new URL(baseUrl).origin,
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Polar-Bridge-Client",
+      "Access-Control-Allow-Private-Network": "true",
+    };
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: cors, body: "" });
+      return;
+    }
+    assert.equal(request.headers().authorization, `Bearer ${bridgeToken}`);
+    assert.match(
+      request.headers()["x-polar-bridge-client"],
+      /^[a-z0-9-]{16,64}$/i,
+      "paired browser request must carry a bounded client identity",
+    );
+    if (url.pathname === "/v1/status") {
+      await route.fulfill({
+        status: 200,
+        headers: { ...cors, "Content-Type": "application/json" },
+        body: JSON.stringify({ protocolVersion: 1, lslEnabled: false, acceptedEvents: 0, acceptedSamples: 0 }),
+      });
+      return;
+    }
+    const body = request.postDataJSON();
+    bridgeRequests.push({ path: url.pathname, body });
+    if (url.pathname === "/v1/config") {
+      await route.fulfill({
+        status: 200,
+        headers: { ...cors, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          health: { streamName: body.config.streamName, lsl: "Publishing 2 stream(s)", osc: "Off" },
+        }),
+      });
+      return;
+    }
+    if (url.pathname === "/v1/events") {
+      const acceptedSamples = body.events.reduce((total, event) => (
+        total + (event.microvolts?.length || event.samples?.length || event.values?.length || 0)
+      ), 0);
+      await route.fulfill({
+        status: 202,
+        headers: { ...cors, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          acceptedEvents: body.events.length,
+          acceptedSamples,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, headers: cors, body: "" });
+  });
+  await paired.goto(`${baseUrl}#bridgePort=${bridgePort}&bridgeToken=${bridgeToken}`, { waitUntil: "networkidle" });
+  assert.equal(new URL(paired.url()).hash, "", "bridge secret was not removed from browser history URL");
+  assert.equal(
+    await paired.locator("#lsl-toggle").isEnabled(),
+    true,
+    `paired browser LSL should be enabled: ${await paired.locator("#lsl-detail").textContent()} · ${JSON.stringify(bridgeFailures)}`,
+  );
+  assert.match(await paired.locator("#lsl-detail").textContent(), /Paired desktop bridge ready/);
+  await paired.locator("label.destination-row").filter({ hasText: "Lab Streaming Layer" }).click();
+  assert.equal(await paired.locator("#lsl-toggle").isChecked(), true);
+  await connectMock(paired);
+  await paired.waitForFunction(() => window.PolarBrowserLslBridge.status().acceptedEvents >= 2);
+  const pairedStatus = await paired.evaluate(() => window.PolarBrowserLslBridge.status());
+  assert.equal(pairedStatus.connected, true);
+  assert.equal(pairedStatus.enabled, true);
+  assert.equal(pairedStatus.droppedEvents, 0);
+  assert.ok(bridgeRequests.some((request) => request.path === "/v1/config" && request.body.config.lslEnabled));
+  assert.ok(bridgeRequests.some((request) => (
+    request.path === "/v1/events"
+    && request.body.events.some((event) => event.kind === "ecg")
+    && request.body.events.some((event) => event.kind === "accelerometer")
+  )), "paired browser did not forward ECG and ACC events to the native bridge");
+  await assertNoHorizontalOverflow(paired, "paired browser LSL bridge");
+  await paired.close();
 
   const bluetooth = await browser.newPage({ viewport: { width: 1280, height: 820 }, deviceScaleFactor: 1 });
   await installFakeWebBluetooth(bluetooth);
@@ -318,7 +411,7 @@ try {
   assert.ok(await narrow.locator(".device-row.mock").isVisible(), "mock input is not visible at 320px");
   await narrow.close();
 
-  process.stdout.write(`Validated canonical Pages parity, NeuroKit replay, Web Bluetooth PMD, and responsive layouts in ${output}\n`);
+  process.stdout.write(`Validated canonical Pages parity, paired native LSL forwarding, NeuroKit replay, Web Bluetooth PMD, and responsive layouts in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

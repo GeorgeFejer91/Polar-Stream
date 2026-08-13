@@ -6,6 +6,7 @@
   const isRenderer = new URLSearchParams(window.location.search).has("renderer");
   const mode = isNative ? "native" : isRenderer ? "renderer" : "browser-demo";
   const webBluetooth = window.PolarWebBluetooth;
+  const browserLslBridge = window.PolarBrowserLslBridge;
   const mockDevice = Object.freeze({
     id: "neurokit-mock",
     name: "NeuroKit simulated input",
@@ -35,6 +36,11 @@
     "breathing_phase",
   ]);
   let activeInput = null;
+
+  function deliverInputEvent(callback, event) {
+    callback(event);
+    if (mode === "browser-demo") browserLslBridge?.publish(event);
+  }
 
   function browserBluetoothModule() {
     const status = webBluetooth?.supportStatus() || {
@@ -236,6 +242,14 @@
     isBrowserBluetoothDevice(deviceId) {
       return mode === "browser-demo" && deviceId === (webBluetooth?.moduleId || "web-bluetooth-polar-h10");
     },
+    browserLslBridgeStatus() {
+      return browserLslBridge?.status() || {
+        paired: false,
+        connected: false,
+        enabled: false,
+        health: "The browser LSL bridge adapter did not load.",
+      };
+    },
     outputSupport(metricId, inputKind) {
       if (inputKind !== "web-bluetooth" || browserBluetoothOutputs.has(metricId)) {
         return { supported: true, reason: null };
@@ -252,7 +266,9 @@
         : `${normalized.message} (${normalized.code})`;
     },
     async getBootstrap(fallback) {
-      return isNative ? invoke("get_bootstrap") : { ...fallback, platform: "browser demo" };
+      if (isNative) return invoke("get_bootstrap");
+      if (mode === "browser-demo") await browserLslBridge?.initialize();
+      return { ...fallback, platform: "browser demo" };
     },
     async migrateLegacyPreferences(legacy) {
       return isNative ? invoke("migrate_legacy_preferences", { legacy }) : legacy;
@@ -265,11 +281,14 @@
       if (deviceId === mockDevice.id) {
         if (activeInput === "native" && isNative) await invoke("disconnect_device");
         if (activeInput === "web-bluetooth") await webBluetooth.disconnect();
-        return startDemo(onEvent);
+        return startDemo((event) => deliverInputEvent(onEvent, event));
       }
       stopDemo({ notify: activeInput === "mock" });
       if (this.isBrowserBluetoothDevice(deviceId)) {
-        await webBluetooth.connect(onEvent, demo.config || {});
+        await webBluetooth.connect(
+          (event) => deliverInputEvent(onEvent, event),
+          demo.config || {},
+        );
         activeInput = "web-bluetooth";
         return;
       }
@@ -299,14 +318,38 @@
       demo.config = structuredClone(config);
       demo.outputs = new Set(config.outputs || []);
       if (activeInput === "web-bluetooth") webBluetooth.updateConfig(config);
-      if (activeInput === "mock" || !isNative) {
+      if (!isNative) {
+        if (mode === "browser-demo") {
+          const bridgeHealth = await browserLslBridge.configure(config);
+          return {
+            streamName: bridgeHealth.streamName || config.streamName,
+            lsl: config.lslEnabled ? `Desktop bridge · ${bridgeHealth.lsl}` : browserLslBridge.status().health,
+            osc: "Desktop app only · browser OSC is unavailable",
+          };
+        }
         return {
           streamName: config.streamName,
-          lsl: mode === "browser-demo" ? "Desktop app required · native LSL sockets" : "Off",
-          osc: mode === "browser-demo" ? "Desktop app required · native UDP socket" : "Off",
+          lsl: "Off",
+          osc: "Off",
+        };
+      }
+      if (activeInput === "mock") {
+        return {
+          streamName: config.streamName,
+          lsl: config.lslEnabled ? "Synthetic input does not enter native LSL" : "Off",
+          osc: config.oscEnabled ? "Synthetic input does not enter native OSC" : "Off",
         };
       }
       return invoke("update_output_config", { config });
+    },
+    async openBrowserLslBridge() {
+      if (!isNative) {
+        throw new RuntimeError(
+          "BROWSER_LSL_BRIDGE_NATIVE_REQUIRED",
+          "Open this action in the installed Polar Stream app.",
+        );
+      }
+      return invoke("open_browser_lsl_bridge");
     },
     async openMetricCitation(metricId, url) {
       if (isNative) return invoke("open_metric_citation", { metricId });

@@ -10,6 +10,7 @@
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="stylesheet" href="styles.css" />
     <script src="polar-web-bluetooth.js" defer></script>
+    <script src="browser-lsl-bridge.js" defer></script>
     <script src="runtime-api.js" defer></script>
     <script src="preferences.js" defer></script>
     <script src="app.js" defer></script>
@@ -128,6 +129,10 @@
             <input id="lsl-toggle" class="switch-input" type="checkbox" />
             <span class="switch" aria-hidden="true"></span>
           </label>
+          <button class="bridge-launch" id="open-browser-lsl-bridge" type="button" hidden>
+            <span aria-hidden="true">↗</span>
+            Open browser with authenticated LSL bridge
+          </button>
           <label class="destination-row">
             <span class="protocol-mark osc-mark">OSC</span>
             <span><strong>Open Sound Control</strong><small id="osc-detail">UDP · localhost:9000</small></span>
