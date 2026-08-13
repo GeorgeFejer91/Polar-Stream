@@ -2,9 +2,11 @@
 
 Polar Stream is a compact, low-latency desktop bridge for Polar H10 raw ECG and
 accelerometer data. Its interface has three focused areas: sensor input, stream
-output, and live visualization. A searchable metric library adds modular ECG,
-HRV, coherence, breathing, breathing-dynamics, and explicitly experimental
-outputs without expanding the main three-panel surface. Selecting a metric opens
+output, and live visualization. The output library starts with a prominent
+red ECG / blue accelerometer selector. ECG mode contains the H10's core ECG,
+heart-rate, HRV and related outputs; ACC mode intentionally stays small, with
+raw ACC, 3D motion magnitude, and only two experimental breathing outputs.
+Selecting a metric opens
 its scientific definition, interpretation limits, evidence level, cited source,
 and exact stream-name preview; an explicit **Save output** action then adds that
 single module to the enabled LSL and/or OSC publisher.
@@ -18,10 +20,13 @@ illustrative synthetic traces, not example participant norms, algorithm validati
 or diagnostic data; the app labels that limitation beside every expanded preview.
 
 Every output module has a saved visualizer window and, where meaningful,
-normalization controls. The four-state ACC breath classifier adds its own PCA
-calibration, smoothing, threshold, inversion, adaptive-bound and stale-signal
-controls. Its circle visual expands during inhale, contracts during exhale, and
-uses distinct colors for inhale, exhale, pause and bad signal.
+normalization controls. Before either ACC breathing output is added, the user
+chooses two or three axes (X + Z recommended) and a smoothing window. The
+three-state phase classifier also exposes sensitivity and direction inversion;
+the continuous magnitude estimate can be published in g or normalized to 0–1.
+Both are explicitly unvalidated and should be compared with a respiratory
+reference. The classifier circle expands or shrinks with phase alone, approaches
+its size limits asymptotically, and eases its velocity toward rest during pauses.
 
 Raw acceleration is presented as one visualizer choice with X, Y, and Z in
 three labeled, color-coded lanes, so comparing axes does not require switching

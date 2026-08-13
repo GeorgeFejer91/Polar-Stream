@@ -29,7 +29,7 @@
   const fallbackCatalog = [
     fallbackMetric("raw_ecg", "rawECG", "Raw ECG", "µV", "Raw signals", "quality", "Unfiltered H10 voltage · 130 Hz", true, false, 130),
     fallbackMetric("raw_acc", "rawACC", "Raw accelerometer", "mg", "Raw signals", "breathing", "X, Y and Z · 200 Hz", true, false, 200),
-    fallbackMetric("acc_magnitude", "accMagnitude", "ACC magnitude", "g", "Raw signals", "breathing", "√(x²+y²+z²)", false, true, 200),
+    fallbackMetric("acc_magnitude", "accMagnitude", "3D acceleration magnitude", "g", "Raw signals", "breathing", "√(x²+y²+z²) · device motion", false, true, 200),
     ...[["ecg_mean","ecgMean","ECG window mean"],["ecg_rms","ecgRms","ECG RMS amplitude"],["ecg_peak_to_peak","ecgPeakToPeak","ECG peak-to-peak"],["ecg_sd","ecgSd","ECG standard deviation"]].map(([id,suffix,label]) => fallbackMetric(id,suffix,label,"µV","ECG features","quality","Five-second rolling signal feature",false,true,2)),
     fallbackMetric("heart_rate", "heartRate", "Heart rate", "bpm", "Heart rate", "hrv", "H10 device-derived", false, true),
     fallbackMetric("rr_interval", "rrInterval", "RR interval", "ms", "Heart rate", "hrv", "Accepted beat-to-beat interval"),
@@ -37,8 +37,9 @@
     fallbackMetric("mean_heart_rate", "meanHeartRate", "Mean heart rate", "bpm", "Heart rate"),
     ...[["rmssd","rmssd","RMSSD","ms"],["ln_rmssd","lnRMSSD","lnRMSSD","ln(ms)"],["sdnn","sdnn","SDNN","ms"],["pnn50","pNN50","pNN50","%"],["sd1","sd1","Poincaré SD1","ms"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"HRV & relaxation")),
     ...[["coherence","coherence","Normalized coherence","0–1"],["coherence_confidence","coherenceConfidence","Coherence confidence","0–1"],["heartmath_coherence","heartMathCoherence","HeartMath-style coherence ratio","ratio"],["coherence_peak_frequency","coherencePeakFrequency","Coherence peak frequency","Hz"],["coherence_peak_power","coherencePeakPower","Coherence peak-band power","ms²"],["coherence_total_power","coherenceTotalPower","Coherence total power","ms²"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"Coherence","resonance")),
-    fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing waveform", "0–1", "Breathing", "breathing", "Calibrated chest-motion projection", false, true, 20),
-    fallbackMetric("breathing_phase", "breathingPhase", "Breath phase classifier", "class", "Breathing", "breathing", "+1 inhale · −1 exhale · 0 pause · −2 bad signal", false, false, 20),
+    fallbackMetric("acc_breathing_magnitude", "accBreathingMagnitude", "ACC breathing magnitude estimate", "g", "Breathing", "breathing", "Smoothed selected-axis chest-motion projection", false, true, 20),
+    fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing waveform", "0–1", "Breathing", "breathing", "Legacy calibrated chest-motion projection", false, true, 20),
+    fallbackMetric("breathing_phase", "breathingPhase", "Breath phase classifier", "class", "Breathing", "breathing", "+1 inhale · −1 exhale · 0 pause or not ready", false, false, 20),
     fallbackMetric("breathing_calibration", "breathingCalibration", "Breathing calibration", "0–1", "Breathing", "breathing", "Principal-axis calibration progress", false, false, 4),
     fallbackMetric("breathing_axis_range", "breathingAxisRange", "Breathing axis range", "g", "Breathing", "breathing"),
     fallbackMetric("breathing_rate", "breathingRate", "Breathing rate", "breaths/min", "Breathing", "breathing"),
@@ -65,9 +66,29 @@
     },
     heart_rate: { label: "Heart rate", unit: "bpm", rate: 1, color: "#d85151" },
     rr_interval: { label: "RR interval", unit: "ms", rate: 2, color: "#6c62a8" },
-    acc_magnitude: { label: "ACC magnitude", unit: "g", rate: 200, color: "#3b78aa" },
+    acc_magnitude: { label: "3D acceleration magnitude", unit: "g", rate: 200, color: "#3b78aa" },
+    acc_breathing_magnitude: { label: "ACC breathing magnitude estimate", unit: "g", rate: 20, color: "#3b78aa" },
     rmssd: { label: "RMSSD", unit: "ms", rate: 1, color: "#168259" },
   };
+
+  const accLibraryIds = new Set(["raw_acc", "acc_magnitude", "acc_breathing_magnitude", "breathing_phase"]);
+  const breathingOutputIds = new Set(["acc_breathing_magnitude", "breathing_phase"]);
+
+  function defaultBreathingSettings() {
+    return {
+      axes: [true, false, true],
+      calibrationWindowSeconds: 12,
+      minimumAxisRangeG: 0.01,
+      smoothingWindowSeconds: 0.75,
+      sensitivity: 0.60,
+      staleTimeoutSeconds: 3,
+      invertDirection: false,
+      adaptiveBounds: true,
+      adaptiveWindowSeconds: 20,
+      lowerQuantile: 0.05,
+      upperQuantile: 0.95,
+    };
+  }
 
   class RingBuffer {
     constructor(capacity = 4096) {
@@ -122,6 +143,7 @@
     "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "dialog-output-status", "save-metric-output", "toast-region",
     "stream-name-preview", "metric-search", "metric-filters", "metric-library-summary",
+    "metric-family-toggle", "metric-family-context", "metric-family-note",
     "adjust-visual", "visual-window-label", "visual-scale-label", "module-dialog", "module-dialog-title",
     "module-dialog-intro", "module-settings", "module-dialog-status", "save-module-settings",
   ];
@@ -143,6 +165,8 @@
     selectedMetricId: null,
     editingModuleId: null,
     moduleDraft: null,
+    libraryMetricDraft: null,
+    metricFamily: "ecg",
     metricFilter: "All",
     metricSearch: "",
     streamName: "Polar-H10",
@@ -155,6 +179,8 @@
     currentDeviceId: null,
     pendingDevice: null,
     devices: [],
+    breathingSettings: defaultBreathingSettings(),
+    phaseMotion: { level: 0.5, velocity: 0, lastAt: 0 },
     preferences: isNative
       ? { streamName: null, lastDevice: null, outputConfig: null }
       : preferences.load(),
@@ -283,6 +309,7 @@
       : app.preferences.outputConfig || bootstrap.config || {};
     app.outputs = new Set(initialConfig.outputs || ["raw_ecg", "raw_acc"]);
     app.metricOptions = structuredClone(initialConfig.metricOptions || {});
+    app.breathingSettings = configuredBreathingSettings(app.metricOptions);
     installCatalogVisuals();
     app.streamName = normalizeStreamBase(app.preferences.streamName)
       || normalizeStreamBase(initialConfig.streamName)
@@ -322,6 +349,8 @@
 
     elements["open-output-dialog"].addEventListener("click", async () => {
       app.selectedMetricId = null;
+      app.libraryMetricDraft = null;
+      updateMetricFamilyUi();
       renderMetricDetail();
       elements["output-dialog"].showModal();
       const loading = document.createElement("p");
@@ -338,6 +367,12 @@
     elements["save-metric-output"].addEventListener("click", () => {
       const metric = app.catalog.find((candidate) => candidate.id === app.selectedMetricId);
       if (!metric || app.outputs.has(metric.id)) return;
+      if (breathingOutputIds.has(metric.id)) {
+        const draft = structuredClone(app.libraryMetricDraft || metricOptionFor(metric.id, { forSelection: true }));
+        if (selectedAxisCount(draft.processing.breathing.axes) < 2) return;
+        app.breathingSettings = structuredClone(draft.processing.breathing);
+        app.metricOptions[metric.id] = draft;
+      }
       app.outputs.add(metric.id);
       renderOutputs();
       configureOutputs();
@@ -355,6 +390,19 @@
       renderMetricFilters();
       renderMetricOptions();
     });
+    elements["metric-family-toggle"].addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-family]");
+      if (!button || button.dataset.family === app.metricFamily) return;
+      app.metricFamily = button.dataset.family;
+      app.metricFilter = "All";
+      app.metricSearch = "";
+      app.selectedMetricId = null;
+      app.libraryMetricDraft = null;
+      elements["metric-search"].value = "";
+      updateMetricFamilyUi();
+      renderMetricFilters();
+      renderMetricOptions();
+    });
     elements["visual-source"].addEventListener("change", () => {
       app.selectedVisual = elements["visual-source"].value;
       updateVisualLabels();
@@ -365,9 +413,10 @@
 
     elements["output-dialog"].addEventListener("close", () => {
       app.selectedMetricId = null;
+      app.libraryMetricDraft = null;
       elements["metric-options"].replaceChildren();
       renderMetricDetail();
-      elements["metric-library-summary"].textContent = `${app.catalog.length} metrics`;
+      elements["metric-library-summary"].textContent = `${libraryCatalog().length} metrics`;
     });
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) cancelScheduledRender();
@@ -761,7 +810,7 @@
       const caption = document.createElement("figcaption");
       const legend = data.channels.map((channel) => channel.label).join(" · ");
       caption.textContent = metric.id === "breathing_phase"
-        ? `${legend} · −2 bad signal · −1 exhale · 0 pause · +1 inhale`
+        ? `${legend} · −1 exhale · 0 pause/not ready · +1 inhale`
         : `${legend} · ${data.durationSeconds}s loop · ${formatPreviewRange(data.minimum, data.maximum, metric.unit)}`;
       figure.append(caption);
     }
@@ -792,8 +841,47 @@
     return section;
   }
 
+  function configuredBreathingSettings(metricOptions) {
+    for (const id of ["breathing_phase", "acc_breathing_magnitude"]) {
+      const processing = metricOptions?.[id]?.processing || {};
+      const stored = processing.breathing || processing.breathingPhase;
+      if (stored) return { ...defaultBreathingSettings(), ...structuredClone(stored) };
+    }
+    return defaultBreathingSettings();
+  }
+
+  function libraryCatalog() {
+    if (app.metricFamily === "acc") {
+      return app.catalog.filter((metric) => accLibraryIds.has(metric.id));
+    }
+    return app.catalog.filter((metric) => (
+      !accLibraryIds.has(metric.id)
+      && metric.category !== "Breathing"
+      && metric.category !== "Breathing dynamics"
+    ));
+  }
+
+  function updateMetricFamilyUi() {
+    elements["output-dialog"].dataset.family = app.metricFamily;
+    for (const button of elements["metric-family-toggle"].querySelectorAll("button[data-family]")) {
+      const active = button.dataset.family === app.metricFamily;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    }
+    const acc = app.metricFamily === "acc";
+    elements["metric-family-context"].textContent = acc
+      ? "Experimental ACC research outputs"
+      : "ECG-first outputs";
+    elements["metric-family-note"].textContent = acc
+      ? "ACC breathing outputs are unvalidated. Keep still and compare them with a reference respiratory sensor."
+      : "Start with ECG for the signal the H10 is designed to measure; interpretation limits still apply.";
+    elements["metric-search"].placeholder = acc
+      ? "Search raw motion or breathing…"
+      : "Search ECG, heart rate, HRV…";
+  }
+
   function renderMetricFilters() {
-    const categories = ["All", ...new Set(app.catalog.map((metric) => metric.category))];
+    const categories = ["All", ...new Set(libraryCatalog().map((metric) => metric.category))];
     const buttons = categories.map((category) => {
       const button = document.createElement("button");
       button.type = "button";
@@ -807,7 +895,8 @@
   }
 
   function renderMetricOptions() {
-    const visible = app.catalog.filter((metric) => {
+    const familyCatalog = libraryCatalog();
+    const visible = familyCatalog.filter((metric) => {
       const categoryMatches = app.metricFilter === "All" || metric.category === app.metricFilter;
       const haystack = `${metric.label} ${metric.detail} ${metric.category} ${metric.keywords || ""}`.toLowerCase();
       return categoryMatches && (!app.metricSearch || haystack.includes(app.metricSearch));
@@ -819,7 +908,7 @@
       option.className = `metric-option${app.selectedMetricId === metric.id ? " selected" : ""}`;
       option.setAttribute("aria-pressed", String(app.selectedMetricId === metric.id));
       const mark = document.createElement("span");
-      mark.textContent = metric.raw ? "RAW" : metric.category.startsWith("Excitation") ? "EXP" : "FX";
+      mark.textContent = app.metricFamily === "acc" ? "ACC" : "ECG";
       const copy = document.createElement("span");
       copy.className = "metric-option-copy";
       const heading = document.createElement("span");
@@ -838,6 +927,7 @@
       const preview = createMetricPreview(metric, { compact: true });
       option.addEventListener("click", () => {
         app.selectedMetricId = metric.id;
+        app.libraryMetricDraft = structuredClone(metricOptionFor(metric.id, { forSelection: true }));
         for (const candidate of elements["metric-options"].querySelectorAll(".metric-option")) {
           const selected = candidate.dataset.metricId === metric.id;
           candidate.classList.toggle("selected", selected);
@@ -856,7 +946,7 @@
     } else {
       elements["metric-options"].replaceChildren(...options);
     }
-    elements["metric-library-summary"].textContent = `${visible.length} of ${app.catalog.length} metrics`;
+    elements["metric-library-summary"].textContent = `${visible.length} of ${familyCatalog.length} ${app.metricFamily.toUpperCase()} metrics`;
     renderMetricDetail();
   }
 
@@ -879,6 +969,9 @@
       save.textContent = "Save output";
       status.textContent = "Select one metric to inspect";
       return;
+    }
+    if (breathingOutputIds.has(metric.id) && !app.libraryMetricDraft) {
+      app.libraryMetricDraft = structuredClone(metricOptionFor(metric.id, { forSelection: true }));
     }
 
     const article = document.createElement("article");
@@ -933,15 +1026,131 @@
     streamName.textContent = streamOutputName(metric, elements["stream-name"].value);
     const streamMeta = document.createElement("p");
     const transports = [elements["lsl-toggle"].checked ? "LSL" : null, elements["osc-toggle"].checked ? "OSC" : null].filter(Boolean);
-    streamMeta.textContent = `${metric.channels} channel${metric.channels === 1 ? "" : "s"} · ${metric.unit} · ${transports.length ? transports.join(" + ") : "enable LSL or OSC in Output"}`;
+    const normalizedMagnitude = metric.id === "acc_breathing_magnitude"
+      && app.libraryMetricDraft?.normalization !== "none";
+    streamMeta.textContent = `${metric.channels} channel${metric.channels === 1 ? "" : "s"} · ${normalizedMagnitude ? "0–1 normalized from g" : metric.unit} · ${transports.length ? transports.join(" + ") : "enable LSL or OSC in Output"}`;
     stream.append(streamTitle, streamName, streamMeta);
 
-    article.append(header, createMetricPreviewPanel(metric), measurement, consensus, source, stream);
+    const breathingSettings = breathingOutputIds.has(metric.id)
+      ? createBreathingSelectionSettings(metric)
+      : null;
+    article.append(header);
+    if (breathingSettings) article.append(breathingSettings);
+    article.append(createMetricPreviewPanel(metric), measurement, consensus, source, stream);
     elements["metric-detail"].replaceChildren(article);
     const alreadyAdded = app.outputs.has(metric.id);
-    save.disabled = alreadyAdded;
+    const invalidAxes = breathingOutputIds.has(metric.id)
+      && selectedAxisCount(app.libraryMetricDraft.processing.breathing.axes) < 2;
+    save.disabled = alreadyAdded || invalidAxes;
     save.textContent = alreadyAdded ? "Already added" : "Save output";
-    status.textContent = alreadyAdded ? `${metric.label} is already in Output` : `Ready to add ${metric.label}`;
+    status.textContent = alreadyAdded
+      ? `${metric.label} is already in Output`
+      : invalidAxes ? "Choose at least two axes" : `Ready to add ${metric.label}`;
+  }
+
+  function createBreathingSelectionSettings(metric) {
+    const section = document.createElement("section");
+    section.className = "breathing-selection-settings";
+    const header = document.createElement("header");
+    const title = document.createElement("h4");
+    title.textContent = "Configure before adding";
+    const badge = document.createElement("span");
+    badge.className = "experimental-badge";
+    badge.textContent = "Not validated";
+    header.append(title, badge);
+    const copy = document.createElement("p");
+    copy.textContent = metric.id === "breathing_phase"
+      ? "The classifier publishes only inhale (+1), pause/not ready (0), and exhale (−1)."
+      : "This retains the continuous selected-axis projection so breathing timing can be explored downstream.";
+
+    const axesTitle = document.createElement("h4");
+    axesTitle.textContent = "Axes included · X + Z recommended";
+    const axes = document.createElement("div");
+    axes.className = "axis-selector";
+    const draft = app.libraryMetricDraft.processing.breathing;
+    ["X", "Y", "Z"].forEach((label, index) => {
+      const choice = document.createElement("label");
+      choice.className = `axis-choice${index !== 1 ? " recommended" : ""}`;
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(draft.axes[index]);
+      input.addEventListener("change", () => {
+        draft.axes[index] = input.checked;
+        updateBreathingSelectionStatus(section, metric);
+      });
+      const text = document.createElement("span");
+      text.textContent = index === 1 ? `${label} · rotational` : `${label} · recommended`;
+      choice.append(input, text);
+      axes.append(choice);
+    });
+
+    const controls = document.createElement("div");
+    controls.className = "inline-setting-grid";
+    controls.append(numberSetting(
+      "Smoothing window",
+      "Seconds of ACC smoothing; longer is steadier but adds lag.",
+      draft.smoothingWindowSeconds,
+      0.05,
+      5,
+      0.05,
+      (value) => draft.smoothingWindowSeconds = clampNumber(value, 0.05, 5, 0.75),
+    ));
+    if (metric.id === "breathing_phase") {
+      controls.append(
+        numberSetting(
+          "Sensitivity",
+          "0 is conservative; 1 reacts to smaller changes.",
+          draft.sensitivity,
+          0,
+          1,
+          0.05,
+          (value) => draft.sensitivity = clampNumber(value, 0, 1, 0.60),
+        ),
+        checkSetting(
+          "Invert inhale / exhale",
+          "Use when strap orientation reverses the inferred direction.",
+          draft.invertDirection,
+          (value) => draft.invertDirection = value,
+        ),
+      );
+    } else {
+      controls.append(checkSetting(
+        "Normalize output to 0–1",
+        "Uses a 20-second sliding range; disable to retain the projection in g.",
+        app.libraryMetricDraft.normalization !== "none",
+        (value) => {
+          app.libraryMetricDraft.normalization = value ? "slidingWindow" : "none";
+          app.libraryMetricDraft.windowSeconds = 20;
+          renderMetricDetail();
+        },
+      ));
+    }
+    const status = document.createElement("div");
+    status.className = "breathing-selection-status";
+    status.dataset.role = "breathing-status";
+    section.append(header, copy, axesTitle, axes, controls, status);
+    updateBreathingSelectionStatus(section, metric);
+    return section;
+  }
+
+  function selectedAxisCount(axes) {
+    return Array.isArray(axes) ? axes.filter(Boolean).length : 0;
+  }
+
+  function updateBreathingSelectionStatus(section, metric) {
+    const count = selectedAxisCount(app.libraryMetricDraft.processing.breathing.axes);
+    const status = section.querySelector('[data-role="breathing-status"]');
+    const save = elements["save-metric-output"];
+    const alreadyAdded = app.outputs.has(metric.id);
+    const invalid = count < 2;
+    status.classList.toggle("invalid", invalid);
+    status.textContent = invalid
+      ? "Select at least two axes. The recommended setup is X + Z without the rotational Y axis."
+      : `${count} axes selected · 12-second quiet calibration restarts when these settings change.`;
+    save.disabled = alreadyAdded || invalid;
+    elements["dialog-output-status"].textContent = alreadyAdded
+      ? `${metric.label} is already in Output`
+      : invalid ? "Choose at least two axes" : `Ready to add ${metric.label}`;
   }
 
   function renderOutputs() {
@@ -979,7 +1188,10 @@
       const scaling = options.normalization === "slidingWindow"
         ? `0–1 / ${options.windowSeconds}s`
         : options.normalization === "session" ? "0–1 / whole run" : "original scale";
-      summary.textContent = `${options.displayWindowSeconds}s view · ${scaling}${id === "breathing_phase" ? ` · ${options.processing.breathingPhase.calibrationWindowSeconds}s calibration` : ""}`;
+      const axes = breathingOutputIds.has(id)
+        ? options.processing.breathing.axes.map((enabled, index) => enabled ? ["X", "Y", "Z"][index] : null).filter(Boolean).join("+")
+        : "";
+      summary.textContent = `${options.displayWindowSeconds}s view · ${scaling}${axes ? ` · ${axes} axes` : ""}`;
       const tune = document.createElement("button");
       tune.type = "button";
       tune.className = "module-tune-button";
@@ -998,22 +1210,26 @@
     rebuildVisualOptions();
   }
 
-  function metricOptionFor(id) {
+  function metricOptionFor(id, { forSelection = false } = {}) {
     const stored = app.metricOptions[id] || {};
-    const breathing = stored.processing?.breathingPhase || {};
+    const breathing = breathingOutputIds.has(id)
+      ? app.breathingSettings
+      : stored.processing?.breathing || stored.processing?.breathingPhase || app.breathingSettings;
     const options = {
-      normalization: stored.normalization || "none",
-      windowSeconds: Number(stored.windowSeconds) || 60,
+      normalization: stored.normalization || (forSelection && id === "acc_breathing_magnitude" ? "slidingWindow" : "none"),
+      windowSeconds: Number(stored.windowSeconds) || (id === "acc_breathing_magnitude" ? 20 : 60),
       displayWindowSeconds: Number(stored.displayWindowSeconds) || 5,
       processing: {},
     };
-    if (id === "breathing_phase") {
-      options.processing.breathingPhase = {
+    if (breathingOutputIds.has(id)) {
+      options.processing.breathing = {
+        axes: Array.isArray(breathing.axes) && breathing.axes.length === 3
+          ? breathing.axes.map(Boolean)
+          : [true, false, true],
         calibrationWindowSeconds: numberOr(breathing.calibrationWindowSeconds, 12),
         minimumAxisRangeG: numberOr(breathing.minimumAxisRangeG, 0.01),
-        sampleEmaAlpha: numberOr(breathing.sampleEmaAlpha, 0.10),
-        projectionEmaAlpha: numberOr(breathing.projectionEmaAlpha, 0.10),
-        phaseDeltaThreshold: numberOr(breathing.phaseDeltaThreshold, 0.003),
+        smoothingWindowSeconds: numberOr(breathing.smoothingWindowSeconds, 0.75),
+        sensitivity: numberOr(breathing.sensitivity, 0.60),
         staleTimeoutSeconds: numberOr(breathing.staleTimeoutSeconds, 3),
         invertDirection: Boolean(breathing.invertDirection),
         adaptiveBounds: breathing.adaptiveBounds !== false,
@@ -1040,8 +1256,8 @@
     app.editingModuleId = id;
     app.moduleDraft = structuredClone(metricOptionFor(id));
     elements["module-dialog-title"].textContent = `Adjust ${metric.label}`;
-    elements["module-dialog-intro"].textContent = id === "breathing_phase"
-      ? "Tune the ACC classifier and its circle visualizer. Saving restarts breathing calibration; output changes are then applied to the matching LSL and OSC stream."
+    elements["module-dialog-intro"].textContent = breathingOutputIds.has(id)
+      ? "Tune the shared experimental ACC breathing estimate. Saving restarts calibration and applies the settings to both breathing outputs."
       : "Tune this visualizer and output transform. Changes remain a draft until Save module is pressed.";
     renderModuleSettings();
     elements["module-dialog"].showModal();
@@ -1076,32 +1292,31 @@
     }
 
     const sections = [general];
-    if (metric.id === "breathing_phase") {
-      const classifier = app.moduleDraft.processing.breathingPhase;
-      const processing = settingsSection("ACC breath-phase classifier", "These controls follow the original Polar tracker. The PCA axis is recalibrated whenever saved processing settings change.");
+    if (breathingOutputIds.has(metric.id)) {
+      const classifier = app.moduleDraft.processing.breathing;
+      const processing = settingsSection("Experimental ACC breathing", "X + Z is recommended. Including Y enables the rotational axis; at least two axes are required. Saving restarts the fixed 12-second calibration.");
+      ["X axis · recommended", "Y axis · rotational", "Z axis · recommended"].forEach((label, index) => {
+        processing.append(checkSetting(label, "Included in smoothing, PCA calibration and projection.", classifier.axes[index], (value) => {
+          const next = [...classifier.axes];
+          next[index] = value;
+          if (selectedAxisCount(next) < 2) {
+            toast("Choose at least two axes for the ACC breathing estimate.", true);
+            renderModuleSettings();
+            return;
+          }
+          classifier.axes = next;
+        }));
+      });
       processing.append(
-        numberSetting("Calibration window", "Quiet chest-motion data used to learn the principal axis (seconds).", classifier.calibrationWindowSeconds, 1, 60, 1, (value) => classifier.calibrationWindowSeconds = clampNumber(value, 1, 60, 12)),
-        numberSetting("Minimum motion range", "Required robust range on the learned axis (g).", classifier.minimumAxisRangeG, 0.001, 0.25, 0.001, (value) => classifier.minimumAxisRangeG = clampNumber(value, 0.001, 0.25, 0.01)),
-        numberSetting("ACC smoothing", "EMA alpha; lower values smooth more strongly.", classifier.sampleEmaAlpha, 0.01, 1, 0.01, (value) => classifier.sampleEmaAlpha = clampNumber(value, 0.01, 1, 0.1)),
-        numberSetting("Projection smoothing", "EMA alpha applied after PCA projection.", classifier.projectionEmaAlpha, 0.01, 1, 0.01, (value) => classifier.projectionEmaAlpha = clampNumber(value, 0.01, 1, 0.1)),
-        numberSetting("Phase threshold", "Minimum 0–1 waveform change for inhale or exhale.", classifier.phaseDeltaThreshold, 0.0001, 0.25, 0.0001, (value) => classifier.phaseDeltaThreshold = clampNumber(value, 0.0001, 0.25, 0.003)),
-        numberSetting("Stale timeout", "A longer data gap marks the next class as bad signal (seconds).", classifier.staleTimeoutSeconds, 0.25, 30, 0.25, (value) => classifier.staleTimeoutSeconds = clampNumber(value, 0.25, 30, 3)),
-        checkSetting("Invert inhale / exhale", "Flips the learned movement axis when sensor orientation reverses the phases.", classifier.invertDirection, (value) => classifier.invertDirection = value),
-        checkSetting("Adaptive normalization bounds", "Slowly follows posture and strap drift after calibration.", classifier.adaptiveBounds, (value) => {
-          classifier.adaptiveBounds = value;
-          renderModuleSettings();
-        }),
+        numberSetting("Smoothing window", "Seconds of ACC smoothing; longer is steadier but adds lag.", classifier.smoothingWindowSeconds, 0.05, 5, 0.05, (value) => classifier.smoothingWindowSeconds = clampNumber(value, 0.05, 5, 0.75)),
+        checkSetting("Invert direction", "Flips the learned movement axis when strap orientation reverses the curve.", classifier.invertDirection, (value) => classifier.invertDirection = value),
       );
-      if (classifier.adaptiveBounds) {
-        processing.append(
-          numberSetting("Adaptive window", "Recent projections used to refresh robust bounds (seconds).", classifier.adaptiveWindowSeconds, 5, 300, 1, (value) => classifier.adaptiveWindowSeconds = clampNumber(value, 5, 300, 20)),
-          numberSetting("Lower quantile", "Robust lower projection bound.", classifier.lowerQuantile, 0, 0.4, 0.01, (value) => classifier.lowerQuantile = clampNumber(value, 0, 0.4, 0.05)),
-          numberSetting("Upper quantile", "Robust upper projection bound.", classifier.upperQuantile, 0.6, 1, 0.01, (value) => classifier.upperQuantile = clampNumber(value, 0.6, 1, 0.95)),
-        );
+      if (metric.id === "breathing_phase") {
+        processing.append(numberSetting("Sensitivity", "0 is conservative; 1 reacts to smaller projected changes.", classifier.sensitivity, 0, 1, 0.05, (value) => classifier.sensitivity = clampNumber(value, 0, 1, 0.60)));
       }
       const warning = document.createElement("div");
       warning.className = "settings-note";
-      warning.textContent = "Bad signal (−2) means calibration is incomplete or tracking became stale. It does not guarantee detection of every motion artifact; inspect the raw ACC and calibration output when signal quality matters.";
+      warning.textContent = "Unvalidated research estimate. Pause (0) also represents calibration or stale input; it does not certify good signal. Inspect raw ACC and compare with a reference respiratory sensor.";
       processing.append(warning);
       sections.push(processing);
     }
@@ -1181,6 +1396,10 @@
     if (!id || !metric || !app.moduleDraft) return;
     const draft = structuredClone(app.moduleDraft);
     if (!metric.normalizable) draft.normalization = "none";
+    if (breathingOutputIds.has(id)) {
+      if (selectedAxisCount(draft.processing.breathing.axes) < 2) return;
+      app.breathingSettings = structuredClone(draft.processing.breathing);
+    }
     app.metricOptions[id] = draft;
     resetVisualTransform(id);
     for (const [visualId, definition] of Object.entries(visualDefinitions)) {
@@ -1190,7 +1409,7 @@
     updateVisualLabels();
     await configureOutputs();
     elements["module-dialog"].close();
-    toast(`${metric.label} settings saved${id === "breathing_phase" ? " · calibration restarted" : ""}`);
+    toast(`${metric.label} settings saved${breathingOutputIds.has(id) ? " · calibration restarted" : ""}`);
   }
 
   function resetVisualTransform(id) {
@@ -1201,6 +1420,7 @@
   function resetMeasurementVisuals() {
     app.visualNormalizers = {};
     for (const buffer of Object.values(buffers)) buffer.clear();
+    resetPhaseMotion();
     app.sampleCount = 0;
     markTelemetryDirty();
   }
@@ -1598,7 +1818,29 @@
     });
   }
 
-  function drawBreathingPhase(context, canvas, phaseBuffer) {
+  function resetPhaseMotion(level = 0.5, velocity = 0) {
+    app.phaseMotion = { level, velocity, lastAt: 0 };
+  }
+
+  function advancePhaseMotion(phase, now = performance.now()) {
+    const state = app.phaseMotion;
+    const deltaSeconds = state.lastAt
+      ? Math.max(1 / 240, Math.min(0.08, (now - state.lastAt) / 1000))
+      : 1 / 30;
+    state.lastAt = now;
+    const targetVelocity = phase > 0.5 ? 0.95 : phase < -0.5 && phase > -1.5 ? -0.95 : 0;
+    const response = targetVelocity === 0 ? 1.7 : 4.2;
+    state.velocity += (targetVelocity - state.velocity) * (1 - Math.exp(-response * deltaSeconds));
+    if (state.velocity >= 0) {
+      state.level += state.velocity * deltaSeconds * (1 - state.level) * 1.65;
+    } else {
+      state.level += state.velocity * deltaSeconds * state.level * 1.65;
+    }
+    state.level = Math.max(0, Math.min(1, state.level));
+    return state.level;
+  }
+
+  function drawBreathingPhase(context, canvas, phaseBuffer, now = performance.now()) {
     const phase = phaseBuffer.latest();
     const width = canvas.width;
     const height = canvas.height;
@@ -1611,9 +1853,12 @@
     elements["y-min"].textContent = "";
     if (!hasPhase) return;
 
-    const volume = Math.max(0, Math.min(1, Number(buffers.breathing_volume?.latest()) || 0.5));
+    const motion = advancePhaseMotion(Number(phase), now);
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-    const radius = Math.min(width, height) * (descriptor.bad ? 0.20 : 0.14 + volume * 0.20);
+    const shortestSide = Math.min(width, height);
+    const minimumRadius = shortestSide * 0.14;
+    const maximumRadius = shortestSide * 0.34;
+    const radius = minimumRadius + motion * (maximumRadius - minimumRadius);
     const centerX = width / 2;
     const centerY = height / 2;
     const glow = context.createRadialGradient(centerX, centerY, radius * 0.25, centerX, centerY, radius * 1.35);
@@ -1627,14 +1872,12 @@
     context.beginPath();
     context.arc(centerX, centerY, radius, 0, Math.PI * 2);
     context.fillStyle = descriptor.textColor;
-    context.globalAlpha = descriptor.bad ? 0.18 : 0.22;
+    context.globalAlpha = 0.22;
     context.fill();
     context.globalAlpha = 1;
     context.strokeStyle = descriptor.color;
     context.lineWidth = Math.max(2, pixelRatio * 2);
-    if (descriptor.bad) context.setLineDash([8 * pixelRatio, 7 * pixelRatio]);
     context.stroke();
-    context.setLineDash([]);
     context.fillStyle = descriptor.color;
     context.textAlign = "center";
     context.textBaseline = "middle";
@@ -1647,10 +1890,9 @@
   }
 
   function breathingPhaseDescriptor(value) {
-    if (value <= -1.5) return { label: "BAD SIGNAL", hint: "calibrate or inspect ACC", color: "#b94b40", textColor: "#6f211b", bad: true };
-    if (value > 0.5) return { label: "INHALE", hint: "chest projection rising", color: "#168259", textColor: "#083d29", bad: false };
-    if (value < -0.5) return { label: "EXHALE", hint: "chest projection falling", color: "#d17a28", textColor: "#673605", bad: false };
-    return { label: "PAUSE", hint: "change below threshold", color: "#3b78aa", textColor: "#173f62", bad: false };
+    if (value > 0.5) return { label: "INHALE", hint: "circle expanding", color: "#168259", textColor: "#083d29" };
+    if (value < -0.5 && value > -1.5) return { label: "EXHALE", hint: "circle shrinking", color: "#d17a28", textColor: "#673605" };
+    return { label: "PAUSE", hint: "motion easing to rest", color: "#3b78aa", textColor: "#173f62" };
   }
 
   function updateSparkline() {
@@ -1701,6 +1943,7 @@
       handleNativeEvent({ kind: "accelerometer", sensorTimestampNs: 0, samples: acc });
       handleNativeEvent({ kind: "metrics", values: [
         { id: "breathing_calibration", value: 1 },
+        { id: "acc_breathing_magnitude", value: Math.sin(app.demoPhase * 1.25) * 0.035 },
         { id: "breathing_volume", value: 0.5 + Math.sin(app.demoPhase * 1.25) * 0.42 },
         { id: "breathing_phase", value: Math.cos(app.demoPhase * 1.25) > 0.08 ? 1 : Math.cos(app.demoPhase * 1.25) < -0.08 ? -1 : 0 },
         { id: "breathing_axis_range", value: 0.034 },
@@ -1708,7 +1951,7 @@
       if (app.demoPhase - lastMetric >= 1) {
         lastMetric = app.demoPhase;
         const values = app.catalog
-          .filter((metric) => !metric.raw && !["acc_magnitude", "breathing_calibration", "breathing_volume", "breathing_phase", "breathing_axis_range"].includes(metric.id))
+          .filter((metric) => !metric.raw && !["acc_magnitude", "acc_breathing_magnitude", "breathing_calibration", "breathing_volume", "breathing_phase", "breathing_axis_range"].includes(metric.id))
           .map((metric) => ({ id: metric.id, value: demoMetricValue(metric.id, app.demoPhase) }));
         handleNativeEvent({ kind: "metrics", values });
       }
@@ -1769,9 +2012,12 @@
     if (name === "metric-library-previews") {
       await ensureMetricPreviews();
       app.selectedMetricId = "raw_ecg";
+      app.libraryMetricDraft = structuredClone(metricOptionFor("raw_ecg", { forSelection: true }));
+      app.metricFamily = "ecg";
       app.metricFilter = "All";
       app.metricSearch = "";
       elements["metric-search"].value = "";
+      updateMetricFamilyUi();
       renderMetricFilters();
       renderMetricOptions();
       if (!elements["output-dialog"].open) elements["output-dialog"].showModal();
@@ -1781,6 +2027,8 @@
         scenario: name,
         dialogOpen: elements["output-dialog"].open,
         catalogCount: app.catalog.length,
+        visibleCount: libraryCatalog().length,
+        visibleIds: libraryCatalog().map((metric) => metric.id),
         previewCount: previewIds.length,
         missingPreviewIds: app.catalog.map((metric) => metric.id).filter((id) => !previewIds.includes(id)),
         source: structuredClone(metricPreviews?.source || {}),
@@ -1814,10 +2062,9 @@
       };
     }
     const targets = {
-      "breathing-phase-inhale": { phase: 1, volume: 0.82, label: "INHALE" },
-      "breathing-phase-exhale": { phase: -1, volume: 0.18, label: "EXHALE" },
-      "breathing-phase-pause": { phase: 0, volume: 0.50, label: "PAUSE" },
-      "breathing-phase-bad-signal": { phase: -2, volume: 0.50, label: "BAD SIGNAL" },
+      "breathing-phase-inhale": { phase: 1, label: "INHALE" },
+      "breathing-phase-exhale": { phase: -1, label: "EXHALE" },
+      "breathing-phase-pause": { phase: 0, label: "PAUSE" },
     };
     const target = targets[name] || targets["breathing-phase-inhale"];
     app.outputs.add("breathing_phase");
@@ -1828,10 +2075,11 @@
     updateVisualLabels();
     resizeCanvas();
     ensureBuffer("breathing_phase").clear();
-    ensureBuffer("breathing_volume").clear();
-    ensureBuffer("breathing_volume").push(target.volume);
     ensureBuffer("breathing_phase").push(target.phase);
-    drawSignal();
+    resetPhaseMotion(target.phase > 0 ? 0.18 : target.phase < 0 ? 0.82 : 0.58, target.phase === 0 ? 0.8 : 0);
+    for (let frame = 0; frame < 180; frame += 1) {
+      drawBreathingPhase(signalContext, elements["signal-canvas"], ensureBuffer("breathing_phase"), frame * (1000 / 60));
+    }
 
     if (name === "breathing-phase-settings") {
       openModuleSettings("breathing_phase");
@@ -1840,7 +2088,7 @@
     }
     await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
     resizeCanvas();
-    drawSignal();
+    drawBreathingPhase(signalContext, elements["signal-canvas"], ensureBuffer("breathing_phase"), 181 * (1000 / 60));
     return {
       scenario: name,
       expectedLabel: target.label,
@@ -1848,6 +2096,7 @@
       selectedVisual: app.selectedVisual,
       streamName: streamOutputName(app.catalog.find((metric) => metric.id === "breathing_phase")),
       dialogOpen: elements["module-dialog"].open,
+      phaseMotion: structuredClone(app.phaseMotion),
     };
   }
 
@@ -1858,7 +2107,6 @@
         "breathing-phase-inhale",
         "breathing-phase-exhale",
         "breathing-phase-pause",
-        "breathing-phase-bad-signal",
         "breathing-phase-settings",
         "raw-accelerometer-stacked",
         "metric-library-previews",

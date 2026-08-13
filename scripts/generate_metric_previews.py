@@ -330,11 +330,11 @@ def generate() -> dict:
     values.update(rr_windows(peaks, times))
     values.update(coherence_windows(peaks, times))
 
+    values["acc_breathing_magnitude"] = rsp_centered * 0.035
     values["breathing_volume"] = rsp_preview
     derivative = np.gradient(rsp_preview)
     threshold = np.quantile(np.abs(derivative), 0.22)
     phase = np.where(derivative > threshold, 1, np.where(derivative < -threshold, -1, 0)).astype(float)
-    phase[(times >= 52) & (times <= 58)] = -2
     values["breathing_phase"] = phase
     values["breathing_calibration"] = np.clip(times / 12, 0, 1)
     values["breathing_axis_range"] = 0.024 + 0.008 * np.abs(rsp_centered) + 0.001 * np.sin(times / 8)

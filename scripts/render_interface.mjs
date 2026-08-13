@@ -11,7 +11,6 @@ const targets = [
   ["breathing-phase-inhale", "INHALE", [22, 130, 89]],
   ["breathing-phase-exhale", "EXHALE", [209, 122, 40]],
   ["breathing-phase-pause", "PAUSE", [59, 120, 170]],
-  ["breathing-phase-bad-signal", "BAD SIGNAL", [185, 75, 64]],
 ];
 
 const mime = new Map([
@@ -137,11 +136,18 @@ try {
     measurements.get("breathing-phase-inhale").width > measurements.get("breathing-phase-exhale").width * 1.35,
     "inhale circle must render materially larger than exhale",
   );
+  const paused = await page.evaluate(() => window.PolarInterfaceRenderer.render("breathing-phase-pause"));
+  assert.ok(Math.abs(paused.phaseMotion.velocity) < 0.02, "pause should ease the circle velocity toward rest");
+  assert.ok(paused.phaseMotion.level > 0.58, "pause should retain motion inertia instead of abruptly freezing");
 
   const settings = await page.evaluate(() => window.PolarInterfaceRenderer.render("breathing-phase-settings"));
   assert.equal(settings.dialogOpen, true);
   assert.equal(await page.locator("#module-dialog-title").textContent(), "Adjust Breath phase classifier");
-  assert.ok(await page.locator("#module-settings input").count() >= 10, "classifier controls were not rendered");
+  assert.ok(await page.locator("#module-settings input").count() >= 7, "classifier controls were not rendered");
+  assert.equal(await page.getByLabel("X axis · recommended").isChecked(), true);
+  assert.equal(await page.getByLabel("Y axis · rotational").isChecked(), false);
+  assert.equal(await page.getByLabel("Z axis · recommended").isChecked(), true);
+  assert.equal(await page.getByLabel("Sensitivity").inputValue(), "0.6");
   await page.screenshot({ path: join(output, "breathing-phase-settings.png"), fullPage: true });
   await page.getByLabel("Display window").fill("12");
   await page.getByRole("button", { name: "Save module" }).click();
@@ -173,8 +179,10 @@ try {
   assert.equal(library.source.library, "NeuroKit2");
   assert.equal(library.source.version, "0.2.13");
   assert.equal(library.source.model, "ECGSYN");
-  assert.equal(await page.locator(".metric-option .metric-preview-svg").count(), library.catalogCount);
+  assert.equal(await page.locator(".metric-option .metric-preview-svg").count(), library.visibleCount);
   assert.equal(await page.locator(".metric-preview-missing").count(), 0);
+  assert.ok(!library.visibleIds.includes("raw_acc"), "ACC outputs leaked into ECG mode");
+  assert.ok(!library.visibleIds.includes("breathing_phase"), "ACC breathing leaked into ECG mode");
   const coverage = await page.locator(".metric-preview-compact").evaluateAll((figures) => figures.map((figure) => ({
     id: figure.dataset.metricId,
     paths: figure.querySelectorAll("path.metric-preview-line").length,
@@ -183,7 +191,7 @@ try {
     minimum: Number(figure.dataset.minimum),
     maximum: Number(figure.dataset.maximum),
   })));
-  assert.equal(new Set(coverage.map((preview) => preview.id)).size, library.catalogCount);
+  assert.equal(new Set(coverage.map((preview) => preview.id)).size, library.visibleCount);
   for (const preview of coverage) {
     assert.ok(preview.paths >= 1, `${preview.id} has no generated SVG path`);
     assert.ok(preview.pathLength > 120, `${preview.id} SVG path was unexpectedly small`);
@@ -191,13 +199,31 @@ try {
     assert.ok(preview.maximum >= preview.minimum, `${preview.id} has an inverted range`);
   }
 
-  for (const metricId of ["raw_ecg", "raw_acc", "rmssd", "breathing_phase", "excitement_score"]) {
+  for (const metricId of ["raw_ecg", "rmssd", "excitement_score"]) {
     await page.locator(`.metric-option:has(.metric-preview[data-metric-id="${metricId}"])`).click();
     const detail = page.locator(`.metric-preview-large[data-metric-id="${metricId}"]`);
     assert.equal(await detail.count(), 1, `${metricId} did not render a selected-metric preview`);
     assert.ok(await detail.locator(".metric-preview-line").count() >= 2, `${metricId} preview path is missing`);
     assert.equal(await detail.locator("animateTransform").count(), 1, `${metricId} preview is not looped`);
   }
+  await page.getByRole("button", { name: /ACC metrics/ }).click();
+  assert.equal(await page.locator("#output-dialog").getAttribute("data-family"), "acc");
+  const accIds = await page.locator(".metric-option").evaluateAll((options) => options.map((option) => option.dataset.metricId));
+  assert.deepEqual(accIds, ["raw_acc", "acc_magnitude", "acc_breathing_magnitude", "breathing_phase"]);
+  assert.match(await page.locator("#metric-library-summary").textContent(), /^4 of 4 ACC metrics$/);
+
+  await page.locator('.metric-option[data-metric-id="acc_breathing_magnitude"]').click();
+  assert.equal(await page.locator(".experimental-badge").textContent(), "Not validated");
+  const selectionSettings = page.locator(".breathing-selection-settings");
+  assert.equal(await selectionSettings.getByLabel("Normalize output to 0–1").isChecked(), true);
+  assert.equal(await selectionSettings.getByLabel("X · recommended").isChecked(), true);
+  assert.equal(await selectionSettings.getByLabel("Y · rotational").isChecked(), false);
+  assert.equal(await selectionSettings.getByLabel("Z · recommended").isChecked(), true);
+
+  await page.locator('.metric-option[data-metric-id="breathing_phase"]').click();
+  assert.equal(await selectionSettings.getByLabel("Sensitivity").inputValue(), "0.6");
+  assert.equal(await selectionSettings.getByLabel("Invert inhale / exhale").isChecked(), false);
+  assert.match(await page.locator("#metric-detail").textContent(), /inhale \(\+1\), pause\/not ready \(0\), and exhale \(−1\)/);
   assert.match(await page.locator(".metric-preview-provenance").textContent(), /NeuroKit2 0\.2\.13 · ECGSYN/);
   assert.match(await page.locator(".metric-preview-note").textContent(), /not expected personal values or validation accuracy/);
   const previewScreenshot = join(output, "metric-library-previews.png");

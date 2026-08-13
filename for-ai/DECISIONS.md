@@ -1,5 +1,18 @@
 # Decision log
 
+## 2026-08-13 — New ACC breathing selection is deliberately limited
+
+The output library separates red ECG-derived outputs from blue accelerometer
+outputs. New ACC breathing selection exposes only two independent scalar
+streams: a continuous selected-axis projection in g (optionally normalized by
+the output layer) and a three-state phase class (`+1`, `0`, `-1`). They share
+native axis and smoothing settings, default to X + Z without rotational Y, and
+remain labeled unvalidated. Legacy breathing telemetry stays catalogued only so
+saved configurations can migrate safely; it is not offered as a new library
+choice. The phase circle is presentation-only and derives its inertial,
+asymptotically bounded motion from phase values rather than a hidden volume
+stream.
+
 ## 2026-08-13 — The dedicated repository is public
 
 `GeorgeFejer91/Polar-Stream` is publicly readable. Keep credentials,

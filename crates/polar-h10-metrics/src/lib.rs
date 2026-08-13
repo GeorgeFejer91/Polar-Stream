@@ -65,7 +65,8 @@ impl MetricSelection {
                     selection.ecg_features = true;
                 }
                 "acc_magnitude" => selection.acc_magnitude = true,
-                "breathing_volume"
+                "acc_breathing_magnitude"
+                | "breathing_volume"
                 | "breathing_phase"
                 | "breathing_calibration"
                 | "breathing_axis_range" => selection.breathing = true,
@@ -127,19 +128,7 @@ impl MetricSelection {
     }
 
     fn retain_selected(self, values: &mut Vec<MetricSample>) {
-        values.retain(|sample| {
-            self.includes(sample.id)
-                // The phase visualizer uses the calibrated volume even when only
-                // the classifier itself is exposed as an output.
-                || (self.breathing
-                    && matches!(
-                        sample.id,
-                        "breathing_volume"
-                            | "breathing_phase"
-                            | "breathing_calibration"
-                            | "breathing_axis_range"
-                    ))
-        });
+        values.retain(|sample| self.includes(sample.id));
     }
 }
 
@@ -415,5 +404,30 @@ mod tests {
         }]);
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].id, "acc_magnitude");
+    }
+
+    #[test]
+    fn experimental_breathing_outputs_are_independent_scalar_streams() {
+        let mut magnitude =
+            MetricEngine::with_selection(MetricSelection::from_ids(["acc_breathing_magnitude"]));
+        let mut phase =
+            MetricEngine::with_selection(MetricSelection::from_ids(["breathing_phase"]));
+        let mut magnitude_values = Vec::new();
+        let mut phase_values = Vec::new();
+        for index in 0..2_500 {
+            let sample = AccSample {
+                x_mg: 0,
+                y_mg: 0,
+                z_mg: 1_000
+                    + (25.0 * (index as f32 / 200.0 * std::f32::consts::TAU * 0.2).sin()) as i16,
+            };
+            magnitude_values = magnitude.process_accelerometer(&[sample]);
+            phase_values = phase.process_accelerometer(&[sample]);
+        }
+        assert_eq!(magnitude_values.len(), 1);
+        assert_eq!(magnitude_values[0].id, "acc_breathing_magnitude");
+        assert_eq!(phase_values.len(), 1);
+        assert_eq!(phase_values[0].id, "breathing_phase");
+        assert!([-1.0, 0.0, 1.0].contains(&phase_values[0].value));
     }
 }

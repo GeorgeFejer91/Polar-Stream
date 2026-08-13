@@ -72,7 +72,12 @@ name per optional metric. LSL uses that full string as its outlet name; OSC uses
 the same string as its address with a leading slash.
 
 The UI receives each suffix through the bootstrap catalog so its previews are
-descriptions of the native contract, not an independent naming scheme.
+descriptions of the native contract, not an independent naming scheme. Its
+library presentation groups outputs by sensor family: ECG-derived outputs use
+the red ECG view, while the blue ACC view intentionally exposes only raw ACC,
+3D motion magnitude, the continuous experimental breathing projection and the
+three-state experimental phase classifier. Legacy breathing IDs remain in the
+catalog for saved-config migration but are not offered as new library choices.
 
 ## Latency policy
 
@@ -131,10 +136,14 @@ real-world signal quality, expected ranges, or clinical validity.
 3. Add or update formula tests in that module and the evidence inventory.
 4. Regenerate `ui/metric-previews.js`; the generator enforces catalog coverage.
 
-The UI and output router consume the same bootstrap catalog, so every registered
-metric automatically receives a stream name, metric-library entry, output card,
-and visualizer choice. The library is deliberately a one-output transaction:
-selecting a row reveals the catalog's scientific interpretation and citation,
-while **Save output** adds the metric to the router configuration.
+The UI and output router consume the same bootstrap catalog, so registered
+metrics share native definitions, stream names, output cards, and visualizer
+metadata. A small presentation allowlist keeps retired ACC breathing telemetry
+out of new selections without breaking saved configurations. The library is a
+one-output transaction: selecting a row reveals the scientific interpretation,
+citation, and any pre-save processing controls before **Save output** adds it to
+the router. The two public ACC breathing outputs share one native axis/smoothing
+configuration; their independent scalar streams and visualizers do not move
+signal processing into JavaScript.
 
 Raw input and output destinations remain unchanged.

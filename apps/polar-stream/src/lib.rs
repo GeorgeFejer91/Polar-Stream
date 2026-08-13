@@ -52,10 +52,14 @@ struct ProcessingSettings {
 
 impl ProcessingSettings {
     fn from_config(config: &OutputConfig) -> Self {
-        let breathing = config
-            .metric_options
-            .get("breathing_phase")
-            .and_then(|options| options.processing.breathing_phase)
+        let breathing = ["breathing_phase", "acc_breathing_magnitude"]
+            .iter()
+            .find_map(|id| {
+                config
+                    .metric_options
+                    .get(*id)
+                    .and_then(|options| options.processing.breathing)
+            })
             .unwrap_or_default()
             .clamped();
         Self {
@@ -309,7 +313,7 @@ async fn connect_device(
                         &ui_tx,
                         vec![MetricSample {
                             id: "breathing_phase",
-                            value: -2.0,
+                            value: 0.0,
                         }],
                     );
                     phase_sent

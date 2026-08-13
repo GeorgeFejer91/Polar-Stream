@@ -199,7 +199,24 @@
           <div><p class="eyebrow">Output library</p><h2 id="output-dialog-title">Add signals</h2></div>
           <button class="icon-button" value="cancel" aria-label="Close">×</button>
         </header>
-        <p class="dialog-intro">Choose one raw or preprocessed research output, review what it measures and the current scientific interpretation, then save it as a stream module.</p>
+        <p class="dialog-intro">Choose the sensor family first, then review and configure one output before adding it.</p>
+        <section class="metric-family-picker" aria-labelledby="metric-family-heading">
+          <div class="metric-family-heading">
+            <span id="metric-family-heading">Signal family</span>
+            <strong id="metric-family-context">ECG-first outputs</strong>
+          </div>
+          <div class="metric-family-toggle" id="metric-family-toggle" role="group" aria-label="Choose ECG or accelerometer metrics">
+            <button type="button" class="family-choice family-ecg active" data-family="ecg" aria-pressed="true">
+              <svg viewBox="0 0 28 28" aria-hidden="true"><path d="M2 15h6l2.2-7 4.1 13 2.8-9 2 3H26"/></svg>
+              <span><strong>ECG metrics</strong><small>H10's established core signal</small></span>
+            </button>
+            <button type="button" class="family-choice family-acc" data-family="acc" aria-pressed="false">
+              <svg viewBox="0 0 28 28" aria-hidden="true"><path d="M6 22V7m0 15h15M6 7l-2.5 3M6 7l2.5 3m12.5 12-3-2m3 2-2 3M11 17l8-8m0 0-4 .5M19 9l-.5 4"/></svg>
+              <span><strong>ACC metrics</strong><small>Experimental breathing research</small></span>
+            </button>
+          </div>
+          <p id="metric-family-note">Start with ECG for the signal the H10 is designed to measure; interpretation limits still apply.</p>
+        </section>
         <div class="metric-library-tools">
           <label class="metric-search">
             <span>Search metrics</span>

@@ -14,6 +14,13 @@ Last verified: 2026-08-13
 - Low-latency renderer scheduling capped at 30 Hz and paused while hidden.
 - One raw accelerometer visualizer with stacked, independently scaled X/Y/Z
   lanes on the active development branch.
+- Red ECG / blue ACC output-library modes. ACC mode offers only raw ACC, 3D
+  motion magnitude, a continuous experimental breathing projection, and a
+  three-state experimental phase classifier.
+- Shared pre-save ACC breathing controls for the two public breathing outputs:
+  two or three axes (X + Z recommended), smoothing, phase sensitivity and
+  direction; the magnitude output can optionally normalize to 0–1.
+- A phase-only breathing circle with asymptotic size limits and pause inertia.
 - Public dedicated GitHub repository at `GeorgeFejer91/Polar-Stream`.
 
 ## Active branch context
@@ -29,8 +36,8 @@ substitute for Git.
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.
 - liblsl availability and packaging differ by platform; follow `RELEASING.md`.
-- ACC-derived respiration features are experimental and require comparison with
-  a reference respiratory sensor before interpretation.
+- Both public ACC-derived respiration outputs are unvalidated and require
+  comparison with a reference respiratory sensor before interpretation.
 - Windows and macOS public packages are currently unsigned/ad-hoc unless release
   infrastructure states otherwise.
 - Physical-device latency percentiles, queue high-water marks, and transport

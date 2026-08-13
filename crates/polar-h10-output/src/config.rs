@@ -89,16 +89,25 @@ impl OutputConfig {
             if !MetricSpec::for_id(id).is_some_and(|metric| metric.normalizable) {
                 options.normalization = NormalizationMode::None;
             }
-            if id == "breathing_phase" {
-                options.processing.breathing_phase = Some(
-                    options
-                        .processing
-                        .breathing_phase
-                        .unwrap_or_default()
-                        .clamped(),
-                );
+            if matches!(id.as_str(), "breathing_phase" | "acc_breathing_magnitude") {
+                options.processing.breathing =
+                    Some(options.processing.breathing.unwrap_or_default().clamped());
             } else {
-                options.processing.breathing_phase = None;
+                options.processing.breathing = None;
+            }
+        }
+        let shared_breathing = ["breathing_phase", "acc_breathing_magnitude"]
+            .iter()
+            .find_map(|id| {
+                self.metric_options
+                    .get(*id)
+                    .and_then(|options| options.processing.breathing)
+            });
+        if let Some(shared_breathing) = shared_breathing {
+            for id in ["breathing_phase", "acc_breathing_magnitude"] {
+                if let Some(options) = self.metric_options.get_mut(id) {
+                    options.processing.breathing = Some(shared_breathing);
+                }
             }
         }
         Ok(self)
@@ -141,8 +150,8 @@ impl Default for MetricOutputOptions {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetricProcessingOptions {
-    #[serde(default)]
-    pub breathing_phase: Option<BreathingSettings>,
+    #[serde(default, alias = "breathingPhase")]
+    pub breathing: Option<BreathingSettings>,
 }
 
 const fn default_window_seconds() -> u32 {
@@ -285,9 +294,9 @@ mod tests {
             MetricOutputOptions {
                 display_window_seconds: 900,
                 processing: MetricProcessingOptions {
-                    breathing_phase: Some(BreathingSettings {
+                    breathing: Some(BreathingSettings {
                         calibration_window_seconds: 0.1,
-                        phase_delta_threshold: 9.0,
+                        sensitivity: 9.0,
                         ..BreathingSettings::default()
                     }),
                 },
@@ -302,10 +311,59 @@ mod tests {
         .normalized()
         .unwrap();
         let options = config.metric_options["breathing_phase"];
-        let classifier = options.processing.breathing_phase.unwrap();
+        let classifier = options.processing.breathing.unwrap();
         assert_eq!(options.display_window_seconds, 600);
         assert_eq!(classifier.calibration_window_seconds, 1.0);
-        assert_eq!(classifier.phase_delta_threshold, 0.25);
+        assert_eq!(classifier.sensitivity, 1.0);
+    }
+
+    #[test]
+    fn breathing_outputs_share_one_processing_configuration() {
+        let mut metric_options = HashMap::new();
+        metric_options.insert(
+            "breathing_phase".into(),
+            MetricOutputOptions {
+                processing: MetricProcessingOptions {
+                    breathing: Some(BreathingSettings {
+                        axes: [true, true, false],
+                        sensitivity: 0.25,
+                        ..BreathingSettings::default()
+                    }),
+                },
+                ..MetricOutputOptions::default()
+            },
+        );
+        metric_options.insert(
+            "acc_breathing_magnitude".into(),
+            MetricOutputOptions {
+                processing: MetricProcessingOptions {
+                    breathing: Some(BreathingSettings {
+                        axes: [true, false, true],
+                        sensitivity: 0.90,
+                        ..BreathingSettings::default()
+                    }),
+                },
+                ..MetricOutputOptions::default()
+            },
+        );
+        let config = OutputConfig {
+            outputs: vec!["breathing_phase".into(), "acc_breathing_magnitude".into()],
+            metric_options,
+            ..OutputConfig::default()
+        }
+        .normalized()
+        .unwrap();
+        let phase = config.metric_options["breathing_phase"]
+            .processing
+            .breathing
+            .unwrap();
+        let magnitude = config.metric_options["acc_breathing_magnitude"]
+            .processing
+            .breathing
+            .unwrap();
+        assert_eq!(phase, magnitude);
+        assert_eq!(phase.axes, [true, true, false]);
+        assert_eq!(phase.sensitivity, 0.25);
     }
 
     #[test]

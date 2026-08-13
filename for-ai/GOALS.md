@@ -41,5 +41,8 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-13: simplified the output library around an ECG/ACC family selector,
+  reduced new ACC breathing choices to magnitude and three-state phase, and
+  exposed their shared experimental classifier controls before selection.
 - 2026-08-13: established the dedicated agent control plane and prioritized the
   single stacked X/Y/Z accelerometer visualization.
