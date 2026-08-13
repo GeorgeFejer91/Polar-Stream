@@ -22,14 +22,19 @@ Last verified: 2026-08-13
   direction; the magnitude output can optionally normalize to 0–1.
 - A phase-only breathing circle with asymptotic size limits and pause inertia.
 - Public dedicated GitHub repository at `GeorgeFejer91/Polar-Stream`.
+- The production-hardening and ECG/ACC output-library work is merged on `main`
+  in PR #5.
+- One canonical interface tree now targets Tauri and GitHub Pages. The staged
+  Pages artifact records hashes of every shared asset, and browser validation
+  covers desktop, 390px touch, and 320px touch layouts.
+- A selectable, deterministic NeuroKit mock input replays synthetic ECGSYN ECG,
+  respiration-derived X/Y/Z motion, and illustrative metrics through the shared
+  runtime event contract in both Pages and the offline Tauri app.
 
 ## Active branch context
 
-The working branch builds on `codex/tauri-production-hardening`, whose draft PR
-adds native preference ownership, stable IPC errors, bounded display delivery,
-release hardening, and the rainbow application icon. Confirm the live Git/PR
-state with `for-ai/scripts/repo-snapshot.sh`; do not treat this paragraph as a
-substitute for Git.
+`main` is the merged baseline. Confirm live Git and PR state with
+`for-ai/scripts/repo-snapshot.sh`; do not infer it from this snapshot.
 
 ## Known constraints
 
@@ -45,3 +50,9 @@ substitute for Git.
 - Selected derived processors execute after raw publication in the coordinator
   loop. The input channel is bounded, but physical-device measurements have not
   yet proven every opt-in metric set stays inside the next-notification budget.
+- The mock input demonstrates interface behavior only. It does not validate H10
+  fidelity, timing, ACC respiration, or output transports, and it never opens
+  native BLE, LSL, or OSC connections.
+- A real H10 Web Bluetooth adapter is not implemented. Browser/platform support,
+  secure-context permissions, PMD protocol behavior, and physical-device tests
+  remain separate requirements if that experimental path is pursued later.

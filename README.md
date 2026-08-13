@@ -35,14 +35,25 @@ the visualizer source.
 > Unofficial research software. Not affiliated with or endorsed by Polar
 > Electro. This is not a medical device.
 
+## Browser demo
+
+The [live Polar Stream browser demo](https://georgefejer91.github.io/Polar-Stream/)
+is deployed from the same `apps/polar-stream/ui/` HTML, CSS, and JavaScript used
+by the Tauri application. Choose **NeuroKit simulated input** in the Input panel
+to replay deterministic ECGSYN ECG and respiration-derived accelerometer data
+without Bluetooth hardware. The same synthetic input is available offline in
+the installed desktop app for interface exploration without a Polar strap.
+
+Synthetic input is labeled throughout the interface. It demonstrates layout,
+configuration, and visualization behavior only; it is not recorded Polar data,
+device or algorithm validation, and it does not open BLE, LSL, or OSC connections.
+GitHub Pages is rebuilt from the canonical UI after changes land on `main`, and
+CI checks byte-for-byte asset parity plus desktop, 390px, and 320px layouts.
+
 ## Download
 
-Use the repository's authenticated
+Use the repository's
 [Polar Stream download page](https://github.com/GeorgeFejer91/Polar-Stream/releases/latest).
-Because the source repository is private, GitHub asks authorized users to sign
-in before serving an installer. A branded static download-page design is also
-maintained in `download/`; its optional Pages workflow can be run if private
-GitHub Pages is enabled for the account in the future.
 
 Every published release is held as a draft until CI has built and launch-tested
 the complete package set:
@@ -115,34 +126,36 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p polar-stream
 ```
 
-Visual validation uses a deterministic Playwright renderer, never a connected
-sensor or the running desktop app. It renders every breath-class target, the
-settings workflow, and all metric-library SVGs in a background Chromium engine,
-checks canvas geometry, color, labels, saved controls, preview coverage, path
-geometry and finite ranges, and writes review images under
-`artifacts/interface-renderer/`:
+Visual validation uses deterministic Playwright renderers, never a connected
+sensor or the running desktop app. They render every breath-class target, the
+settings workflow, all metric-library SVGs, the staged Pages application, and
+touch layouts. Checks cover canvas geometry, color, labels, saved controls,
+preview coverage, Pages parity, NeuroKit replay, and responsive overflow:
 
 ```bash
 npm ci
 npx playwright install chromium
 npm run validate:interface
+npm run validate:browser-demo
 ```
 
-NeuroKit is a development-only preview generator and is not shipped in the app.
-Regenerate and reproducibly verify the checked-in, dependency-free SVG bundle with:
+NeuroKit is a development-only fixture generator and is not shipped in the app
+or website. Regenerate and reproducibly verify the checked-in, dependency-free
+SVG previews and mock input with:
 
 ```bash
 python3 -m venv .venv-previews
 .venv-previews/bin/python -m pip install -r requirements-previews.txt
 .venv-previews/bin/python scripts/generate_metric_previews.py
-.venv-previews/bin/python scripts/generate_metric_previews.py --check
+.venv-previews/bin/python scripts/generate_demo_data.py
+PATH="$PWD/.venv-previews/bin:$PATH" npm run check:previews
 ```
 
-The browser-only frontend preview contains synthetic data and never runs inside
-the native app:
+Stage the exact GitHub Pages artifact locally with:
 
 ```bash
-npx browser-sync start --server apps/polar-stream/ui --no-open --no-ui
+npm run build:browser-demo
+python3 -m http.server 8000 --directory artifacts/browser-demo
 ```
 
 Release maintenance is documented in [RELEASING.md](RELEASING.md).

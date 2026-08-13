@@ -24,22 +24,27 @@ no Python or scientific-computing dependency to the installed application.
 cargo test -p polar-h10-core -p polar-h10-input -p polar-h10-output
 ```
 
-## Preview the interface
+## Browser demo and offline mock input
 
-The frontend includes a browser-only synthetic signal so its complete workflow
-can be reviewed without BLE hardware. Synthetic mode is never entered by the
-native application.
+The shared input adapter offers a clearly labeled **NeuroKit simulated input**
+in both the installed Tauri app and browser demo. It replays the generated,
+checked-in `ui/demo-data.js` fixture entirely offline, so the complete workflow
+can be explored without BLE hardware. It never enters the native BLE or LSL/OSC
+path and is not device or algorithm validation.
 
 ```bash
-npx browser-sync start --server apps/polar-stream/ui --no-open --no-ui
+npm run build:browser-demo
+python3 -m http.server 8000 --directory artifacts/browser-demo
 ```
 
-Open `http://127.0.0.1:3000`, scan, and select the preview H10.
+Open `http://127.0.0.1:8000` and select the NeuroKit mock module. The deployed
+version is at `https://georgefejer91.github.io/Polar-Stream/`.
 
 To rebuild or verify the metric-library previews, install the repository's
 `requirements-previews.txt` in a Python 3.13 virtual environment and run
-`scripts/generate_metric_previews.py` (or pass `--check`). These traces explain
-output shape only; they are not recordings or validation evidence.
+`scripts/generate_metric_previews.py` and `scripts/generate_demo_data.py` (or
+pass `--check`). These traces explain output shape and UI behavior only; they
+are not recordings or validation evidence.
 
 ## Run the native desktop app
 
@@ -87,8 +92,9 @@ On the next launch, Polar Stream applies the name immediately and scans
 automatically for that sensor. It prefers an exact device-ID match, falls back
 to a single unambiguous name match, and otherwise leaves all scan results
 available for manual selection. A failed connection never replaces the
-remembered sensor. Browser-only interface previews use local storage and never
-write the native file. On the first upgraded launch only, the native app accepts
+remembered sensor. The browser demo uses local storage and never writes the
+native file; the synthetic input is not remembered as a physical sensor. On the
+first upgraded launch only, the native app accepts
 the previous version's local preferences through a bounded Rust migration
 command, then uses the native file exclusively.
 

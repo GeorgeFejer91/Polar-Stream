@@ -28,6 +28,9 @@ platform support.
   protocol decoder, metric engine, catalog, or transport implementation.
 - JavaScript consumes bounded display data. It may decimate or skip visual
   frames, but it must never publish authoritative research data.
+- Browser-demo behavior belongs behind the shared frontend runtime API. Keep
+  the HTML, CSS, application logic, metric previews, and visualizations shared
+  with Tauri, and do not fork a second web-only interface implementation.
 
 Dependencies flow from the thin app into domain crates, never from domain
 crates back into Tauri. Platform-specific packaging stays outside reusable
@@ -119,6 +122,16 @@ copies, synchronization, serialization, or higher render cadence.
   permissions, signing state, checksums, and exact-package smoke tests matter.
 - Unsupported hardware or platform claims must be explicit; never infer
   physical BLE validation from a host-only unit or interface test.
+- Treat the hosted browser demo as another presentation target: it must remain
+  usable at 320 CSS pixels, with touch-sized controls, safe-area-aware chrome,
+  no horizontal page overflow, and dialogs that fit the visual viewport.
+- Browser fixtures must be deterministic, synthetic, generated from the pinned
+  development NeuroKit workflow, and labeled as such. They demonstrate UI
+  behavior only. The same mock module may run offline in Tauri, but must stay
+  isolated from real native acquisition and publication code.
+- Web Bluetooth is not a portability assumption. Any future browser H10 path
+  must be an explicit experimental adapter with secure-context, permission,
+  browser-support, PMD protocol, and physical-device validation boundaries.
 
 ## Review and definition of done
 
