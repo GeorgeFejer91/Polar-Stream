@@ -422,17 +422,99 @@ def render_javascript(payload: dict) -> str:
     )
 
 
+def parse_javascript_payload(rendered: str) -> dict:
+    prefix = "window.PolarMetricPreviews = Object.freeze("
+    start = rendered.find(prefix)
+    if start < 0 or not rendered.rstrip().endswith(");"):
+        raise ValueError("generated preview asset does not contain the expected assignment")
+    serialized = rendered[start + len(prefix) : rendered.rfind(");")]
+    return json.loads(serialized)
+
+
+def path_coordinates(path: str) -> np.ndarray:
+    pairs = re.findall(r"[ML](-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)", path)
+    if not pairs:
+        raise ValueError("SVG path contains no M/L coordinate pairs")
+    return np.asarray([(float(x), float(y)) for x, y in pairs])
+
+
+def check_payload(existing: dict, generated: dict) -> list[str]:
+    """Compare deterministic structure while tolerating platform floating-point drift."""
+    errors: list[str] = []
+    for key in ("schemaVersion", "source", "viewBox"):
+        if existing.get(key) != generated.get(key):
+            errors.append(f"top-level {key} differs")
+
+    expected_ids = catalog_ids()
+    existing_metrics = existing.get("metrics", {})
+    generated_metrics = generated["metrics"]
+    if list(existing_metrics) != expected_ids:
+        errors.append("checked-in metric IDs/order differ from the Rust catalog")
+
+    for metric_id in expected_ids:
+        current = existing_metrics.get(metric_id)
+        expected = generated_metrics.get(metric_id)
+        if not isinstance(current, dict) or expected is None:
+            errors.append(f"{metric_id}: preview is missing")
+            continue
+        for key in ("durationSeconds", "minimum", "maximum"):
+            actual_value = current.get(key)
+            expected_value = expected[key]
+            if not isinstance(actual_value, (int, float)) or not math.isfinite(actual_value):
+                errors.append(f"{metric_id}: {key} is not finite")
+                continue
+            tolerance = max(0.05, abs(expected_value) * 0.005)
+            if abs(actual_value - expected_value) > tolerance:
+                errors.append(f"{metric_id}: {key} drifted beyond tolerance")
+
+        current_channels = current.get("channels", [])
+        expected_channels = expected["channels"]
+        if len(current_channels) != len(expected_channels):
+            errors.append(f"{metric_id}: channel count differs")
+            continue
+        for index, (actual_channel, expected_channel) in enumerate(zip(current_channels, expected_channels, strict=True)):
+            for key in ("label", "color"):
+                if actual_channel.get(key) != expected_channel.get(key):
+                    errors.append(f"{metric_id}: channel {index} {key} differs")
+            try:
+                actual_points = path_coordinates(actual_channel.get("path", ""))
+                expected_points = path_coordinates(expected_channel["path"])
+            except ValueError as error:
+                errors.append(f"{metric_id}: channel {index} {error}")
+                continue
+            if actual_points.shape != expected_points.shape:
+                errors.append(f"{metric_id}: channel {index} SVG point count differs")
+                continue
+            if np.max(np.abs(actual_points[:, 0] - expected_points[:, 0])) > 0.05:
+                errors.append(f"{metric_id}: channel {index} SVG time axis differs")
+            vertical_delta = np.abs(actual_points[:, 1] - expected_points[:, 1])
+            if np.max(vertical_delta) > 2.0 or np.sqrt(np.mean(vertical_delta**2)) > 0.6:
+                errors.append(f"{metric_id}: channel {index} SVG shape drifted beyond tolerance")
+            if abs(actual_points[0, 1] - actual_points[-1, 1]) > 0.11:
+                errors.append(f"{metric_id}: channel {index} SVG loop is not closed")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="fail when the checked-in asset is stale")
     arguments = parser.parse_args()
-    rendered = render_javascript(generate())
+    payload = generate()
+    rendered = render_javascript(payload)
     if arguments.check:
         existing = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
-        if existing != rendered:
-            print(f"{OUTPUT.relative_to(ROOT)} is stale; regenerate it", file=sys.stderr)
+        try:
+            existing_payload = parse_javascript_payload(existing)
+        except (ValueError, json.JSONDecodeError) as error:
+            print(f"{OUTPUT.relative_to(ROOT)} is invalid: {error}", file=sys.stderr)
             return 1
-        print(f"Validated {len(catalog_ids())} NeuroKit metric previews")
+        errors = check_payload(existing_payload, payload)
+        if errors:
+            print(f"{OUTPUT.relative_to(ROOT)} is stale or invalid:", file=sys.stderr)
+            for error in errors:
+                print(f"- {error}", file=sys.stderr)
+            return 1
+        print(f"Validated {len(catalog_ids())} NeuroKit metric previews with cross-platform numeric tolerances")
         return 0
     OUTPUT.write_text(rendered, encoding="utf-8")
     print(f"Generated {len(catalog_ids())} metric previews in {OUTPUT.relative_to(ROOT)}")
