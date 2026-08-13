@@ -5,17 +5,21 @@ items into the dated history instead of silently deleting them.
 
 ## Now
 
-1. Finish and validate the production-hardening release path.
-   - Native preference and IPC boundaries are covered by tests.
-   - CI, release assets, and launch smoke checks pass on supported targets.
-2. Make raw acceleration readable without axis switching.
-   - One visualization choice represents raw acceleration. Implemented on the
-     active branch with headless interface coverage.
-   - X, Y, and Z appear as three stacked, labeled, color-distinct traces with
-     independent zero-centered ranges. Implemented on the active branch.
-   - Desktop and narrow layouts render without overflow. Desktop is covered;
-     narrow-layout regression coverage remains to be added.
-3. Keep repository context agent-ready.
+1. Publish a continuously synchronized browser demo on GitHub Pages.
+   - Build Pages from the exact canonical `apps/polar-stream/ui/` assets used by
+     Tauri; do not maintain a second interface copy.
+   - Offer an explicit selectable NeuroKit mock input in both Pages and the
+     offline Tauri app, replaying deterministic ECG, ACC, respiration, and
+     derived demo values through the shared runtime event contract.
+   - Label synthetic input and unavailable native BLE/LSL/OSC behavior clearly.
+   - Deploy after successful changes to `main`, and fail CI if the staged Pages
+     artifact or browser runtime drifts from the desktop UI.
+   - Cover desktop Chromium and smartphone layouts down to 320 CSS pixels,
+     including the output library and metric controls, without horizontal page
+     overflow.
+   - Implementation and automated coverage are present; retain these as ongoing
+     parity requirements for every future interface change.
+2. Keep repository context agent-ready.
    - Root `AGENTS.md` routes agents to `for-ai/`.
    - Context validation passes in local work and CI when adopted.
 
@@ -41,6 +45,11 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-13: established one canonical Tauri/Pages interface, a selectable
+  offline NeuroKit mock input, automatic Pages staging/deployment, asset-parity
+  checks, and desktop plus 390px/320px responsive browser coverage.
+- 2026-08-13: production hardening, stacked raw X/Y/Z acceleration, and the
+  ECG/ACC output-library redesign passed cross-platform CI and merged in PR #5.
 - 2026-08-13: simplified the output library around an ECG/ACC family selector,
   reduced new ACC breathing choices to magnitude and three-state phase, and
   exposed their shared experimental classifier controls before selection.

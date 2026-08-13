@@ -7,8 +7,13 @@
   "scripts": {
     "render:interface": "node scripts/render_interface.mjs",
     "validate:interface": "node scripts/render_interface.mjs --validate",
+    "build:browser-demo": "python3 scripts/build_browser_demo.py",
+    "check:browser-demo": "python3 scripts/build_browser_demo.py --check",
+    "validate:browser-demo": "python3 scripts/build_browser_demo.py && node scripts/validate_browser_demo.mjs",
     "generate:previews": "python3 scripts/generate_metric_previews.py",
-    "check:previews": "python3 scripts/generate_metric_previews.py --check"
+    "check:previews": "python3 scripts/generate_metric_previews.py --check && python3 scripts/generate_demo_data.py --check",
+    "generate:demo": "python3 scripts/generate_demo_data.py",
+    "check:demo": "python3 scripts/generate_demo_data.py --check"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",

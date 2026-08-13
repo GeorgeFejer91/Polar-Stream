@@ -62,6 +62,23 @@ Rules enforced by the crate graph:
 - All native calls are isolated behind `ui/runtime-api.js`. Command failures
   cross IPC as stable code/message/retryable objects rather than Rust strings.
 
+## Shared desktop and browser interface
+
+`apps/polar-stream/ui/` is the only interface source. Tauri packages that
+directory directly, while `scripts/build_browser_demo.py` copies every regular
+file in that canonical tree into the GitHub Pages artifact and records SHA-256
+hashes. It does not transform or fork the application UI.
+`scripts/validate_browser_demo.mjs`
+checks the staged hashes against the canonical files before exercising the site
+at desktop, 390px touch, and 320px touch viewports.
+
+`ui/runtime-api.js` selects the runtime adapter once. Real H10 devices use the
+typed Tauri IPC/channel path. A selectable `neurokit-mock` module is available
+in both Tauri and Pages and replays `ui/demo-data.js` through the same connection,
+ECG, accelerometer, and metric event shapes. Mock data never crosses into the
+Rust acquisition or publication crates, never opens an LSL/OSC destination, and
+is visibly labeled synthetic.
+
 ## Stable discovery names
 
 `polar-h10-metrics` owns the metric/evidence/suffix catalog;
@@ -127,6 +144,14 @@ extra IDs. CI regenerates it with the pinned dependency and compares bytes befor
 the headless renderer checks all paths and representative animated previews.
 Synthetic previews explain output shape only and are not evidence of accuracy,
 real-world signal quality, expected ranges, or clinical validity.
+
+`scripts/generate_demo_data.py` separately creates a 30-second deterministic
+offline input fixture from NeuroKit2 ECGSYN ECG and RSP signals. The fixture
+contains 130 Hz ECG, respiration-derived 200 Hz three-axis motion, and selected
+20 Hz illustrative metric values. Python and NeuroKit are generation-time only;
+the app and Pages site replay the checked-in JavaScript arrays. This fixture
+demonstrates the shared runtime event contract and UI behavior, not Polar H10
+fidelity or breathing-classifier validity.
 
 ## Adding outputs
 

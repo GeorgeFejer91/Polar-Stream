@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-13 — Desktop and browser use one canonical interface
+
+GitHub Pages is a presentation demo of the Tauri application, not a separately
+designed website. Pages artifacts are staged from `apps/polar-stream/ui/`, and
+the same HTML, CSS, application logic, metric library, and visualizations ship
+in both targets. A runtime adapter selects native IPC or a deterministic local
+NeuroKit mock input. That mock input is also selectable in the offline Tauri
+app, allowing interface exploration without a Polar strap while remaining
+isolated from real native acquisition and publication. CI must exercise the
+staged Pages artifact at desktop and smartphone widths so visual feedback on
+the hosted version remains applicable to the desktop interface.
+
+The browser demo labels all input synthetic and does not claim BLE, native
+timing, LSL/OSC transport, or scientific validation. Web Bluetooth may support
+a future experimental H10 adapter in some secure Chromium contexts, but it is
+not the portable demo input because browser/platform support, permissions, PMD
+protocol behavior, and physical-device validation differ.
+
 ## 2026-08-13 — New ACC breathing selection is deliberately limited
 
 The output library separates red ECG-derived outputs from blue accelerometer

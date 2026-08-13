@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#17221d" />
+    <meta name="description" content="Polar Stream interface demo for Polar H10 ECG and accelerometer research outputs." />
     <title>Polar Stream</title>
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="stylesheet" href="styles.css" />
@@ -26,7 +27,7 @@
       </div>
       <div class="latency-note">
         <span id="platform-label">LOCAL</span>
-        <strong>Native data path</strong>
+        <strong id="runtime-path-label">Native data path</strong>
       </div>
     </header>
 
@@ -180,9 +181,9 @@
           <span id="visual-scale-label">Original scale</span>
         </div>
 
-        <div class="pipeline-note">
+        <div class="pipeline-note" id="pipeline-note">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 5 14h6l-1 8 9-13h-6V2Z"/></svg>
-          <div><strong>Acquisition stays native</strong><span>The chart receives display-rate batches; LSL and OSC do not wait for rendering.</span></div>
+          <div><strong id="pipeline-title">Acquisition stays native</strong><span id="pipeline-detail">The chart receives display-rate batches; LSL and OSC do not wait for rendering.</span></div>
         </div>
       </section>
     </main>

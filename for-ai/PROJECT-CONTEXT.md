@@ -21,6 +21,13 @@ Polar H10
 Native publication is the authoritative real-time path. The WebView is a
 display consumer and must not create backpressure.
 
+The same files in `apps/polar-stream/ui/` also form the GitHub Pages browser
+demo. Runtime behavior is selected once through the frontend runtime adapter:
+Tauri can use native IPC for a real H10, while both Tauri and Pages can replay a
+selectable, checked-in deterministic NeuroKit mock input through the same event
+contract. The Pages artifact must be built from the canonical UI tree; a
+separately maintained browser-interface copy is not allowed.
+
 The project optimizes first for raw signal integrity, then continuous observable
 publication, low latency/jitter, cross-platform correctness, derived metric
 quality, and finally presentation. `ENGINEERING-PRIORITIES.md` defines the
@@ -35,7 +42,7 @@ operational contract for that ordering.
 - Dynamically loaded liblsl and native UDP OSC output.
 - Playwright for deterministic interface scenarios.
 - Development-only Python/NeuroKit generation for checked-in synthetic metric
-  preview assets; no Python runtime ships with the app.
+  preview and browser-demo assets; no Python runtime ships with the app or site.
 
 ## Important contracts
 
@@ -46,6 +53,14 @@ operational contract for that ordering.
   native owner.
 - Scientific definitions originate in the Rust metric catalog and are surfaced
   to the UI through bootstrap data.
+- The browser demo is synthetic and presentation-only. It never implies real
+  BLE acquisition, native timing, LSL/OSC publication, or metric validation.
+- The NeuroKit mock input is also available offline in the installed app so the
+  interface remains explorable without a Polar device. It must not enter or
+  weaken the authoritative native acquisition/publication path.
+- GitHub Pages must deploy the canonical UI after successful changes to `main`.
+  Desktop and browser parity, plus narrow touch layouts down to 320 CSS pixels,
+  are CI contracts rather than manual synchronization tasks.
 
 ## Repository and releases
 

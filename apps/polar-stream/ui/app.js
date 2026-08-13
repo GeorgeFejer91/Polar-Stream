@@ -134,7 +134,7 @@
   const buffers = Object.fromEntries([...bufferIds].map((id) => [id, new RingBuffer()]));
   const elements = {};
   const ids = [
-    "app-state-dot", "app-state-text", "platform-label", "input-state", "connection-card",
+    "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value",
     "scan-button", "scan-caption", "device-list", "activity-list", "output-state", "raw-ecg-value",
     "raw-acc-x", "raw-acc-y", "raw-acc-z", "ecg-spark", "stream-name", "lsl-toggle", "osc-toggle",
@@ -146,6 +146,7 @@
     "metric-family-toggle", "metric-family-context", "metric-family-note",
     "adjust-visual", "visual-window-label", "visual-scale-label", "module-dialog", "module-dialog-title",
     "module-dialog-intro", "module-settings", "module-dialog-status", "save-module-settings",
+    "pipeline-title", "pipeline-detail",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
   const signalContext = elements["signal-canvas"].getContext("2d", {
@@ -172,11 +173,10 @@
     streamName: "Polar-H10",
     selectedVisual: "raw_ecg",
     sampleCount: 0,
-    demoTimer: null,
-    demoPhase: 0,
     outputSequence: 0,
     connectionGeneration: 0,
     currentDeviceId: null,
+    currentInputKind: null,
     pendingDevice: null,
     devices: [],
     breathingSettings: defaultBreathingSettings(),
@@ -184,7 +184,7 @@
     preferences: isNative
       ? { streamName: null, lastDevice: null, outputConfig: null }
       : preferences.load(),
-    activity: [{ time: "NOW", message: "Bluetooth interface ready" }],
+    activity: [{ time: "NOW", message: isNative ? "Bluetooth interface ready" : "Browser demo ready" }],
   };
 
   function normalizeStreamBase(value) {
@@ -267,6 +267,22 @@
     return metricPreviewsPromise;
   }
 
+  function renderRuntimeContext({ simulated = runtime.isDemo } = {}) {
+    if (simulated) {
+      elements["runtime-path-label"].textContent = "NeuroKit simulated data";
+      elements["pipeline-title"].textContent = "Simulation stays local";
+      elements["pipeline-detail"].textContent = "A checked-in NeuroKit fixture drives this shared interface; no BLE, LSL, or OSC connection is opened.";
+      return;
+    }
+    if (isInterfaceRenderer) {
+      elements["runtime-path-label"].textContent = "Deterministic interface test";
+      return;
+    }
+    elements["runtime-path-label"].textContent = "Native data path";
+    elements["pipeline-title"].textContent = "Acquisition stays native";
+    elements["pipeline-detail"].textContent = "The chart receives display-rate batches; LSL and OSC do not wait for rendering.";
+  }
+
   async function initialize() {
     let bootstrap = {
       config: { streamName: "Polar-H10", lslEnabled: false, oscEnabled: false, outputs: ["raw_ecg", "raw_acc"], metricOptions: {} },
@@ -317,11 +333,21 @@
     elements["stream-name"].value = app.streamName;
     elements["lsl-toggle"].checked = Boolean(initialConfig.lslEnabled);
     elements["osc-toggle"].checked = Boolean(initialConfig.oscEnabled);
+    document.body.dataset.runtime = runtime.mode;
     elements["platform-label"].textContent = isInterfaceRenderer ? "RENDERER" : String(bootstrap.platform || "local").toUpperCase();
-    if (!isNative) {
-      elements["scan-caption"].textContent = isInterfaceRenderer
-        ? "Deterministic background render"
-        : "Interactive browser preview";
+    renderRuntimeContext();
+    if (runtime.isDemo) {
+      elements["scan-caption"].textContent = "Synthetic data · no Bluetooth required";
+      elements["scan-button"].querySelector("span").textContent = "Refresh inputs";
+    } else if (isInterfaceRenderer) {
+      elements["scan-caption"].textContent = "Deterministic background render";
+    }
+
+    app.devices = runtime.getInputModules();
+    renderDevices(app.devices);
+    if (app.devices.length) {
+      elements["input-state"].textContent = runtime.isDemo ? "Demo ready" : "Mock ready";
+      elements["connection-detail"].textContent = "Choose a real Polar H10 or the offline NeuroKit mock input.";
     }
 
     renderMetricFilters();
@@ -330,7 +356,9 @@
     await configureOutputs({ quiet: true });
     resizeCanvas();
     if (!isInterfaceRenderer) requestRender();
-    if (app.preferences.lastDevice) void scanDevices({ automatic: true });
+    if (app.preferences.lastDevice && !runtime.isMockDevice(app.preferences.lastDevice.id)) {
+      void scanDevices({ automatic: true });
+    }
   }
 
   function installInteractions() {
@@ -441,10 +469,13 @@
     addActivity(automatic ? "Looking for last used sensor" : "BLE scan started");
 
     try {
-      const devices = await runtime.scanDevices();
+      const discovered = await runtime.scanDevices();
+      const devices = [...runtime.getInputModules(), ...discovered]
+        .filter((device, index, all) => all.findIndex((candidate) => candidate.id === device.id) === index);
       app.devices = devices;
       renderDevices(devices);
       const count = devices.length;
+      const polarCount = devices.filter((device) => device.kind !== "mock").length;
 
       if (automatic && app.preferences.lastDevice) {
         const exact = devices.find((device) => device.id === app.preferences.lastDevice.id);
@@ -455,15 +486,24 @@
           await connectDevice(preferredDevice, { automatic: true });
           return;
         }
-        elements["input-state"].textContent = count ? `${count} found` : "None found";
+        elements["input-state"].textContent = polarCount ? `${polarCount} found` : "Mock ready";
         setTopStatus("Last used sensor unavailable · choose below");
         addActivity("Last used sensor was not found");
         return;
       }
 
-      elements["input-state"].textContent = count ? `${count} found` : "None found";
-      setTopStatus(app.connected ? "Sensor connected · choose another to switch" : count ? "Choose a sensor to connect" : "No Polar sensor found", app.connected ? "connected" : "idle");
-      addActivity(count ? `${count} compatible sensor${count === 1 ? "" : "s"} found` : "Scan finished with no sensors");
+      elements["input-state"].textContent = polarCount ? `${polarCount} found` : "Mock ready";
+      setTopStatus(
+        app.connected
+          ? "Input connected · choose another to switch"
+          : polarCount
+            ? "Choose a Polar H10 or mock input"
+            : "Offline NeuroKit mock is available",
+        app.connected ? "connected" : "idle",
+      );
+      addActivity(polarCount
+        ? `${polarCount} compatible Polar sensor${polarCount === 1 ? "" : "s"} found · mock also available`
+        : "No Polar sensor found · offline mock remains available");
     } catch (error) {
       const message = runtime.formatError(error);
       setTopStatus("Bluetooth scan failed", "error");
@@ -494,18 +534,20 @@
     }
 
     const rows = devices.map((device) => {
+      const isMock = device.kind === "mock";
       const isCurrent = app.connected && app.currentDeviceId === device.id;
       const isPending = app.pendingDevice?.id === device.id;
       const isPreferred = app.preferences.lastDevice?.id === device.id;
       const button = document.createElement("button");
-      button.className = `device-row${isCurrent ? " current" : ""}${isPreferred ? " preferred" : ""}`;
+      button.className = `device-row${isMock ? " mock" : ""}${isCurrent ? " current" : ""}${isPreferred ? " preferred" : ""}`;
       button.type = "button";
+      button.dataset.inputKind = isMock ? "mock" : "polar";
       button.disabled = app.connecting || isCurrent;
       button.addEventListener("click", () => connectDevice(device));
 
       const icon = document.createElement("span");
       icon.className = "device-icon";
-      icon.textContent = "H10";
+      icon.textContent = isMock ? "NK" : "H10";
       const copy = document.createElement("span");
       copy.className = "device-copy";
       const nameLine = document.createElement("span");
@@ -513,6 +555,12 @@
       const name = document.createElement("strong");
       name.textContent = device.name;
       nameLine.append(name);
+      if (device.sourceLabel) {
+        const badge = document.createElement("span");
+        badge.className = "preference-badge source-badge";
+        badge.textContent = device.sourceLabel;
+        nameLine.append(badge);
+      }
       if (isPreferred) {
         const badge = document.createElement("span");
         badge.className = "preference-badge";
@@ -520,7 +568,7 @@
         nameLine.append(badge);
       }
       const id = document.createElement("small");
-      id.textContent = device.id;
+      id.textContent = device.detail || device.id;
       copy.append(nameLine, id);
       const rssi = document.createElement("span");
       rssi.className = "rssi";
@@ -528,6 +576,8 @@
         ? "Connected"
         : isPending
           ? "Connecting…"
+          : isMock
+            ? "Start demo →"
           : device.rssi == null
             ? "Connect →"
             : `${device.rssi} dBm  →`;
@@ -539,26 +589,25 @@
 
   async function connectDevice(device, { automatic = false } = {}) {
     const generation = ++app.connectionGeneration;
+    const isMock = runtime.isMockDevice(device.id);
     app.connecting = true;
     app.pendingDevice = device;
     renderDevices(app.devices);
-    setTopStatus(automatic ? "Reconnecting to last used Polar H10" : "Connecting to Polar H10", "working");
+    setTopStatus(
+      isMock ? "Starting offline NeuroKit input" : automatic ? "Reconnecting to last used Polar H10" : "Connecting to Polar H10",
+      "working",
+    );
     elements["input-state"].textContent = "Connecting";
     elements["device-name"].textContent = device.name;
-    elements["connection-detail"].textContent = "Opening the low-energy connection…";
-    addActivity(`${automatic ? "Reconnecting" : "Connecting"} to ${device.name}`);
+    elements["connection-detail"].textContent = isMock
+      ? "Loading the checked-in synthetic fixture…"
+      : "Opening the low-energy connection…";
+    addActivity(`${isMock ? "Starting" : automatic ? "Reconnecting" : "Connecting"} ${device.name}`);
 
     try {
       await runtime.connectDevice(device.id, (event) => {
         if (generation === app.connectionGeneration) handleNativeEvent(event, device);
       });
-      if (!isNative) {
-        handleNativeEvent({
-          kind: "connection", connected: true, streaming: true, deviceName: device.name,
-          batteryPercent: 86, message: "Raw ECG and accelerometer are streaming",
-        }, device);
-        startDemoSignal();
-      }
     } catch (error) {
       if (generation !== app.connectionGeneration) return;
       app.connecting = false;
@@ -577,12 +626,13 @@
     const previousGeneration = app.connectionGeneration;
     app.connectionGeneration += 1;
     try {
-      await runtime.disconnectDevice();
-      stopDemoSignal();
-      handleNativeEvent({
-        kind: "connection", connected: false, streaming: false,
-        deviceName: elements["device-name"].textContent, batteryPercent: null, message: "Disconnected",
-      });
+      const result = await runtime.disconnectDevice();
+      if (!result?.emitted) {
+        handleNativeEvent({
+          kind: "connection", connected: false, streaming: false,
+          deviceName: elements["device-name"].textContent, batteryPercent: null, message: "Disconnected",
+        });
+      }
     } catch (error) {
       app.connectionGeneration = previousGeneration;
       toast(runtime.formatError(error), true);
@@ -619,18 +669,22 @@
 
   function updateConnection(event, device = null) {
     app.connected = Boolean(event.connected);
+    const simulated = Boolean(event.simulated || device?.kind === "mock");
+    renderRuntimeContext({ simulated: runtime.isDemo || (app.connected && simulated) });
     app.connecting = false;
     app.pendingDevice = null;
     if (app.connected) {
       resetMeasurementVisuals();
       const connectedDevice = device || app.devices.find((candidate) => candidate.name === event.deviceName);
       app.currentDeviceId = connectedDevice?.id || null;
-      if (connectedDevice) {
+      app.currentInputKind = simulated ? "mock" : "polar";
+      if (connectedDevice && !simulated) {
         app.preferences = { ...app.preferences, lastDevice: { id: connectedDevice.id, name: connectedDevice.name } };
         if (!isNative) app.preferences = preferences.saveLastDevice(connectedDevice);
       }
     } else {
       app.currentDeviceId = null;
+      app.currentInputKind = null;
     }
     renderDevices(app.devices);
     elements["connection-card"].classList.toggle("connected", app.connected);
@@ -639,9 +693,14 @@
     elements["device-name"].textContent = app.connected ? event.deviceName : "No sensor connected";
     elements["connection-detail"].textContent = app.connected ? event.message : "Scan for a nearby chest strap.";
     elements["battery-value"].textContent = event.batteryPercent == null ? "—" : `${event.batteryPercent}%`;
-    elements["input-state"].textContent = app.connected ? "Streaming" : "Idle";
-    setTopStatus(app.connected ? "Sensor connected · streams live" : "Ready to connect", app.connected ? "connected" : "idle");
-    addActivity(app.connected ? `${event.deviceName} connected` : "Sensor disconnected");
+    elements["input-state"].textContent = app.connected ? simulated ? "Demo live" : "Streaming" : runtime.isDemo ? "Demo ready" : "Idle";
+    setTopStatus(
+      app.connected
+        ? simulated ? "Synthetic input · demo streams live" : "Sensor connected · streams live"
+        : runtime.isDemo ? "Browser demo ready" : "Ready to connect",
+      app.connected ? "connected" : "idle",
+    );
+    addActivity(app.connected ? `${event.deviceName} ${simulated ? "started" : "connected"}` : simulated ? "Synthetic input stopped" : "Sensor disconnected");
     if (!app.connected) elements["render-rate"].textContent = "Idle";
     markTelemetryDirty();
   }
@@ -1546,15 +1605,6 @@
       outputs: [...app.outputs],
       metricOptions: Object.fromEntries([...app.outputs].map((id) => [id, metricOptionFor(id)])),
     };
-    if (!isNative) {
-      elements["stream-name"].value = streamName;
-      app.preferences = preferences.saveOutputConfig(config);
-      renderOutputs();
-      elements["lsl-detail"].textContent = config.lslEnabled ? "Preview · liblsl is checked in the native app" : "Local network · time synchronized";
-      elements["osc-detail"].textContent = config.oscEnabled ? "Preview · UDP localhost:9000" : "UDP · localhost:9000";
-      return;
-    }
-
     const sequence = ++app.outputSequence;
     try {
       const health = await runtime.updateOutputConfig(config);
@@ -1562,7 +1612,9 @@
       app.streamName = health.streamName || streamName;
       elements["stream-name"].value = app.streamName;
       config.streamName = app.streamName;
-      app.preferences = { ...app.preferences, streamName: config.streamName, outputConfig: structuredClone(config) };
+      app.preferences = !isNative
+        ? preferences.saveOutputConfig(config)
+        : { ...app.preferences, streamName: config.streamName, outputConfig: structuredClone(config) };
       renderOutputs();
       updateDestinationHealth(health);
     } catch (error) {
@@ -1914,85 +1966,6 @@
       path.push(`${index ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`);
     }
     elements["ecg-spark"].setAttribute("d", path.join(" "));
-  }
-
-  function startDemoSignal() {
-    stopDemoSignal();
-    let lastMetric = 0;
-    app.demoTimer = window.setInterval(() => {
-      const ecg = [];
-      const acc = [];
-      for (let index = 0; index < 7; index += 1) {
-        const phase = app.demoPhase + index / 130;
-        const beatPhase = (phase * 1.18) % 1;
-        const qrs = 880 * Math.exp(-Math.pow((beatPhase - 0.12) / 0.028, 2));
-        const q = -180 * Math.exp(-Math.pow((beatPhase - 0.09) / 0.018, 2));
-        const t = 150 * Math.exp(-Math.pow((beatPhase - 0.42) / 0.09, 2));
-        ecg.push(Math.round(qrs + q + t + Math.sin(phase * 7) * 12));
-      }
-      for (let index = 0; index < 10; index += 1) {
-        const phase = app.demoPhase + index / 200;
-        acc.push({
-          xMg: Math.round(Math.sin(phase * 4.5) * 85),
-          yMg: Math.round(Math.cos(phase * 3.1) * 52),
-          zMg: Math.round(995 + Math.sin(phase * 6.3) * 25),
-        });
-      }
-      app.demoPhase += 0.05;
-      handleNativeEvent({ kind: "ecg", sensorTimestampNs: 0, microvolts: ecg });
-      handleNativeEvent({ kind: "accelerometer", sensorTimestampNs: 0, samples: acc });
-      handleNativeEvent({ kind: "metrics", values: [
-        { id: "breathing_calibration", value: 1 },
-        { id: "acc_breathing_magnitude", value: Math.sin(app.demoPhase * 1.25) * 0.035 },
-        { id: "breathing_volume", value: 0.5 + Math.sin(app.demoPhase * 1.25) * 0.42 },
-        { id: "breathing_phase", value: Math.cos(app.demoPhase * 1.25) > 0.08 ? 1 : Math.cos(app.demoPhase * 1.25) < -0.08 ? -1 : 0 },
-        { id: "breathing_axis_range", value: 0.034 },
-      ] });
-      if (app.demoPhase - lastMetric >= 1) {
-        lastMetric = app.demoPhase;
-        const values = app.catalog
-          .filter((metric) => !metric.raw && !["acc_magnitude", "acc_breathing_magnitude", "breathing_calibration", "breathing_volume", "breathing_phase", "breathing_axis_range"].includes(metric.id))
-          .map((metric) => ({ id: metric.id, value: demoMetricValue(metric.id, app.demoPhase) }));
-        handleNativeEvent({ kind: "metrics", values });
-      }
-    }, 50);
-  }
-
-  function demoMetricValue(id, phase) {
-    const wave = Math.sin(phase * 0.7);
-    if (id === "heart_rate" || id === "mean_heart_rate") return 71 + wave * 3;
-    if (id === "rr_interval" || id === "mean_nn") return 60000 / (71 + wave * 3);
-    if (id === "rmssd") return 31 + wave * 4;
-    if (id === "ln_rmssd") return Math.log(31 + wave * 4);
-    if (id === "sdnn") return 42 + wave * 5;
-    if (id === "pnn50") return 18 + wave * 4;
-    if (id === "sd1") return (31 + wave * 4) / Math.SQRT2;
-    if (id === "coherence") return 0.62 + wave * 0.12;
-    if (id === "coherence_confidence" || id === "breathing_dynamics_confidence") return 0.92;
-    if (id === "heartmath_coherence") return 2.4 + wave * 0.5;
-    if (id === "coherence_peak_frequency") return 0.1 + wave * 0.005;
-    if (id.includes("coherence_") && id.includes("power")) return 1_200 + wave * 120;
-    if (id === "breathing_rate") return 12 + wave;
-    if (id.startsWith("breath_interval_mean")) return 5 + wave * 0.2;
-    if (id.startsWith("breath_amplitude_mean")) return 0.72 + wave * 0.05;
-    if (id.includes("_sd")) return id.includes("interval") ? 0.22 + wave * 0.03 : 0.08 + wave * 0.01;
-    if (id.includes("_cv")) return 0.12 + wave * 0.02;
-    if (id.includes("acw50")) return 2 + wave * 0.2;
-    if (id.includes("psd_slope")) return -1.1 + wave * 0.12;
-    if (id.includes("lzc")) return 0.58 + wave * 0.05;
-    if (id.includes("sampen")) return 1.2 + wave * 0.1;
-    if (id.includes("mse")) return 4.2 + wave * 0.3;
-    if (id === "excitement_score") return 0.52 + wave * 0.2;
-    if (id === "excitometer") return 0.46 + wave * 0.15;
-    if (id === "ecg_mean") return wave * 8;
-    if (id === "ecg_rms" || id === "ecg_sd") return 180 + wave * 15;
-    if (id === "ecg_peak_to_peak") return 1_050 + wave * 60;
-    return 0.5 + wave * 0.1;
-  }
-
-  function stopDemoSignal() {
-    if (app.demoTimer) window.clearInterval(app.demoTimer);
-    app.demoTimer = null;
   }
 
   function formatValue(value, digits = 1) {
