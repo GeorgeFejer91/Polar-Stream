@@ -26,8 +26,12 @@ demo. Runtime behavior is selected once through the frontend runtime adapter:
 Tauri can use native IPC for a real H10, while both Tauri and Pages can replay a
 selectable, checked-in deterministic NeuroKit mock input through the same event
 contract. Pages also offers an explicitly experimental Web Bluetooth adapter
-for direct H10 ECG/ACC/HR/RR input in supported secure Chromium contexts. It has
-no browser LSL/OSC publisher and does not replace the authoritative native path.
+for direct H10 ECG/ACC/HR/RR input in supported secure Chromium contexts. A
+normally opened page has no LSL/OSC publisher. An explicitly paired same-computer
+session can pass bounded browser notifications to a token-authenticated,
+loopback-only service in the installed app, which owns a dedicated native LSL
+`OutputRouter`; browser OSC remains unavailable. This does not replace or enter
+the authoritative native H10 path.
 The Pages artifact must be built from the canonical UI tree; a
 separately maintained browser-interface copy is not allowed.
 
@@ -59,7 +63,8 @@ operational contract for that ordering.
 - Browser NeuroKit input is synthetic/presentation-only. The separate browser
   H10 adapter is experimental, permission-gated, local to the tab, and limited
   to raw ECG/ACC, HR/RR, and the two unvalidated ACC breathing outputs. Browser
-  LSL/OSC remains disabled.
+  LSL is enabled only after the installed app opens a fragment-token-paired
+  loopback session; browser OSC remains disabled.
 - The NeuroKit mock input is also available offline in the installed app so the
   interface remains explorable without a Polar device. It must not enter or
   weaken the authoritative native acquisition/publication path.

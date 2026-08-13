@@ -20,6 +20,17 @@ use serde::Serialize;
 use tokio::sync::{Mutex, mpsc, watch};
 use uuid::Uuid;
 
+#[cfg(target_os = "windows")]
+use windows::{
+    Devices::{
+        Bluetooth::{
+            BluetoothCacheMode, BluetoothLEDevice, GenericAttributeProfile::GattCommunicationStatus,
+        },
+        Enumeration::DeviceAccessStatus,
+    },
+    core::GUID,
+};
+
 const HEART_RATE_SERVICE: Uuid = Uuid::from_u128(0x0000180d_0000_1000_8000_00805f9b34fb);
 const HEART_RATE_MEASUREMENT: Uuid = Uuid::from_u128(0x00002a37_0000_1000_8000_00805f9b34fb);
 const BATTERY_LEVEL: Uuid = Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34fb);
@@ -187,6 +198,31 @@ impl InputManager {
                 .await
                 .map_err(|error| format!("Polar H10 connection failed: {error}"))?;
         }
+
+        #[cfg(target_os = "windows")]
+        {
+            send(
+                &event_tx,
+                InputEvent::Status {
+                    phase: "optimizing",
+                    message: optimize_windows_ble_link(&peripheral).await,
+                },
+            )
+            .await?;
+            send(
+                &event_tx,
+                InputEvent::Status {
+                    phase: "authorizing",
+                    message: match prime_windows_pmd_access(device_id).await {
+                        Ok(message) => message,
+                        Err(message) => format!(
+                            "Windows GATT access preflight was not confirmed ({message}); continuing with system discovery."
+                        ),
+                    },
+                },
+            )
+            .await?;
+        }
         send(
             &event_tx,
             InputEvent::Status {
@@ -199,16 +235,6 @@ impl InputManager {
             .discover_services()
             .await
             .map_err(|error| format!("GATT service discovery failed: {error}"))?;
-
-        #[cfg(target_os = "windows")]
-        send(
-            &event_tx,
-            InputEvent::Status {
-                phase: "optimizing",
-                message: optimize_windows_ble_link(&peripheral).await,
-            },
-        )
-        .await?;
 
         let characteristics = peripheral.characteristics();
         let find_characteristic = |uuid| {
@@ -406,9 +432,145 @@ async fn optimize_windows_ble_link(peripheral: &Peripheral) -> String {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn parse_bluetooth_address(device_id: &str) -> Option<u64> {
+    let mut compact = String::with_capacity(12);
+    for character in device_id.chars() {
+        if character.is_ascii_hexdigit() {
+            compact.push(character);
+        } else if !matches!(character, ':' | '-') {
+            return None;
+        }
+    }
+    if compact.len() != 12 {
+        return None;
+    }
+    u64::from_str_radix(&compact, 16).ok()
+}
+
+#[cfg(target_os = "windows")]
+async fn prime_windows_pmd_access(device_id: &str) -> Result<String, String> {
+    const ATTEMPTS: usize = 3;
+    let address = parse_bluetooth_address(device_id)
+        .ok_or_else(|| "the Bluetooth address was not recognized".to_string())?;
+    let pmd_service = GUID::from_u128(PMD_SERVICE.as_u128());
+    let pmd_control = GUID::from_u128(PMD_CONTROL_POINT.as_u128());
+    let pmd_data = GUID::from_u128(PMD_DATA.as_u128());
+    let mut last_error = "the PMD service did not become reachable".to_string();
+
+    for attempt in 0..ATTEMPTS {
+        let result = async {
+            let device = BluetoothLEDevice::FromBluetoothAddressAsync(address)
+                .map_err(|error| format!("could not open the BLE device: {error}"))?
+                .await
+                .map_err(|error| format!("could not open the BLE device: {error}"))?;
+            let services = device
+                .GetGattServicesForUuidWithCacheModeAsync(pmd_service, BluetoothCacheMode::Uncached)
+                .map_err(|error| format!("could not request the PMD service: {error}"))?
+                .await
+                .map_err(|error| format!("could not request the PMD service: {error}"))?;
+            let service_status = services
+                .Status()
+                .map_err(|error| format!("could not read PMD service status: {error}"))?;
+            if service_status != GattCommunicationStatus::Success {
+                return Err(format!("PMD service discovery returned {service_status:?}"));
+            }
+
+            let services = services
+                .Services()
+                .map_err(|error| format!("could not enumerate PMD services: {error}"))?;
+            let service = services
+                .into_iter()
+                .next()
+                .ok_or_else(|| "the PMD service was not exposed".to_string())?;
+            let access = service
+                .RequestAccessAsync()
+                .map_err(|error| format!("could not request PMD access: {error}"))?
+                .await
+                .map_err(|error| format!("could not request PMD access: {error}"))?;
+            if access != DeviceAccessStatus::Allowed {
+                return Err(format!("PMD access returned {access:?}"));
+            }
+
+            let characteristics = service
+                .GetCharacteristicsWithCacheModeAsync(BluetoothCacheMode::Uncached)
+                .map_err(|error| format!("could not request PMD characteristics: {error}"))?
+                .await
+                .map_err(|error| format!("could not request PMD characteristics: {error}"))?;
+            let characteristic_status = characteristics
+                .Status()
+                .map_err(|error| format!("could not read PMD characteristic status: {error}"))?;
+            if characteristic_status != GattCommunicationStatus::Success {
+                return Err(format!(
+                    "PMD characteristic discovery returned {characteristic_status:?}"
+                ));
+            }
+            let characteristics = characteristics
+                .Characteristics()
+                .map_err(|error| format!("could not enumerate PMD characteristics: {error}"))?;
+            let mut has_control = false;
+            let mut has_data = false;
+            for characteristic in characteristics {
+                let uuid = characteristic.Uuid().map_err(|error| {
+                    format!("could not read a PMD characteristic UUID: {error}")
+                })?;
+                has_control |= uuid == pmd_control;
+                has_data |= uuid == pmd_data;
+            }
+            if !has_control || !has_data {
+                return Err("the PMD control/data characteristics were incomplete".to_string());
+            }
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                return Ok(format!(
+                    "Windows PMD access authorized on attempt {} of {ATTEMPTS}",
+                    attempt + 1
+                ));
+            }
+            Err(error) => last_error = error,
+        }
+        if attempt + 1 < ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(200 * (attempt as u64 + 1))).await;
+        }
+    }
+
+    Err(last_error)
+}
+
 async fn send(sender: &mpsc::Sender<InputEvent>, event: InputEvent) -> Result<(), String> {
     sender
         .send(event)
         .await
         .map_err(|_| "Input event receiver closed.".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bluetooth_address;
+
+    #[test]
+    fn parses_windows_bluetooth_address_forms() {
+        assert_eq!(
+            parse_bluetooth_address("AA:BB:CC:DD:EE:FF"),
+            Some(0xAABBCCDDEEFF)
+        );
+        assert_eq!(
+            parse_bluetooth_address("aa-bb-cc-dd-ee-ff"),
+            Some(0xAABBCCDDEEFF)
+        );
+        assert_eq!(
+            parse_bluetooth_address("AABBCCDDEEFF"),
+            Some(0xAABBCCDDEEFF)
+        );
+    }
+
+    #[test]
+    fn rejects_non_address_peripheral_ids() {
+        assert_eq!(parse_bluetooth_address("hci0/dev_01"), None);
+        assert_eq!(parse_bluetooth_address("AABBCC"), None);
+    }
 }

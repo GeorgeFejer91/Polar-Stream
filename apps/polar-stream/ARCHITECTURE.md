@@ -53,9 +53,10 @@ Rules enforced by the crate graph:
 - Every derived processor and its formula tests live in `polar-h10-metrics`.
 - Only processors required by selected outputs are active; a raw-only setup does
   not maintain ECG, HRV, coherence, breathing, or excitation windows.
-- In the native app, the HTML layer never republishes scientific data. The
-  experimental Pages adapter processes browser-local data and has no LSL or OSC
-  publisher.
+- In the native acquisition path, the HTML layer never republishes scientific
+  data. The separate browser-input path may reach native LSL only through the
+  authenticated, bounded loopback adapter described below; it never enters or
+  delays native H10 acquisition.
 - Adding a custom metric means registering one `MetricDefinition` and feeding a
   `MetricSample`; it does not change BLE acquisition or output transports.
 - Native preferences have one typed, schema-versioned Rust owner in
@@ -78,8 +79,9 @@ at desktop, 390px touch, and 320px touch viewports.
 typed Tauri IPC/channel path. A selectable `neurokit-mock` module is available
 in both Tauri and Pages and replays `ui/demo-data.js` through the same connection,
 ECG, accelerometer, and metric event shapes. Mock data never crosses into the
-Rust acquisition or publication crates, never opens an LSL/OSC destination, and
-is visibly labeled synthetic.
+Rust acquisition path and is visibly labeled synthetic. It can reach native LSL
+only when the user explicitly pairs the Pages site with the installed companion
+and enables LSL.
 
 On GitHub Pages only, `ui/polar-web-bluetooth.js` adds a second real-input
 adapter. A user gesture opens the browser chooser filtered to `Polar H10`, then
@@ -95,10 +97,43 @@ Physical-H10 browser validation remains an explicit release boundary.
 Web Bluetooth requires a secure context, an explicit browser permission
 chooser, and a compatible browser/OS. The adapter is visibly disabled with a
 reason when any prerequisite is absent. It is experimental and not the
-authoritative publication path. Pages disables LSL and OSC because ordinary
-browser tabs cannot open the native discovery/data sockets or UDP destination
-required by those protocols. Native Tauri acquisition remains isolated in Rust
-and unchanged by this browser adapter.
+authoritative native acquisition path. Ordinary Pages sessions keep LSL and OSC
+disabled because browser tabs cannot open their native sockets. A paired Pages
+session may enable LSL through `ui/browser-lsl-bridge.js` and the installed
+`browser_lsl_bridge` Rust service. OSC remains unavailable in Pages. Native
+Tauri acquisition remains isolated in Rust and unchanged by this browser
+adapter.
+
+## Browser-to-LSL companion
+
+The installed app exposes one explicit command that binds an ephemeral IPv4
+loopback port and opens the canonical GitHub Pages URL. A random 128-bit bearer
+token is placed in the URL fragment, so it is not sent to GitHub Pages; the page
+removes the fragment from its visible URL immediately and retains the token only
+in memory. The server accepts the canonical Pages origin and loopback development
+origins, validates the exact `Host`, requires the token on every non-preflight
+request, and never binds a LAN interface. Each launch replaces the previous
+bridge, and the first authenticated in-memory browser client identifier owns the
+new session so copied tabs cannot interleave signal batches.
+
+The page uses Chromium's Local Network Access permission and `fetch()` to send
+only three versioned event shapes: ECG notification batches, ACC notification
+batches, and selected scalar metric batches. Its queue holds at most 256 events,
+flushes at most 24 events after 20 ms, permits one request in flight, and drops
+with an observable warning instead of growing without bound. The Rust server
+limits headers to 16 KiB, bodies to 256 KiB, concurrent requests to eight,
+events to 64 per batch, and samples to 1,024 per event before passing values to a
+dedicated `OutputRouter`; a five-second read deadline releases slots held by
+incomplete requests. This router uses the packaged liblsl runtime and the
+same catalog names, units, channels, and metadata as native output.
+
+This path is real LSL, but it is not equivalent to the direct native sensor
+path: browser decoding, JavaScript serialization, batching, HTTP scheduling,
+and bridge receipt precede the LSL push. The bridge therefore uses local receipt
+time as the LSL timestamp, as the existing native router does, and adds browser
+transport latency. It is a same-computer Chromium workflow; a phone's loopback
+does not reach a desktop companion. Full constraints and operator steps are in
+`docs/browser-lsl-bridge.md`.
 
 ## Windows BLE link policy
 
@@ -113,6 +148,14 @@ reject it. The activity log therefore records both the request result and the
 observed interval, latency, and negotiated MTU. Unsupported Windows versions
 and adapters remain fail-soft; they continue with operating-system-managed
 timing.
+
+Immediately after connection, before ordinary `btleplug` service discovery,
+the Windows path also ports MesmerPrism's WinRT access pattern: open the PMD
+service uncached, call `GattDeviceService.RequestAccessAsync`, discover PMD
+characteristics uncached, and retry three times with 200/400 ms backoff when
+Windows has not made the service reachable yet. This primes access without
+claiming control of ATT MTU and fails soft into ordinary discovery when the
+preflight cannot confirm access.
 
 Cross-platform compilation proves API integration only. A release claim about
 the applied interval, sustained ECG/ACC throughput, or packet loss still

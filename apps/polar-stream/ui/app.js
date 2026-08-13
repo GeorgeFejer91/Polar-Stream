@@ -138,7 +138,7 @@
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value",
     "scan-button", "scan-caption", "device-list", "activity-list", "output-state", "raw-ecg-value",
     "raw-acc-x", "raw-acc-y", "raw-acc-z", "ecg-spark", "stream-name", "lsl-toggle", "osc-toggle",
-    "lsl-detail", "osc-detail", "included-count", "output-chips", "open-output-dialog", "visual-source",
+    "lsl-detail", "osc-detail", "open-browser-lsl-bridge", "included-count", "output-chips", "open-output-dialog", "visual-source",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
     "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "dialog-output-status", "save-metric-output", "toast-region",
@@ -346,10 +346,14 @@
     elements["lsl-toggle"].checked = Boolean(initialConfig.lslEnabled);
     elements["osc-toggle"].checked = Boolean(initialConfig.oscEnabled);
     if (runtime.isBrowser) {
-      elements["lsl-toggle"].checked = false;
+      const bridge = runtime.browserLslBridgeStatus();
+      elements["lsl-toggle"].checked = Boolean(initialConfig.lslEnabled && bridge.connected);
       elements["osc-toggle"].checked = false;
-      elements["lsl-toggle"].disabled = true;
+      elements["lsl-toggle"].disabled = !bridge.connected;
       elements["osc-toggle"].disabled = true;
+      elements["lsl-detail"].textContent = bridge.health;
+    } else if (isNative) {
+      elements["open-browser-lsl-bridge"].hidden = false;
     }
     document.body.dataset.runtime = runtime.mode;
     elements["platform-label"].textContent = isInterfaceRenderer ? "RENDERER" : String(bootstrap.platform || "local").toUpperCase();
@@ -386,6 +390,22 @@
     elements["disconnect-button"].addEventListener("click", disconnectDevice);
     elements["lsl-toggle"].addEventListener("change", configureOutputs);
     elements["osc-toggle"].addEventListener("change", configureOutputs);
+    elements["open-browser-lsl-bridge"].addEventListener("click", async () => {
+      try {
+        await runtime.openBrowserLslBridge();
+        toast("Authenticated browser demo opened. Keep this app running while the page publishes LSL.");
+      } catch (error) {
+        toast(runtime.formatError(error), true);
+      }
+    });
+    window.addEventListener("polar-browser-lsl-status", (event) => {
+      if (!runtime.isBrowser) return;
+      const bridge = event.detail || runtime.browserLslBridgeStatus();
+      elements["lsl-toggle"].disabled = !bridge.connected;
+      if (!bridge.connected) elements["lsl-toggle"].checked = false;
+      elements["lsl-detail"].textContent = bridge.health;
+      elements["lsl-detail"].classList.toggle("warning", Boolean(bridge.lastError || bridge.droppedEvents));
+    });
 
     let nameTimer;
     elements["stream-name"].addEventListener("input", () => {
@@ -1740,6 +1760,9 @@
       renderOutputs();
       updateDestinationHealth(health);
     } catch (error) {
+      if (runtime.isBrowser && elements["lsl-toggle"].checked) {
+        elements["lsl-toggle"].checked = false;
+      }
       if (!quiet) toast(runtime.formatError(error), true);
     }
   }
