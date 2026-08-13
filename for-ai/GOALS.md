@@ -29,7 +29,8 @@ items into the dated history instead of silently deleting them.
 ## Next
 
 - Validate ECG/ACC throughput and reconnect behavior with physical H10 hardware
-  on Linux, Windows, and macOS.
+  on Linux, Windows, and macOS. On Windows, retain the requested/observed link
+  diagnostics and sample/drop counts so low-interval behavior is evidence-based.
 - Validate the Pages Web Bluetooth adapter with a physical H10 on supported
   desktop and Android Chromium, including PMD frame variants, MTU/batch cadence,
   disconnect/reconnect behavior, and long-run sample counts.

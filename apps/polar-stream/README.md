@@ -71,7 +71,12 @@ cargo run -p polar-stream
 
 Linux Bluetooth access uses BlueZ/D-Bus. macOS packages must include a Bluetooth
 usage description. Windows uses the system WinRT BLE implementation through
-`btleplug`.
+`btleplug`. On Windows 11+, the app makes a best-effort request for WinRT's
+throughput-optimized (low-interval) connection parameters before starting the
+streams, then reports the observed connection interval, peripheral latency, and
+negotiated MTU in the activity log. Windows owns MTU negotiation and exposes it
+read-only; on older Windows versions the optimization request fails soft and
+streaming continues with system-managed timing.
 
 ## Outputs
 

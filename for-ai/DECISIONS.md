@@ -1,5 +1,17 @@
 # Decision log
 
+## 2026-08-13 — Windows MTU is observed; connection timing is requested
+
+Do not describe Windows as allowing Polar Stream to force an ATT MTU. WinRT
+owns MTU negotiation and exposes `GattSession.MaxPduSize` read-only. The native
+Windows 11+ path instead makes a best-effort `ThroughputOptimized` preferred
+connection-parameter request through `btleplug`, then reports the observed
+connection interval, peripheral latency, and negotiated MTU. The request may be
+unavailable or rejected, especially on older Windows versions, and must fail
+soft without stopping ECG/ACC acquisition. Cross-platform CI is not physical
+H10 validation; preserve device-run diagnostics before claiming the shorter
+interval was applied.
+
 ## 2026-08-13 — Desktop and browser use one canonical interface
 
 GitHub Pages is a presentation demo of the Tauri application, not a separately

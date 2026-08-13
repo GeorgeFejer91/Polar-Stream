@@ -5,6 +5,8 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+#[cfg(target_os = "windows")]
+use btleplug::api::ConnectionParameterPreset;
 use btleplug::{
     api::{Central, Manager as _, Peripheral as _, ScanFilter, WriteType},
     platform::{Manager, Peripheral},
@@ -198,6 +200,16 @@ impl InputManager {
             .await
             .map_err(|error| format!("GATT service discovery failed: {error}"))?;
 
+        #[cfg(target_os = "windows")]
+        send(
+            &event_tx,
+            InputEvent::Status {
+                phase: "optimizing",
+                message: optimize_windows_ble_link(&peripheral).await,
+            },
+        )
+        .await?;
+
         let characteristics = peripheral.characteristics();
         let find_characteristic = |uuid| {
             characteristics
@@ -358,6 +370,39 @@ impl InputManager {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn optimize_windows_ble_link(peripheral: &Peripheral) -> String {
+    // Windows owns ATT MTU negotiation; MaxPduSize is read-only. The tunable
+    // latency control on Windows 11+ is the preferred connection-parameter
+    // request, which btleplug maps to WinRT's ThroughputOptimized preset.
+    let request = peripheral
+        .request_connection_parameters(ConnectionParameterPreset::ThroughputOptimized)
+        .await;
+    let parameters = peripheral.connection_parameters().await.ok().flatten();
+    let mtu = peripheral.mtu();
+
+    match (request, parameters) {
+        (Ok(()), Some(parameters)) => format!(
+            "Windows BLE low-latency mode requested · observed interval {:.2} ms · latency {} · negotiated MTU {} B",
+            parameters.interval_us as f64 / 1_000.0,
+            parameters.latency,
+            mtu
+        ),
+        (Ok(()), None) => {
+            format!("Windows BLE low-latency mode requested · negotiated MTU {mtu} B")
+        }
+        (Err(error), Some(parameters)) => format!(
+            "Windows is managing BLE timing ({error}) · observed interval {:.2} ms · latency {} · negotiated MTU {} B",
+            parameters.interval_us as f64 / 1_000.0,
+            parameters.latency,
+            mtu
+        ),
+        (Err(error), None) => {
+            format!("Windows is managing BLE timing ({error}) · negotiated MTU {mtu} B")
+        }
     }
 }
 

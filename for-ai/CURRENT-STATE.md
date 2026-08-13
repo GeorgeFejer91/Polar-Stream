@@ -5,6 +5,10 @@ Last verified: 2026-08-13
 ## Implemented
 
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
+- On Windows 11+, native BLE makes a best-effort throughput-optimized connection
+  parameter request and reports the observed interval, peripheral latency, and
+  read-only negotiated MTU. Older Windows versions continue fail-soft with
+  system-managed timing.
 - Immediate raw LSL/OSC publication with canonical names.
 - Demand-driven ECG, HRV, coherence, breathing, breathing-dynamics, quality,
   and explicitly experimental metric modules.
@@ -52,6 +56,10 @@ Last verified: 2026-08-13
 
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.
+- Windows CI validates the WinRT/`btleplug` integration at compile and unit-test
+  level only. It does not prove that a particular adapter/H10 accepted the
+  preferred connection parameters; retain the reported link values and sample
+  counts from a physical Windows run before making that claim.
 - liblsl availability and packaging differ by platform; follow `RELEASING.md`.
 - Both public ACC-derived respiration outputs are unvalidated and require
   comparison with a reference respiratory sensor before interpretation.

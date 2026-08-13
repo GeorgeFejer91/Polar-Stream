@@ -100,6 +100,25 @@ browser tabs cannot open the native discovery/data sockets or UDP destination
 required by those protocols. Native Tauri acquisition remains isolated in Rust
 and unchanged by this browser adapter.
 
+## Windows BLE link policy
+
+The Windows native adapter distinguishes ATT MTU from BLE connection timing.
+[WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
+read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).
+On Windows 11+, `polar-h10-input` asks `btleplug` for the
+[`ThroughputOptimized` preferred connection parameters](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.requestpreferredconnectionparameters)
+before subscriptions and PMD start commands. This is a request for a shorter
+connection interval, not a forced MTU, and the controller or peripheral can
+reject it. The activity log therefore records both the request result and the
+observed interval, latency, and negotiated MTU. Unsupported Windows versions
+and adapters remain fail-soft; they continue with operating-system-managed
+timing.
+
+Cross-platform compilation proves API integration only. A release claim about
+the applied interval, sustained ECG/ACC throughput, or packet loss still
+requires a physical H10 run on the target Windows machine with the activity-log
+values and sample/drop counts retained.
+
 ## Stable discovery names
 
 `polar-h10-metrics` owns the metric/evidence/suffix catalog;
