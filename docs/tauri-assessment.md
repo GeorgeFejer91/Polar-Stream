@@ -94,6 +94,15 @@ small installer” is false for the current Windows policy.
 - [Tauri WebView versions and providers](https://v2.tauri.app/reference/webview-versions/)
 - [Tauri application-size guidance](https://v2.tauri.app/concept/size/)
 
+Small downloads must not be confused with low memory use. On this Linux machine,
+the idle v0.3.0 AppImage process group used approximately **443 MB RSS** in total:
+151 MB for `polar-stream`, 61 MB for the WebKit network process, and 232 MB for
+the WebKit content process (rounded, one point-in-time measurement). The OS may
+share some WebKit pages with other processes, so RSS is not a precise incremental
+cost, but the result is enough to reject a claim that Tauri is inherently a
+low-memory UI on Linux. Its clear footprint advantage here is distribution size,
+not demonstrated resident memory.
+
 ### 3. One packaging model for all desktop targets
 
 The release workflow emits DMG, AppImage, DEB, MSI, and NSIS packages from one
@@ -131,17 +140,19 @@ not every plugin is supported on mobile.
    target cache, a cold `cargo check -p polar-stream --locked` took 4 minutes
    5 seconds on this computer. The checked-in source is small, but native GUI
    and Linux WebKit dependencies create a large development cache.
-2. **WebViews are not identical.** Windows uses WebView2; macOS uses WKWebView;
+2. **Linux WebKit is not memory-light in this measurement.** The release process
+   group occupied roughly 443 MB RSS while idle, despite the 4.15 MB DEB.
+3. **WebViews are not identical.** Windows uses WebView2; macOS uses WKWebView;
    Linux uses WebKitGTK. The background renderer uses Chromium for deterministic
    visual assertions, so CI still needs packaged launch tests on every target to
    catch provider-specific differences.
-3. **IPC is not free.** Sending each 200 Hz sample separately would be wasteful.
+4. **IPC is not free.** Sending each 200 Hz sample separately would be wasteful.
    Polar Stream avoids that by batching native notifications and by never routing
    LSL/OSC through JavaScript.
-4. **Tauri is not a scientific runtime.** NeuroKit is valuable for generating
+5. **Tauri is not a scientific runtime.** NeuroKit is valuable for generating
    explanatory mock traces, but it remains a development-only generator. Real
    production metrics stay in tested Rust modules.
-5. **Signing and hardware access remain platform work.** Tauri creates package
+6. **Signing and hardware access remain platform work.** Tauri creates package
    formats; it does not supply Apple/Windows signing identities, validate Polar
    BLE behavior on every adapter, or guarantee Android parity.
 
