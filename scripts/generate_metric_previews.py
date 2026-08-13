@@ -464,8 +464,12 @@ def check_payload(existing: dict, generated: dict) -> list[str]:
                 errors.append(f"{metric_id}: {key} is not finite")
                 continue
             tolerance = max(0.05, abs(expected_value) * 0.005)
-            if abs(actual_value - expected_value) > tolerance:
-                errors.append(f"{metric_id}: {key} drifted beyond tolerance")
+            delta = abs(actual_value - expected_value)
+            if delta > tolerance:
+                errors.append(
+                    f"{metric_id}: {key} drifted by {delta:.6g} "
+                    f"(allowed {tolerance:.6g}; checked-in {actual_value:.6g}; generated {expected_value:.6g})"
+                )
 
         current_channels = current.get("channels", [])
         expected_channels = expected["channels"]
@@ -488,8 +492,13 @@ def check_payload(existing: dict, generated: dict) -> list[str]:
             if np.max(np.abs(actual_points[:, 0] - expected_points[:, 0])) > 0.05:
                 errors.append(f"{metric_id}: channel {index} SVG time axis differs")
             vertical_delta = np.abs(actual_points[:, 1] - expected_points[:, 1])
-            if np.max(vertical_delta) > 2.0 or np.sqrt(np.mean(vertical_delta**2)) > 0.6:
-                errors.append(f"{metric_id}: channel {index} SVG shape drifted beyond tolerance")
+            maximum_delta = float(np.max(vertical_delta))
+            rms_delta = float(np.sqrt(np.mean(vertical_delta**2)))
+            if maximum_delta > 2.0 or rms_delta > 0.6:
+                errors.append(
+                    f"{metric_id}: channel {index} SVG shape drifted "
+                    f"(max {maximum_delta:.3f}/2.000 px; RMS {rms_delta:.3f}/0.600 px)"
+                )
             if abs(actual_points[0, 1] - actual_points[-1, 1]) > 0.11:
                 errors.append(f"{metric_id}: channel {index} SVG loop is not closed")
     return errors
