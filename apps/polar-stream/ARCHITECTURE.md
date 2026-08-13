@@ -53,7 +53,9 @@ Rules enforced by the crate graph:
 - Every derived processor and its formula tests live in `polar-h10-metrics`.
 - Only processors required by selected outputs are active; a raw-only setup does
   not maintain ECG, HRV, coherence, breathing, or excitation windows.
-- The HTML layer never republishes scientific data.
+- In the native app, the HTML layer never republishes scientific data. The
+  experimental Pages adapter processes browser-local data and has no LSL or OSC
+  publisher.
 - Adding a custom metric means registering one `MetricDefinition` and feeding a
   `MetricSample`; it does not change BLE acquisition or output transports.
 - Native preferences have one typed, schema-versioned Rust owner in
@@ -78,6 +80,44 @@ in both Tauri and Pages and replays `ui/demo-data.js` through the same connectio
 ECG, accelerometer, and metric event shapes. Mock data never crosses into the
 Rust acquisition or publication crates, never opens an LSL/OSC destination, and
 is visibly labeled synthetic.
+
+On GitHub Pages only, `ui/polar-web-bluetooth.js` adds a second real-input
+adapter. A user gesture opens the browser chooser filtered to `Polar H10`, then
+the adapter serially discovers GATT services, subscribes to PMD data/control and
+standard HR notifications, and writes the same ECG/ACC start commands as
+`polar-h10-core`. Its decoder covers signed 24-bit ECG, uncompressed ACC, and
+Polar's variable-bit-width delta-compressed ACC blocks. It emits the same UI
+event shapes and runs a JavaScript port of the two experimental ACC breathing
+outputs. Deterministic Playwright GATT emulation verifies chooser options,
+commands, decoders, HR/RR, battery, breathing calibration, and responsive UI.
+Physical-H10 browser validation remains an explicit release boundary.
+
+Web Bluetooth requires a secure context, an explicit browser permission
+chooser, and a compatible browser/OS. The adapter is visibly disabled with a
+reason when any prerequisite is absent. It is experimental and not the
+authoritative publication path. Pages disables LSL and OSC because ordinary
+browser tabs cannot open the native discovery/data sockets or UDP destination
+required by those protocols. Native Tauri acquisition remains isolated in Rust
+and unchanged by this browser adapter.
+
+## Windows BLE link policy
+
+The Windows native adapter distinguishes ATT MTU from BLE connection timing.
+[WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
+read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).
+On Windows 11+, `polar-h10-input` asks `btleplug` for the
+[`ThroughputOptimized` preferred connection parameters](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.requestpreferredconnectionparameters)
+before subscriptions and PMD start commands. This is a request for a shorter
+connection interval, not a forced MTU, and the controller or peripheral can
+reject it. The activity log therefore records both the request result and the
+observed interval, latency, and negotiated MTU. Unsupported Windows versions
+and adapters remain fail-soft; they continue with operating-system-managed
+timing.
+
+Cross-platform compilation proves API integration only. A release claim about
+the applied interval, sustained ECG/ACC throughput, or packet loss still
+requires a physical H10 run on the target Windows machine with the activity-log
+values and sample/drop counts retained.
 
 ## Stable discovery names
 
@@ -167,8 +207,12 @@ metadata. A small presentation allowlist keeps retired ACC breathing telemetry
 out of new selections without breaking saved configurations. The library is a
 one-output transaction: selecting a row reveals the scientific interpretation,
 citation, and any pre-save processing controls before **Save output** adds it to
-the router. The two public ACC breathing outputs share one native axis/smoothing
-configuration; their independent scalar streams and visualizers do not move
-signal processing into JavaScript.
+the router. The two public ACC breathing outputs share one
+axis/smoothing/calibration configuration. Their independent scalar streams
+remain native in Tauri; the Pages-only Web Bluetooth adapter mirrors that
+processor locally so the live browser input can demonstrate the same two
+outputs without pretending to be a native LSL/OSC source. See the
+[ACC-derived breathing handoff](../../docs/acc-breathing-handoff.md) for exact
+formulas and known differences from the upstream PolarH10 tracker.
 
 Raw input and output destinations remain unchanged.

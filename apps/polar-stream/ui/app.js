@@ -267,7 +267,7 @@
     return metricPreviewsPromise;
   }
 
-  function renderRuntimeContext({ simulated = runtime.isDemo } = {}) {
+  function renderRuntimeContext({ simulated = false, transport = null } = {}) {
     if (simulated) {
       elements["runtime-path-label"].textContent = "NeuroKit simulated data";
       elements["pipeline-title"].textContent = "Simulation stays local";
@@ -276,6 +276,18 @@
     }
     if (isInterfaceRenderer) {
       elements["runtime-path-label"].textContent = "Deterministic interface test";
+      return;
+    }
+    if (transport === "web-bluetooth") {
+      elements["runtime-path-label"].textContent = "Browser Bluetooth · experimental";
+      elements["pipeline-title"].textContent = "Acquisition stays in this tab";
+      elements["pipeline-detail"].textContent = "Chromium reads H10 ECG, ACC, HR and RR directly. Use the desktop app when native LSL or OSC output is required.";
+      return;
+    }
+    if (runtime.isBrowser) {
+      elements["runtime-path-label"].textContent = "Browser-local inputs";
+      elements["pipeline-title"].textContent = "Choose live or simulated input";
+      elements["pipeline-detail"].textContent = "Connect an H10 with Chromium Web Bluetooth, or run the same interface with the offline NeuroKit fixture.";
       return;
     }
     elements["runtime-path-label"].textContent = "Native data path";
@@ -333,11 +345,17 @@
     elements["stream-name"].value = app.streamName;
     elements["lsl-toggle"].checked = Boolean(initialConfig.lslEnabled);
     elements["osc-toggle"].checked = Boolean(initialConfig.oscEnabled);
+    if (runtime.isBrowser) {
+      elements["lsl-toggle"].checked = false;
+      elements["osc-toggle"].checked = false;
+      elements["lsl-toggle"].disabled = true;
+      elements["osc-toggle"].disabled = true;
+    }
     document.body.dataset.runtime = runtime.mode;
     elements["platform-label"].textContent = isInterfaceRenderer ? "RENDERER" : String(bootstrap.platform || "local").toUpperCase();
     renderRuntimeContext();
     if (runtime.isDemo) {
-      elements["scan-caption"].textContent = "Synthetic data · no Bluetooth required";
+      elements["scan-caption"].textContent = "Web Bluetooth or offline mock";
       elements["scan-button"].querySelector("span").textContent = "Refresh inputs";
     } else if (isInterfaceRenderer) {
       elements["scan-caption"].textContent = "Deterministic background render";
@@ -346,8 +364,8 @@
     app.devices = runtime.getInputModules();
     renderDevices(app.devices);
     if (app.devices.length) {
-      elements["input-state"].textContent = runtime.isDemo ? "Demo ready" : "Mock ready";
-      elements["connection-detail"].textContent = "Choose a real Polar H10 or the offline NeuroKit mock input.";
+      elements["input-state"].textContent = runtime.isBrowser ? "Browser ready" : "Mock ready";
+      elements["connection-detail"].textContent = "Choose browser Bluetooth for a live H10, or start the offline NeuroKit input.";
     }
 
     renderMetricFilters();
@@ -356,7 +374,9 @@
     await configureOutputs({ quiet: true });
     resizeCanvas();
     if (!isInterfaceRenderer) requestRender();
-    if (app.preferences.lastDevice && !runtime.isMockDevice(app.preferences.lastDevice.id)) {
+    if (app.preferences.lastDevice
+      && !runtime.isMockDevice(app.preferences.lastDevice.id)
+      && !runtime.isBrowserBluetoothDevice(app.preferences.lastDevice.id)) {
       void scanDevices({ automatic: true });
     }
   }
@@ -395,9 +415,14 @@
     elements["save-metric-output"].addEventListener("click", () => {
       const metric = app.catalog.find((candidate) => candidate.id === app.selectedMetricId);
       if (!metric || app.outputs.has(metric.id)) return;
+      const support = runtime.outputSupport(metric.id, app.currentInputKind);
+      if (!support.supported) {
+        toast(support.reason, true);
+        return;
+      }
       if (breathingOutputIds.has(metric.id)) {
         const draft = structuredClone(app.libraryMetricDraft || metricOptionFor(metric.id, { forSelection: true }));
-        if (selectedAxisCount(draft.processing.breathing.axes) < 2) return;
+        if (breathingDraftIsInvalid(draft.processing.breathing)) return;
         app.breathingSettings = structuredClone(draft.processing.breathing);
         app.metricOptions[metric.id] = draft;
       }
@@ -475,7 +500,7 @@
       app.devices = devices;
       renderDevices(devices);
       const count = devices.length;
-      const polarCount = devices.filter((device) => device.kind !== "mock").length;
+      const polarCount = devices.filter((device) => device.kind !== "mock" && device.available !== false).length;
 
       if (automatic && app.preferences.lastDevice) {
         const exact = devices.find((device) => device.id === app.preferences.lastDevice.id);
@@ -535,19 +560,20 @@
 
     const rows = devices.map((device) => {
       const isMock = device.kind === "mock";
+      const isWebBluetooth = device.kind === "web-bluetooth";
       const isCurrent = app.connected && app.currentDeviceId === device.id;
       const isPending = app.pendingDevice?.id === device.id;
       const isPreferred = app.preferences.lastDevice?.id === device.id;
       const button = document.createElement("button");
-      button.className = `device-row${isMock ? " mock" : ""}${isCurrent ? " current" : ""}${isPreferred ? " preferred" : ""}`;
+      button.className = `device-row${isMock ? " mock" : ""}${isWebBluetooth ? " browser-bluetooth" : ""}${device.available === false ? " unavailable" : ""}${isCurrent ? " current" : ""}${isPreferred ? " preferred" : ""}`;
       button.type = "button";
-      button.dataset.inputKind = isMock ? "mock" : "polar";
-      button.disabled = app.connecting || isCurrent;
+      button.dataset.inputKind = isMock ? "mock" : isWebBluetooth ? "web-bluetooth" : "polar";
+      button.disabled = app.connecting || isCurrent || device.available === false;
       button.addEventListener("click", () => connectDevice(device));
 
       const icon = document.createElement("span");
       icon.className = "device-icon";
-      icon.textContent = isMock ? "NK" : "H10";
+      icon.textContent = isMock ? "NK" : isWebBluetooth ? "BT" : "H10";
       const copy = document.createElement("span");
       copy.className = "device-copy";
       const nameLine = document.createElement("span");
@@ -578,6 +604,10 @@
           ? "Connecting…"
           : isMock
             ? "Start demo →"
+          : device.available === false
+            ? "Unavailable"
+          : isWebBluetooth
+            ? "Choose H10 →"
           : device.rssi == null
             ? "Connect →"
             : `${device.rssi} dBm  →`;
@@ -590,17 +620,24 @@
   async function connectDevice(device, { automatic = false } = {}) {
     const generation = ++app.connectionGeneration;
     const isMock = runtime.isMockDevice(device.id);
+    const isWebBluetooth = runtime.isBrowserBluetoothDevice(device.id);
     app.connecting = true;
     app.pendingDevice = device;
     renderDevices(app.devices);
     setTopStatus(
-      isMock ? "Starting offline NeuroKit input" : automatic ? "Reconnecting to last used Polar H10" : "Connecting to Polar H10",
+      isMock
+        ? "Starting offline NeuroKit input"
+        : isWebBluetooth
+          ? "Waiting for browser Bluetooth selection"
+          : automatic ? "Reconnecting to last used Polar H10" : "Connecting to Polar H10",
       "working",
     );
     elements["input-state"].textContent = "Connecting";
     elements["device-name"].textContent = device.name;
     elements["connection-detail"].textContent = isMock
       ? "Loading the checked-in synthetic fixture…"
+      : isWebBluetooth
+        ? "Choose the Polar H10 in the browser permission prompt…"
       : "Opening the low-energy connection…";
     addActivity(`${isMock ? "Starting" : automatic ? "Reconnecting" : "Connecting"} ${device.name}`);
 
@@ -670,15 +707,19 @@
   function updateConnection(event, device = null) {
     app.connected = Boolean(event.connected);
     const simulated = Boolean(event.simulated || device?.kind === "mock");
-    renderRuntimeContext({ simulated: runtime.isDemo || (app.connected && simulated) });
+    const webBluetooth = event.transport === "web-bluetooth" || device?.kind === "web-bluetooth";
+    renderRuntimeContext({
+      simulated: app.connected && simulated,
+      transport: app.connected && webBluetooth ? "web-bluetooth" : null,
+    });
     app.connecting = false;
     app.pendingDevice = null;
     if (app.connected) {
       resetMeasurementVisuals();
       const connectedDevice = device || app.devices.find((candidate) => candidate.name === event.deviceName);
       app.currentDeviceId = connectedDevice?.id || null;
-      app.currentInputKind = simulated ? "mock" : "polar";
-      if (connectedDevice && !simulated) {
+      app.currentInputKind = simulated ? "mock" : webBluetooth ? "web-bluetooth" : "polar";
+      if (connectedDevice && !simulated && !webBluetooth) {
         app.preferences = { ...app.preferences, lastDevice: { id: connectedDevice.id, name: connectedDevice.name } };
         if (!isNative) app.preferences = preferences.saveLastDevice(connectedDevice);
       }
@@ -693,15 +734,24 @@
     elements["device-name"].textContent = app.connected ? event.deviceName : "No sensor connected";
     elements["connection-detail"].textContent = app.connected ? event.message : "Scan for a nearby chest strap.";
     elements["battery-value"].textContent = event.batteryPercent == null ? "—" : `${event.batteryPercent}%`;
-    elements["input-state"].textContent = app.connected ? simulated ? "Demo live" : "Streaming" : runtime.isDemo ? "Demo ready" : "Idle";
+    elements["input-state"].textContent = app.connected
+      ? simulated ? "Demo live" : webBluetooth ? "Browser BLE live" : "Streaming"
+      : runtime.isBrowser ? "Browser ready" : "Idle";
     setTopStatus(
       app.connected
-        ? simulated ? "Synthetic input · demo streams live" : "Sensor connected · streams live"
-        : runtime.isDemo ? "Browser demo ready" : "Ready to connect",
+        ? simulated
+          ? "Synthetic input · demo streams live"
+          : webBluetooth ? "H10 connected directly to this browser tab" : "Sensor connected · streams live"
+        : runtime.isBrowser ? "Browser inputs ready" : "Ready to connect",
       app.connected ? "connected" : "idle",
     );
     addActivity(app.connected ? `${event.deviceName} ${simulated ? "started" : "connected"}` : simulated ? "Synthetic input stopped" : "Sensor disconnected");
     if (!app.connected) elements["render-rate"].textContent = "Idle";
+    if (elements["output-dialog"].open) {
+      updateMetricFamilyUi();
+      renderMetricOptions();
+    }
+    renderOutputs();
     markTelemetryDirty();
   }
 
@@ -933,7 +983,9 @@
       : "ECG-first outputs";
     elements["metric-family-note"].textContent = acc
       ? "ACC breathing outputs are unvalidated. Keep still and compare them with a reference respiratory sensor."
-      : "Start with ECG for the signal the H10 is designed to measure; interpretation limits still apply.";
+      : app.currentInputKind === "web-bluetooth"
+        ? "Browser H10 input exposes raw ECG plus HR/RR here. Other derived ECG processors remain desktop-only."
+        : "Start with ECG for the signal the H10 is designed to measure; interpretation limits still apply.";
     elements["metric-search"].placeholder = acc
       ? "Search raw motion or breathing…"
       : "Search ECG, heart rate, HRV…";
@@ -961,10 +1013,11 @@
       return categoryMatches && (!app.metricSearch || haystack.includes(app.metricSearch));
     });
     const options = visible.map((metric) => {
+      const support = runtime.outputSupport(metric.id, app.currentInputKind);
       const option = document.createElement("button");
       option.type = "button";
       option.dataset.metricId = metric.id;
-      option.className = `metric-option${app.selectedMetricId === metric.id ? " selected" : ""}`;
+      option.className = `metric-option${app.selectedMetricId === metric.id ? " selected" : ""}${support.supported ? "" : " unavailable"}`;
       option.setAttribute("aria-pressed", String(app.selectedMetricId === metric.id));
       const mark = document.createElement("span");
       mark.textContent = app.metricFamily === "acc" ? "ACC" : "ECG";
@@ -981,8 +1034,12 @@
       detail.textContent = `${metric.detail} · ${metric.unit} · _${metric.streamSuffix}`;
       copy.append(heading, detail);
       const state = document.createElement("span");
-      state.className = app.outputs.has(metric.id) ? "metric-added" : "metric-chevron";
-      state.textContent = app.outputs.has(metric.id) ? "ADDED" : "›";
+      state.className = app.outputs.has(metric.id)
+        ? "metric-added"
+        : support.supported ? "metric-chevron" : "metric-unavailable";
+      state.textContent = app.outputs.has(metric.id)
+        ? "ADDED"
+        : support.supported ? "›" : "DESKTOP";
       const preview = createMetricPreview(metric, { compact: true });
       option.addEventListener("click", () => {
         app.selectedMetricId = metric.id;
@@ -1098,13 +1155,21 @@
     article.append(createMetricPreviewPanel(metric), measurement, consensus, source, stream);
     elements["metric-detail"].replaceChildren(article);
     const alreadyAdded = app.outputs.has(metric.id);
+    const support = runtime.outputSupport(metric.id, app.currentInputKind);
     const invalidAxes = breathingOutputIds.has(metric.id)
       && selectedAxisCount(app.libraryMetricDraft.processing.breathing.axes) < 2;
-    save.disabled = alreadyAdded || invalidAxes;
-    save.textContent = alreadyAdded ? "Already added" : "Save output";
+    const invalidBounds = breathingOutputIds.has(metric.id)
+      && app.libraryMetricDraft.processing.breathing.upperQuantile
+        - app.libraryMetricDraft.processing.breathing.lowerQuantile < 0.10;
+    save.disabled = alreadyAdded || invalidAxes || invalidBounds || !support.supported;
+    save.textContent = alreadyAdded ? "Already added" : support.supported ? "Save output" : "Desktop only";
     status.textContent = alreadyAdded
       ? `${metric.label} is already in Output`
-      : invalidAxes ? "Choose at least two axes" : `Ready to add ${metric.label}`;
+      : !support.supported
+        ? support.reason
+      : invalidAxes
+        ? "Choose at least two axes"
+        : invalidBounds ? "Keep at least 0.10 between quantile bounds" : `Ready to add ${metric.label}`;
   }
 
   function createBreathingSelectionSettings(metric) {
@@ -1184,10 +1249,35 @@
         },
       ));
     }
+    const advanced = document.createElement("details");
+    advanced.className = "breathing-advanced-settings";
+    const advancedSummary = document.createElement("summary");
+    advancedSummary.textContent = "Advanced experiment parameters";
+    const advancedCopy = document.createElement("p");
+    advancedCopy.textContent = "These settings change calibration acceptance and adaptation. Record them with every experiment.";
+    const advancedControls = document.createElement("div");
+    advancedControls.className = "inline-setting-grid";
+    const updateNumber = (key, minimum, maximum, fallback) => (value) => {
+      draft[key] = clampNumber(value, minimum, maximum, fallback);
+      updateBreathingSelectionStatus(section, metric);
+    };
+    advancedControls.append(
+      numberSetting("Calibration window", "Quiet seconds used to learn the principal motion axis.", draft.calibrationWindowSeconds, 1, 60, 1, updateNumber("calibrationWindowSeconds", 1, 60, 12)),
+      numberSetting("Minimum axis range", "Minimum calibrated selected-axis travel in g.", draft.minimumAxisRangeG, 0.001, 0.25, 0.001, updateNumber("minimumAxisRangeG", 0.001, 0.25, 0.01)),
+      numberSetting("Stale timeout", "Notification gap in seconds that forces not-ready / pause output.", draft.staleTimeoutSeconds, 0.25, 30, 0.25, updateNumber("staleTimeoutSeconds", 0.25, 30, 3)),
+      checkSetting("Adaptive bounds", "Allow accepted recent projection ranges to update the 0–1 calibration.", draft.adaptiveBounds, (value) => {
+        draft.adaptiveBounds = value;
+        updateBreathingSelectionStatus(section, metric);
+      }),
+      numberSetting("Adaptive window", "Seconds retained for recent projection quantiles.", draft.adaptiveWindowSeconds, 5, 300, 1, updateNumber("adaptiveWindowSeconds", 5, 300, 20)),
+      numberSetting("Lower quantile", "Low robust bound; allowed range 0.00–0.40.", draft.lowerQuantile, 0, 0.40, 0.01, updateNumber("lowerQuantile", 0, 0.40, 0.05)),
+      numberSetting("Upper quantile", "High robust bound; allowed range 0.60–1.00.", draft.upperQuantile, 0.60, 1, 0.01, updateNumber("upperQuantile", 0.60, 1, 0.95)),
+    );
+    advanced.append(advancedSummary, advancedCopy, advancedControls);
     const status = document.createElement("div");
     status.className = "breathing-selection-status";
     status.dataset.role = "breathing-status";
-    section.append(header, copy, axesTitle, axes, controls, status);
+    section.append(header, copy, axesTitle, axes, controls, advanced, status);
     updateBreathingSelectionStatus(section, metric);
     return section;
   }
@@ -1196,20 +1286,32 @@
     return Array.isArray(axes) ? axes.filter(Boolean).length : 0;
   }
 
+  function breathingDraftIsInvalid(breathing) {
+    return selectedAxisCount(breathing.axes) < 2
+      || breathing.upperQuantile - breathing.lowerQuantile < 0.10;
+  }
+
   function updateBreathingSelectionStatus(section, metric) {
     const count = selectedAxisCount(app.libraryMetricDraft.processing.breathing.axes);
     const status = section.querySelector('[data-role="breathing-status"]');
     const save = elements["save-metric-output"];
     const alreadyAdded = app.outputs.has(metric.id);
-    const invalid = count < 2;
+    const invalidAxes = count < 2;
+    const invalidBounds = app.libraryMetricDraft.processing.breathing.upperQuantile
+      - app.libraryMetricDraft.processing.breathing.lowerQuantile < 0.10;
+    const invalid = invalidAxes || invalidBounds;
     status.classList.toggle("invalid", invalid);
-    status.textContent = invalid
+    status.textContent = invalidAxes
       ? "Select at least two axes. The recommended setup is X + Z without the rotational Y axis."
-      : `${count} axes selected · 12-second quiet calibration restarts when these settings change.`;
+      : invalidBounds
+        ? "Keep at least 0.10 between the lower and upper calibration quantiles."
+        : `${count} axes selected · ${app.libraryMetricDraft.processing.breathing.calibrationWindowSeconds}-second quiet calibration restarts when these settings change.`;
     save.disabled = alreadyAdded || invalid;
     elements["dialog-output-status"].textContent = alreadyAdded
       ? `${metric.label} is already in Output`
-      : invalid ? "Choose at least two axes" : `Ready to add ${metric.label}`;
+      : invalidAxes
+        ? "Choose at least two axes"
+        : invalidBounds ? "Adjust the calibration quantiles" : `Ready to add ${metric.label}`;
   }
 
   function renderOutputs() {
@@ -1217,8 +1319,9 @@
     const cards = [...app.outputs].map((id) => {
       const metric = byId.get(id);
       if (!metric) return null;
+      const support = runtime.outputSupport(id, app.currentInputKind);
       const card = document.createElement("article");
-      card.className = `output-card${metric.raw ? " raw-output-card" : ""}`;
+      card.className = `output-card${metric.raw ? " raw-output-card" : ""}${support.supported ? "" : " unavailable"}`;
       const header = document.createElement("header");
       const identity = document.createElement("span");
       const label = document.createElement("strong");
@@ -1250,7 +1353,7 @@
       const axes = breathingOutputIds.has(id)
         ? options.processing.breathing.axes.map((enabled, index) => enabled ? ["X", "Y", "Z"][index] : null).filter(Boolean).join("+")
         : "";
-      summary.textContent = `${options.displayWindowSeconds}s view · ${scaling}${axes ? ` · ${axes} axes` : ""}`;
+      summary.textContent = `${support.supported ? "" : "desktop processor unavailable · "}${options.displayWindowSeconds}s view · ${scaling}${axes ? ` · ${axes} axes` : ""}`;
       const tune = document.createElement("button");
       tune.type = "button";
       tune.className = "module-tune-button";
@@ -1373,6 +1476,22 @@
       if (metric.id === "breathing_phase") {
         processing.append(numberSetting("Sensitivity", "0 is conservative; 1 reacts to smaller projected changes.", classifier.sensitivity, 0, 1, 0.05, (value) => classifier.sensitivity = clampNumber(value, 0, 1, 0.60)));
       }
+      processing.append(
+        numberSetting("Calibration window", "Quiet seconds used to learn the principal motion axis.", classifier.calibrationWindowSeconds, 1, 60, 1, (value) => classifier.calibrationWindowSeconds = clampNumber(value, 1, 60, 12)),
+        numberSetting("Minimum axis range", "Minimum selected-axis calibration travel in g.", classifier.minimumAxisRangeG, 0.001, 0.25, 0.001, (value) => classifier.minimumAxisRangeG = clampNumber(value, 0.001, 0.25, 0.01)),
+        numberSetting("Stale timeout", "Notification gap in seconds that forces not-ready / pause output.", classifier.staleTimeoutSeconds, 0.25, 30, 0.25, (value) => classifier.staleTimeoutSeconds = clampNumber(value, 0.25, 30, 3)),
+        checkSetting("Adaptive bounds", "Update accepted calibration quantiles from recent projected motion.", classifier.adaptiveBounds, (value) => {
+          classifier.adaptiveBounds = value;
+          renderModuleSettings();
+        }),
+      );
+      if (classifier.adaptiveBounds) {
+        processing.append(
+          numberSetting("Adaptive window", "Seconds retained for recent projection quantiles.", classifier.adaptiveWindowSeconds, 5, 300, 1, (value) => classifier.adaptiveWindowSeconds = clampNumber(value, 5, 300, 20)),
+          numberSetting("Lower quantile", "Low robust bound; allowed range 0.00–0.40.", classifier.lowerQuantile, 0, 0.40, 0.01, (value) => classifier.lowerQuantile = clampNumber(value, 0, 0.40, 0.05)),
+          numberSetting("Upper quantile", "High robust bound; allowed range 0.60–1.00.", classifier.upperQuantile, 0.60, 1, 0.01, (value) => classifier.upperQuantile = clampNumber(value, 0.60, 1, 0.95)),
+        );
+      }
       const warning = document.createElement("div");
       warning.className = "settings-note";
       warning.textContent = "Unvalidated research estimate. Pause (0) also represents calibration or stale input; it does not certify good signal. Inspect raw ACC and compare with a reference respiratory sensor.";
@@ -1456,7 +1575,10 @@
     const draft = structuredClone(app.moduleDraft);
     if (!metric.normalizable) draft.normalization = "none";
     if (breathingOutputIds.has(id)) {
-      if (selectedAxisCount(draft.processing.breathing.axes) < 2) return;
+      if (breathingDraftIsInvalid(draft.processing.breathing)) {
+        toast("Choose at least two axes and keep 0.10 between calibration quantiles.", true);
+        return;
+      }
       app.breathingSettings = structuredClone(draft.processing.breathing);
     }
     app.metricOptions[id] = draft;
@@ -1623,8 +1745,12 @@
   }
 
   function updateDestinationHealth(health) {
-    const lslText = elements["lsl-toggle"].checked ? health.lsl : "Local network · time synchronized";
-    const oscText = elements["osc-toggle"].checked ? health.osc : "UDP · localhost:9000";
+    const lslText = runtime.isBrowser
+      ? health.lsl
+      : elements["lsl-toggle"].checked ? health.lsl : "Local network · time synchronized";
+    const oscText = runtime.isBrowser
+      ? health.osc
+      : elements["osc-toggle"].checked ? health.osc : "UDP · localhost:9000";
     elements["lsl-detail"].textContent = lslText;
     elements["osc-detail"].textContent = oscText;
     elements["lsl-detail"].classList.toggle("warning", elements["lsl-toggle"].checked && /not found|failed|could not|unavailable/i.test(lslText));

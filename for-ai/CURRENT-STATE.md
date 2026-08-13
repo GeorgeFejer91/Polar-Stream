@@ -5,6 +5,10 @@ Last verified: 2026-08-13
 ## Implemented
 
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
+- On Windows 11+, native BLE makes a best-effort throughput-optimized connection
+  parameter request and reports the observed interval, peripheral latency, and
+  read-only negotiated MTU. Older Windows versions continue fail-soft with
+  system-managed timing.
 - Immediate raw LSL/OSC publication with canonical names.
 - Demand-driven ECG, HRV, coherence, breathing, breathing-dynamics, quality,
   and explicitly experimental metric modules.
@@ -30,6 +34,18 @@ Last verified: 2026-08-13
 - A selectable, deterministic NeuroKit mock input replays synthetic ECGSYN ECG,
   respiration-derived X/Y/Z motion, and illustrative metrics through the shared
   runtime event contract in both Pages and the offline Tauri app.
+- GitHub Pages offers an experimental Web Bluetooth input in supported secure
+  Chromium contexts. It requests a Polar H10, writes the canonical PMD ECG/ACC
+  start commands, and decodes ECG, uncompressed/variable-delta ACC, HR/RR, and
+  battery notifications into the shared UI event contract.
+- The browser adapter includes a JavaScript mirror of the two retained ACC
+  breathing outputs. Playwright validates the browser chooser/GATT contract,
+  commands, protocol edge cases, breathing calibration, and responsive UI with
+  an emulated device. Browser LSL and OSC controls are disabled.
+- The ACC breathing add/adjust workflows expose axes, smoothing, sensitivity,
+  direction, calibration window/range, stale timeout, adaptive bounds/window,
+  and robust quantiles. `docs/acc-breathing-handoff.md` documents provenance,
+  exact formulas, current/upstream differences, parameters, and validation.
 
 ## Active branch context
 
@@ -40,6 +56,10 @@ Last verified: 2026-08-13
 
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.
+- Windows CI validates the WinRT/`btleplug` integration at compile and unit-test
+  level only. It does not prove that a particular adapter/H10 accepted the
+  preferred connection parameters; retain the reported link values and sample
+  counts from a physical Windows run before making that claim.
 - liblsl availability and packaging differ by platform; follow `RELEASING.md`.
 - Both public ACC-derived respiration outputs are unvalidated and require
   comparison with a reference respiratory sensor before interpretation.
@@ -53,6 +73,13 @@ Last verified: 2026-08-13
 - The mock input demonstrates interface behavior only. It does not validate H10
   fidelity, timing, ACC respiration, or output transports, and it never opens
   native BLE, LSL, or OSC connections.
-- A real H10 Web Bluetooth adapter is not implemented. Browser/platform support,
-  secure-context permissions, PMD protocol behavior, and physical-device tests
-  remain separate requirements if that experimental path is pursued later.
+- The Web Bluetooth adapter has not yet been exercised against a physical H10.
+  Browser/OS support remains non-portable, and BLE throughput, reconnect,
+  compressed-frame behavior, and timing must be recorded on real hardware.
+- Ordinary browser tabs do not publish LSL or OSC; those transports require the
+  desktop app. The UI must never suggest that a disabled browser switch opens a
+  native outlet.
+- Breathing phase sensitivity is currently applied to normalized change per ACC
+  notification batch, not change per second. BLE batch cadence can therefore
+  affect classification and must be corrected/versioned before cross-platform
+  phase equivalence is claimed.

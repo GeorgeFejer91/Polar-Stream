@@ -17,6 +17,7 @@ DEFAULT_OUTPUT = ROOT / "artifacts/browser-demo"
 REQUIRED_ASSETS = (
     "index.html",
     "styles.css",
+    "polar-web-bluetooth.js",
     "runtime-api.js",
     "preferences.js",
     "app.js",
@@ -35,7 +36,14 @@ def validate_sources() -> None:
     if missing:
         raise SystemExit("Browser demo is missing canonical UI assets: " + ", ".join(missing))
     html = (UI / "index.html").read_text(encoding="utf-8")
-    for name in ("styles.css", "runtime-api.js", "preferences.js", "app.js", "favicon.png"):
+    for name in (
+        "styles.css",
+        "polar-web-bluetooth.js",
+        "runtime-api.js",
+        "preferences.js",
+        "app.js",
+        "favicon.png",
+    ):
         if name not in html:
             raise SystemExit(f"Canonical index.html no longer references {name}")
     if "http://" in html or "https://" in html:

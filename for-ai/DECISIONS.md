@@ -1,5 +1,17 @@
 # Decision log
 
+## 2026-08-13 — Windows MTU is observed; connection timing is requested
+
+Do not describe Windows as allowing Polar Stream to force an ATT MTU. WinRT
+owns MTU negotiation and exposes `GattSession.MaxPduSize` read-only. The native
+Windows 11+ path instead makes a best-effort `ThroughputOptimized` preferred
+connection-parameter request through `btleplug`, then reports the observed
+connection interval, peripheral latency, and negotiated MTU. The request may be
+unavailable or rejected, especially on older Windows versions, and must fail
+soft without stopping ECG/ACC acquisition. Cross-platform CI is not physical
+H10 validation; preserve device-run diagnostics before claiming the shorter
+interval was applied.
+
 ## 2026-08-13 — Desktop and browser use one canonical interface
 
 GitHub Pages is a presentation demo of the Tauri application, not a separately
@@ -12,11 +24,34 @@ isolated from real native acquisition and publication. CI must exercise the
 staged Pages artifact at desktop and smartphone widths so visual feedback on
 the hosted version remains applicable to the desktop interface.
 
-The browser demo labels all input synthetic and does not claim BLE, native
-timing, LSL/OSC transport, or scientific validation. Web Bluetooth may support
-a future experimental H10 adapter in some secure Chromium contexts, but it is
-not the portable demo input because browser/platform support, permissions, PMD
-protocol behavior, and physical-device validation differ.
+The browser labels NeuroKit input synthetic and the direct-H10 adapter
+experimental. Web Bluetooth is available only in compatible secure Chromium
+contexts and requires an explicit chooser. It is not the portable fallback and
+does not claim native timing, LSL/OSC transport, or scientific validation.
+
+## 2026-08-13 — Browser H10 input is experimental and local to the tab
+
+GitHub Pages may acquire H10 ECG/ACC and standard HR/RR directly through Web
+Bluetooth. The adapter mirrors Polar PMD commands/decoding and only the two
+retained ACC breathing processors so the canonical interface can receive live
+data without a local app. It is feature-detected, visibly permission-gated, and
+must retain NeuroKit fallback. Physical-H10 verification is required before a
+release claim.
+
+Ordinary browser tabs cannot provide the native socket behavior used by LSL
+discovery/data or UDP OSC. Pages therefore disables both destinations instead
+of simulating publication. Tauri remains the authoritative acquisition and
+publication path. Browser code must not be imported into the Rust hot path.
+
+## 2026-08-13 — ACC breathing provenance and parameters are explicit
+
+`docs/acc-breathing-handoff.md` is the canonical handoff for the two
+experimental ACC breathing outputs. It distinguishes verbal Johannes
+provenance, public MesmerPrism/PolarH10 code history, and Polar Stream's Rust and
+browser adaptations. The add/adjust UI exposes all current experiment controls,
+while fixed constants and the known notification-batch-dependent phase
+threshold are documented. No tuning setting may be described as validated
+until comparison with an independent respiratory reference supports it.
 
 ## 2026-08-13 — New ACC breathing selection is deliberately limited
 

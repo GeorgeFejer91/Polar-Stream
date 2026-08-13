@@ -148,8 +148,10 @@ fn decode_accelerometer(
                 z_mg: i16::from_le_bytes([sample[4], sample[5]]),
             })
             .collect()
-    } else {
+    } else if compressed && matches!(frame_type_base, 0x00 | 0x01) {
         decode_compressed_accelerometer(payload)?
+    } else {
+        return Err(ProtocolError::UnsupportedFrame);
     };
 
     Ok(PmdFrame::Accelerometer {
@@ -159,7 +161,7 @@ fn decode_accelerometer(
 }
 
 fn decode_compressed_accelerometer(payload: &[u8]) -> Result<Vec<AccSample>, ProtocolError> {
-    if payload.len() < 6 {
+    if payload.len() < 8 {
         return Err(ProtocolError::InvalidAccelerometerLength);
     }
 
@@ -167,14 +169,34 @@ fn decode_compressed_accelerometer(payload: &[u8]) -> Result<Vec<AccSample>, Pro
     let mut y = i32::from(i16::from_le_bytes([payload[2], payload[3]]));
     let mut z = i32::from(i16::from_le_bytes([payload[4], payload[5]]));
     let mut samples = vec![clamped_acc_sample(x, y, z)];
-    let mut bit_offset = 0;
-    let delta_data = &payload[6..];
-
-    for _ in 0..((delta_data.len() * 8) / 48) {
-        x += read_signed_bits(delta_data, &mut bit_offset, 16);
-        y += read_signed_bits(delta_data, &mut bit_offset, 16);
-        z += read_signed_bits(delta_data, &mut bit_offset, 16);
-        samples.push(clamped_acc_sample(x, y, z));
+    let mut cursor = 6;
+    while cursor < payload.len() {
+        if cursor + 2 > payload.len() {
+            return Err(ProtocolError::InvalidAccelerometerLength);
+        }
+        let delta_width = usize::from(payload[cursor]);
+        let sample_count = usize::from(payload[cursor + 1]);
+        cursor += 2;
+        if !(1..=16).contains(&delta_width) {
+            return Err(ProtocolError::InvalidAccelerometerLength);
+        }
+        let bit_length = sample_count
+            .checked_mul(delta_width)
+            .and_then(|value| value.checked_mul(3))
+            .ok_or(ProtocolError::InvalidAccelerometerLength)?;
+        let byte_length = bit_length.div_ceil(8);
+        if cursor + byte_length > payload.len() {
+            return Err(ProtocolError::InvalidAccelerometerLength);
+        }
+        let delta_data = &payload[cursor..cursor + byte_length];
+        let mut bit_offset = 0;
+        for _ in 0..sample_count {
+            x += read_signed_bits(delta_data, &mut bit_offset, delta_width);
+            y += read_signed_bits(delta_data, &mut bit_offset, delta_width);
+            z += read_signed_bits(delta_data, &mut bit_offset, delta_width);
+            samples.push(clamped_acc_sample(x, y, z));
+        }
+        cursor += byte_length;
     }
     Ok(samples)
 }
@@ -310,6 +332,41 @@ mod tests {
                 y_mg: 5,
                 z_mg: -6
             }
+        );
+    }
+
+    #[test]
+    fn decodes_variable_width_compressed_accelerometer_deltas() {
+        let mut frame = vec![ACC_MEASUREMENT];
+        frame.extend_from_slice(&7_u64.to_le_bytes());
+        frame.push(0x81);
+        for value in [1_000_i16, -2, 3] {
+            frame.extend_from_slice(&value.to_le_bytes());
+        }
+        frame.extend_from_slice(&[4, 2, 0xf1, 0xe2, 0xf0]);
+
+        let PmdFrame::Accelerometer { samples, .. } = decode_pmd(&frame).unwrap() else {
+            panic!("expected accelerometer frame")
+        };
+        assert_eq!(
+            samples,
+            [
+                AccSample {
+                    x_mg: 1_000,
+                    y_mg: -2,
+                    z_mg: 3,
+                },
+                AccSample {
+                    x_mg: 1_001,
+                    y_mg: -3,
+                    z_mg: 5,
+                },
+                AccSample {
+                    x_mg: 999,
+                    y_mg: -3,
+                    z_mg: 4,
+                },
+            ]
         );
     }
 

@@ -39,14 +39,24 @@ the visualizer source.
 
 The [live Polar Stream browser demo](https://georgefejer91.github.io/Polar-Stream/)
 is deployed from the same `apps/polar-stream/ui/` HTML, CSS, and JavaScript used
-by the Tauri application. Choose **NeuroKit simulated input** in the Input panel
-to replay deterministic ECGSYN ECG and respiration-derived accelerometer data
-without Bluetooth hardware. The same synthetic input is available offline in
-the installed desktop app for interface exploration without a Polar strap.
+by the Tauri application. On supported Chrome/Edge browsers, choose **Polar H10
+via browser** to grant Web Bluetooth permission and stream ECG, ACC, HR, and RR
+directly in the tab. This path is experimental and still requires validation on
+physical H10 hardware. Web Bluetooth requires HTTPS (or localhost), an explicit
+user chooser, and browser/OS support; unsupported phones and browsers keep the
+input visible with a compatibility explanation.
+
+Choose **NeuroKit simulated input** to replay deterministic ECGSYN ECG and
+respiration-derived accelerometer data without Bluetooth hardware. The same
+synthetic input is available offline in the installed desktop app for interface
+exploration without a Polar strap.
 
 Synthetic input is labeled throughout the interface. It demonstrates layout,
 configuration, and visualization behavior only; it is not recorded Polar data,
 device or algorithm validation, and it does not open BLE, LSL, or OSC connections.
+Ordinary browser tabs cannot implement native LSL discovery/data sockets or UDP
+OSC, so those switches are explicitly disabled on GitHub Pages. Use the desktop
+app for authoritative BLE acquisition plus LSL/OSC publication.
 GitHub Pages is rebuilt from the canonical UI after changes land on `main`, and
 CI checks byte-for-byte asset parity plus desktop, 390px, and 320px layouts.
 
@@ -114,6 +124,9 @@ and latency policy, and [the Tauri assessment](docs/tauri-assessment.md) for the
 evidence-based Rust/Tauri decision and its limits. Scientific definitions,
 formula caveats, and the full
 legacy-output mapping are in [the metric evidence inventory](docs/metric-evidence.md).
+The exact ACC breathing lineage, formulas, settings, known batch-timing
+limitation, and proposed reference-validation protocol are in the
+[ACC-derived breathing handoff](docs/acc-breathing-handoff.md).
 
 ## Develop
 
