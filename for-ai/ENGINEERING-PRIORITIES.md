@@ -129,9 +129,11 @@ copies, synchronization, serialization, or higher render cadence.
   development NeuroKit workflow, and labeled as such. They demonstrate UI
   behavior only. The same mock module may run offline in Tauri, but must stay
   isolated from real native acquisition and publication code.
-- Web Bluetooth is not a portability assumption. Any future browser H10 path
-  must be an explicit experimental adapter with secure-context, permission,
+- Web Bluetooth is not a portability assumption. The browser H10 path is an
+  explicit experimental adapter with secure-context, permission,
   browser-support, PMD protocol, and physical-device validation boundaries.
+  It must stay feature-detected and must not enable browser LSL/OSC or weaken
+  the native authoritative data path.
 
 ## Review and definition of done
 

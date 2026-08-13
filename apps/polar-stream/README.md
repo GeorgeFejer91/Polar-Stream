@@ -24,13 +24,22 @@ no Python or scientific-computing dependency to the installed application.
 cargo test -p polar-h10-core -p polar-h10-input -p polar-h10-output
 ```
 
-## Browser demo and offline mock input
+## Browser input and offline mock input
 
 The shared input adapter offers a clearly labeled **NeuroKit simulated input**
 in both the installed Tauri app and browser demo. It replays the generated,
 checked-in `ui/demo-data.js` fixture entirely offline, so the complete workflow
 can be explored without BLE hardware. It never enters the native BLE or LSL/OSC
 path and is not device or algorithm validation.
+
+The same canonical UI also exposes **Polar H10 via browser** on GitHub Pages.
+Supported Chromium browsers use Web Bluetooth to request an H10, subscribe to
+the PMD control/data characteristics, start ECG and 200 Hz ACC, and subscribe to
+standard HR/RR notifications. This experimental frontend adapter mirrors the
+native packet decoder and the two ACC breathing outputs, but it is not the
+authoritative acquisition/publication path and still needs physical-H10
+validation. Browser LSL and OSC controls remain disabled because a normal tab
+does not provide the native socket behavior required by those protocols.
 
 ```bash
 npm run build:browser-demo
@@ -39,6 +48,10 @@ python3 -m http.server 8000 --directory artifacts/browser-demo
 
 Open `http://127.0.0.1:8000` and select the NeuroKit mock module. The deployed
 version is at `https://georgefejer91.github.io/Polar-Stream/`.
+
+See [`docs/acc-breathing-handoff.md`](../../docs/acc-breathing-handoff.md) for
+the complete accelerometer-breathing provenance, formulas, parameters, and
+validation plan.
 
 To rebuild or verify the metric-library previews, install the repository's
 `requirements-previews.txt` in a Python 3.13 virtual environment and run

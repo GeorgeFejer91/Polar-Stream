@@ -131,8 +131,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .device-row.mock { border-color: #a8c7de; background: #f5f9fc; }
 .device-row.mock:hover, .device-row.mock.current { border-color: var(--blue); background: #edf5fb; box-shadow: 0 3px 10px rgb(43 100 143 / 10%); }
 .device-row.mock .device-icon { background: var(--blue-pale); color: var(--blue); }
+.device-row.browser-bluetooth { border-color: #9ab9cf; background: #f4f9fc; }
+.device-row.browser-bluetooth:hover, .device-row.browser-bluetooth.current { border-color: var(--blue); background: #eaf4fb; box-shadow: 0 3px 10px rgb(43 100 143 / 10%); }
+.device-row.browser-bluetooth .device-icon { background: #dcecf7; color: var(--blue); }
+.device-row.unavailable { border-style: dashed; background: #f6f7f6; }
+.device-row.unavailable:hover { border-color: var(--line); box-shadow: none; }
 .device-row:disabled { cursor: default; }
 .device-row:disabled:not(.current) { opacity: .68; cursor: wait; }
+.device-row.unavailable:disabled { cursor: not-allowed; }
 .device-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 6px; background: var(--green-pale); color: var(--green); font-weight: 800; }
 .device-copy { display: grid; gap: 3px; min-width: 0; }
 .device-name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -205,6 +211,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .output-card > header button { width: 19px; height: 19px; display: grid; place-items: center; border: 0; border-radius: 50%; background: #eef2ef; color: #607068; font-size: 15px; line-height: 1; }
 .output-card > header button:hover { background: #f5dddd; color: #8f3737; }
 .raw-output-card { border-color: #bad7c8; background: #f4faf6; }
+.output-card.unavailable { border-style: dashed; opacity: .66; }
 .metric-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 7px; margin-top: 8px; padding-top: 7px; border-top: 1px solid #e8ece8; }
 .metric-controls label { display: grid; grid-template-columns: auto auto; align-items: center; gap: 4px 6px; color: var(--muted); font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
 .metric-controls select, .metric-controls input { height: 25px; border: 1px solid var(--line-strong); border-radius: 4px; background: white; color: var(--ink); font-size: 9px; text-transform: none; letter-spacing: normal; }
@@ -287,6 +294,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .metric-options { display: grid; grid-template-columns: 1fr; align-content: start; gap: 6px; overflow: auto; padding: 12px 14px 16px 20px; border-right: 1px solid var(--line); }
 .metric-option { position: relative; width: 100%; display: grid; grid-template-columns: 36px minmax(0, 1fr) 96px auto; align-items: center; gap: 9px; min-height: 64px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: white; color: var(--ink); text-align: left; cursor: pointer; }
 .metric-option:hover, .metric-option.selected { border-color: #dfa2a2; background: #fdf3f3; box-shadow: inset 3px 0 0 var(--red); }
+.metric-option.unavailable:not(.selected) { opacity: .62; }
 .output-dialog[data-family="acc"] .metric-option:hover, .output-dialog[data-family="acc"] .metric-option.selected { border-color: #91b9d7; background: #f0f6fb; box-shadow: inset 3px 0 0 var(--blue); }
 .metric-option > span:first-child { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 6px; background: #edf2ee; color: var(--green); font: 800 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .output-dialog[data-family="ecg"] .metric-option > span:first-child { background: var(--red-pale); color: #ad3f3f; }
@@ -298,6 +306,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .metric-option small { overflow: hidden; color: var(--muted); font-size: 8px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .metric-chevron { color: var(--green); font: 500 25px/1 sans-serif; }
 .metric-added { padding: 4px 6px; border-radius: 4px; background: #e6f3eb; color: var(--green-dark); font: 800 7px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.metric-unavailable { padding: 4px 5px; border-radius: 4px; background: #eef0ef; color: #657169; font: 800 7px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .metric-preview { min-width: 0; margin: 0; pointer-events: none; }
 .metric-preview-svg { display: block; width: 100%; overflow: hidden; }
 .metric-preview-compact { width: 96px; height: 42px; }
@@ -344,6 +353,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .inline-setting-grid .setting-field { padding: 9px; border: 1px solid #d2e0e9; border-radius: 6px; background: white; }
 .breathing-selection-status { padding: 8px 9px; border-radius: 5px; background: #e4f1fa; color: #345a74; font-size: 9px; line-height: 1.45; }
 .breathing-selection-status.invalid { background: #fae6e4; color: #943d35; }
+.breathing-advanced-settings { border-top: 1px solid #c5dbea; padding-top: 9px; }
+.breathing-advanced-settings summary { color: #2f6f9f; cursor: pointer; font-size: 9px; font-weight: 800; }
+.breathing-advanced-settings > p { margin: 7px 0 9px; color: #526370; font-size: 8px; line-height: 1.45; }
+.breathing-advanced-settings[open] summary { margin-bottom: 2px; }
 .output-dialog form > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--surface-2); }
 .output-dialog form > footer > span { color: var(--muted); font-size: 10px; }
 

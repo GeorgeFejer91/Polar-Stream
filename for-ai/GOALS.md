@@ -11,7 +11,10 @@ items into the dated history instead of silently deleting them.
    - Offer an explicit selectable NeuroKit mock input in both Pages and the
      offline Tauri app, replaying deterministic ECG, ACC, respiration, and
      derived demo values through the shared runtime event contract.
-   - Label synthetic input and unavailable native BLE/LSL/OSC behavior clearly.
+   - Label synthetic input separately from the experimental Web Bluetooth H10
+     adapter, and keep browser LSL/OSC behavior clearly unavailable.
+   - Keep direct browser H10 support feature-detected and permission-gated;
+     preserve mock fallback everywhere.
    - Deploy after successful changes to `main`, and fail CI if the staged Pages
      artifact or browser runtime drifts from the desktop UI.
    - Cover desktop Chromium and smartphone layouts down to 320 CSS pixels,
@@ -27,6 +30,9 @@ items into the dated history instead of silently deleting them.
 
 - Validate ECG/ACC throughput and reconnect behavior with physical H10 hardware
   on Linux, Windows, and macOS.
+- Validate the Pages Web Bluetooth adapter with a physical H10 on supported
+  desktop and Android Chromium, including PMD frame variants, MTU/batch cadence,
+  disconnect/reconnect behavior, and long-run sample counts.
 - Record measured renderer, queue, and output latency under representative MTUs.
 - Measure the p99 runtime of each selected derived processor set against the BLE
   notification interval; isolate derived work if it can delay the next raw batch.
@@ -35,6 +41,9 @@ items into the dated history instead of silently deleting them.
 - Complete signed/notarized distribution planning without weakening the current
   draft-release checks.
 - Compare experimental breathing outputs against a reference respiratory signal.
+- Make phase classification time-normalized rather than notification-batch
+  dependent, version the behavior, and compare old/new output on retained raw
+  ACC plus an independent respiratory reference.
 
 ## Later
 
@@ -48,6 +57,10 @@ items into the dated history instead of silently deleting them.
 - 2026-08-13: established one canonical Tauri/Pages interface, a selectable
   offline NeuroKit mock input, automatic Pages staging/deployment, asset-parity
   checks, and desktop plus 390px/320px responsive browser coverage.
+- 2026-08-13: added an experimental direct-H10 Web Bluetooth adapter to the
+  canonical Pages UI, kept browser LSL/OSC explicitly disabled, mirrored the two
+  ACC breathing outputs, exposed advanced experiment parameters, and added the
+  algorithm/provenance handoff.
 - 2026-08-13: production hardening, stacked raw X/Y/Z acceleration, and the
   ECG/ACC output-library redesign passed cross-platform CI and merged in PR #5.
 - 2026-08-13: simplified the output library around an ECG/ACC family selector,

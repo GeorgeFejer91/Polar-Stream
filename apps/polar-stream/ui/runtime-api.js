@@ -5,6 +5,7 @@
   const isNative = Boolean(core?.invoke && core?.Channel);
   const isRenderer = new URLSearchParams(window.location.search).has("renderer");
   const mode = isNative ? "native" : isRenderer ? "renderer" : "browser-demo";
+  const webBluetooth = window.PolarWebBluetooth;
   const mockDevice = Object.freeze({
     id: "neurokit-mock",
     name: "NeuroKit simulated input",
@@ -24,7 +25,32 @@
     outputs: new Set(["raw_ecg", "raw_acc"]),
     config: null,
   };
+  const browserBluetoothOutputs = new Set([
+    "raw_ecg",
+    "raw_acc",
+    "acc_magnitude",
+    "heart_rate",
+    "rr_interval",
+    "acc_breathing_magnitude",
+    "breathing_phase",
+  ]);
   let activeInput = null;
+
+  function browserBluetoothModule() {
+    const status = webBluetooth?.supportStatus() || {
+      supported: false,
+      reason: "The browser Bluetooth adapter did not load.",
+    };
+    return Object.freeze({
+      id: webBluetooth?.moduleId || "web-bluetooth-polar-h10",
+      name: "Polar H10 via browser",
+      kind: "web-bluetooth",
+      detail: status.reason,
+      sourceLabel: "EXPERIMENTAL",
+      available: status.supported,
+      rssi: null,
+    });
+  }
 
   class RuntimeError extends Error {
     constructor(code, message, retryable = false) {
@@ -199,12 +225,25 @@
   const api = {
     isNative,
     isDemo: mode === "browser-demo",
+    isBrowser: mode === "browser-demo",
     mode,
     getInputModules() {
-      return [mockDevice];
+      return mode === "browser-demo" ? [mockDevice, browserBluetoothModule()] : [mockDevice];
     },
     isMockDevice(deviceId) {
       return deviceId === mockDevice.id;
+    },
+    isBrowserBluetoothDevice(deviceId) {
+      return mode === "browser-demo" && deviceId === (webBluetooth?.moduleId || "web-bluetooth-polar-h10");
+    },
+    outputSupport(metricId, inputKind) {
+      if (inputKind !== "web-bluetooth" || browserBluetoothOutputs.has(metricId)) {
+        return { supported: true, reason: null };
+      }
+      return {
+        supported: false,
+        reason: "This derived processor currently requires the desktop app. Browser H10 input provides raw ECG/ACC, HR/RR, and the two experimental ACC breathing outputs.",
+      };
     },
     formatError(error) {
       const normalized = normalizeError(error);
@@ -225,11 +264,17 @@
     async connectDevice(deviceId, onEvent) {
       if (deviceId === mockDevice.id) {
         if (activeInput === "native" && isNative) await invoke("disconnect_device");
+        if (activeInput === "web-bluetooth") await webBluetooth.disconnect();
         return startDemo(onEvent);
       }
       stopDemo({ notify: activeInput === "mock" });
+      if (this.isBrowserBluetoothDevice(deviceId)) {
+        await webBluetooth.connect(onEvent, demo.config || {});
+        activeInput = "web-bluetooth";
+        return;
+      }
       if (!isNative) {
-        throw new RuntimeError("BROWSER_BLE_UNAVAILABLE", "This browser demo uses the NeuroKit mock input.");
+        throw new RuntimeError("BROWSER_BLE_UNAVAILABLE", "This input is not available in the browser.");
       }
       if (demo.config) await invoke("update_output_config", { config: demo.config });
       const events = new core.Channel();
@@ -243,17 +288,22 @@
         stopDemo({ notify: true });
         return { emitted: true };
       }
+      if (activeInput === "web-bluetooth") {
+        activeInput = null;
+        return webBluetooth.disconnect();
+      }
       activeInput = null;
       return isNative ? invoke("disconnect_device") : undefined;
     },
     async updateOutputConfig(config) {
       demo.config = structuredClone(config);
       demo.outputs = new Set(config.outputs || []);
+      if (activeInput === "web-bluetooth") webBluetooth.updateConfig(config);
       if (activeInput === "mock" || !isNative) {
         return {
           streamName: config.streamName,
-          lsl: config.lslEnabled ? "Demo only · no LSL outlet is opened" : "Off",
-          osc: config.oscEnabled ? "Demo only · no UDP packets are sent" : "Off",
+          lsl: mode === "browser-demo" ? "Desktop app required · native LSL sockets" : "Off",
+          osc: mode === "browser-demo" ? "Desktop app required · native UDP socket" : "Off",
         };
       }
       return invoke("update_output_config", { config });

@@ -25,7 +25,10 @@ The same files in `apps/polar-stream/ui/` also form the GitHub Pages browser
 demo. Runtime behavior is selected once through the frontend runtime adapter:
 Tauri can use native IPC for a real H10, while both Tauri and Pages can replay a
 selectable, checked-in deterministic NeuroKit mock input through the same event
-contract. The Pages artifact must be built from the canonical UI tree; a
+contract. Pages also offers an explicitly experimental Web Bluetooth adapter
+for direct H10 ECG/ACC/HR/RR input in supported secure Chromium contexts. It has
+no browser LSL/OSC publisher and does not replace the authoritative native path.
+The Pages artifact must be built from the canonical UI tree; a
 separately maintained browser-interface copy is not allowed.
 
 The project optimizes first for raw signal integrity, then continuous observable
@@ -53,8 +56,10 @@ operational contract for that ordering.
   native owner.
 - Scientific definitions originate in the Rust metric catalog and are surfaced
   to the UI through bootstrap data.
-- The browser demo is synthetic and presentation-only. It never implies real
-  BLE acquisition, native timing, LSL/OSC publication, or metric validation.
+- Browser NeuroKit input is synthetic/presentation-only. The separate browser
+  H10 adapter is experimental, permission-gated, local to the tab, and limited
+  to raw ECG/ACC, HR/RR, and the two unvalidated ACC breathing outputs. Browser
+  LSL/OSC remains disabled.
 - The NeuroKit mock input is also available offline in the installed app so the
   interface remains explorable without a Polar device. It must not enter or
   weaken the authoritative native acquisition/publication path.

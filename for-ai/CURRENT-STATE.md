@@ -30,6 +30,18 @@ Last verified: 2026-08-13
 - A selectable, deterministic NeuroKit mock input replays synthetic ECGSYN ECG,
   respiration-derived X/Y/Z motion, and illustrative metrics through the shared
   runtime event contract in both Pages and the offline Tauri app.
+- GitHub Pages offers an experimental Web Bluetooth input in supported secure
+  Chromium contexts. It requests a Polar H10, writes the canonical PMD ECG/ACC
+  start commands, and decodes ECG, uncompressed/variable-delta ACC, HR/RR, and
+  battery notifications into the shared UI event contract.
+- The browser adapter includes a JavaScript mirror of the two retained ACC
+  breathing outputs. Playwright validates the browser chooser/GATT contract,
+  commands, protocol edge cases, breathing calibration, and responsive UI with
+  an emulated device. Browser LSL and OSC controls are disabled.
+- The ACC breathing add/adjust workflows expose axes, smoothing, sensitivity,
+  direction, calibration window/range, stale timeout, adaptive bounds/window,
+  and robust quantiles. `docs/acc-breathing-handoff.md` documents provenance,
+  exact formulas, current/upstream differences, parameters, and validation.
 
 ## Active branch context
 
@@ -53,6 +65,13 @@ Last verified: 2026-08-13
 - The mock input demonstrates interface behavior only. It does not validate H10
   fidelity, timing, ACC respiration, or output transports, and it never opens
   native BLE, LSL, or OSC connections.
-- A real H10 Web Bluetooth adapter is not implemented. Browser/platform support,
-  secure-context permissions, PMD protocol behavior, and physical-device tests
-  remain separate requirements if that experimental path is pursued later.
+- The Web Bluetooth adapter has not yet been exercised against a physical H10.
+  Browser/OS support remains non-portable, and BLE throughput, reconnect,
+  compressed-frame behavior, and timing must be recorded on real hardware.
+- Ordinary browser tabs do not publish LSL or OSC; those transports require the
+  desktop app. The UI must never suggest that a disabled browser switch opens a
+  native outlet.
+- Breathing phase sensitivity is currently applied to normalized change per ACC
+  notification batch, not change per second. BLE batch cadence can therefore
+  affect classification and must be corrected/versioned before cross-platform
+  phase equivalence is claimed.
