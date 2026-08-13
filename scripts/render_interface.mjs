@@ -83,6 +83,30 @@ function colorDistance(actual, expected) {
   return Math.hypot(...actual.map((channel, index) => channel - expected[index]));
 }
 
+async function inspectStackedCanvas(page) {
+  const colors = [[59, 120, 170], [22, 130, 89], [166, 109, 25]];
+  return page.locator("#signal-canvas").evaluate((canvas, expectedColors) => {
+    const context = canvas.getContext("2d");
+    const { data, width } = context.getImageData(0, 0, canvas.width, canvas.height);
+    return expectedColors.map((expected) => {
+      let count = 0;
+      let yTotal = 0;
+      for (let index = 0; index < data.length; index += 4) {
+        if (data[index + 3] < 100) continue;
+        const distance = Math.hypot(
+          data[index] - expected[0],
+          data[index + 1] - expected[1],
+          data[index + 2] - expected[2],
+        );
+        if (distance >= 42) continue;
+        count += 1;
+        yTotal += Math.floor(index / 4 / width);
+      }
+      return { count, averageY: count ? yTotal / count : 0 };
+    });
+  }, colors);
+}
+
 await mkdir(output, { recursive: true });
 const server = await startServer();
 const address = server.address();
@@ -126,6 +150,22 @@ try {
   assert.equal(await page.locator("#visual-window-label").textContent(), "Live phase");
   await page.screenshot({ path: join(output, "breathing-phase-settings-saved.png"), fullPage: true });
 
+  const accelerometer = await page.evaluate(() => window.PolarInterfaceRenderer.render("raw-accelerometer-stacked"));
+  assert.equal(accelerometer.selectedVisual, "raw_acc");
+  assert.deepEqual(accelerometer.legendLabels, ["X", "Y", "Z"]);
+  assert.ok(accelerometer.visualOptions.includes("raw_acc"), "raw ACC is missing from the visualizer");
+  assert.ok(!accelerometer.visualOptions.some((id) => /^acc_[xyz]$/.test(id)), "individual ACC axes remain selectable");
+  assert.match(accelerometer.currentLabel, /^X [-\d]+  ·  Y [-\d]+  ·  Z [-\d]+$/);
+  assert.match(accelerometer.chartClass, /stacked-axes/);
+  assert.match(accelerometer.canvasLabel, /three stacked plots/);
+  const stackedColors = await inspectStackedCanvas(page);
+  assert.ok(stackedColors.every(({ count }) => count > 40), `one or more ACC traces were not drawn: ${JSON.stringify(stackedColors)}`);
+  assert.ok(stackedColors[0].averageY < stackedColors[1].averageY && stackedColors[1].averageY < stackedColors[2].averageY,
+    `ACC traces were not stacked X/Y/Z: ${JSON.stringify(stackedColors)}`);
+  const accelerometerScreenshot = join(output, "raw-accelerometer-stacked.png");
+  await page.screenshot({ path: accelerometerScreenshot, fullPage: true });
+  assert.ok((await stat(accelerometerScreenshot)).size > 20_000, "stacked ACC screenshot was unexpectedly empty");
+
   const library = await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));
   assert.equal(library.dialogOpen, true, "metric library did not open in the renderer");
   assert.equal(library.previewCount, library.catalogCount, "generated preview count differs from catalog count");
@@ -164,7 +204,7 @@ try {
   await page.screenshot({ path: previewScreenshot, fullPage: true });
   assert.ok((await stat(previewScreenshot)).size > 20_000, "metric library screenshot was unexpectedly empty");
 
-  process.stdout.write(`Validated ${targets.length} classifier renders, saved controls, and ${library.catalogCount} NeuroKit previews in ${output}\n`);
+  process.stdout.write(`Validated stacked raw ACC, ${targets.length} classifier renders, saved controls, and ${library.catalogCount} NeuroKit previews in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

@@ -55,9 +55,14 @@
 
   const visualDefinitions = {
     raw_ecg: { label: "Raw ECG", unit: "µV", rate: 130, color: "#d85151", symmetric: true },
-    acc_x: { label: "Accelerometer · X", unit: "mg", rate: 200, color: "#3b78aa", symmetric: true, parent: "raw_acc" },
-    acc_y: { label: "Accelerometer · Y", unit: "mg", rate: 200, color: "#168259", symmetric: true, parent: "raw_acc" },
-    acc_z: { label: "Accelerometer · Z", unit: "mg", rate: 200, color: "#a66d19", symmetric: true, parent: "raw_acc" },
+    raw_acc: {
+      label: "Raw accelerometer · X/Y/Z", unit: "mg", rate: 200,
+      channels: [
+        { buffer: "acc_x", label: "X", color: "#3b78aa", symmetric: true },
+        { buffer: "acc_y", label: "Y", color: "#168259", symmetric: true },
+        { buffer: "acc_z", label: "Z", color: "#a66d19", symmetric: true },
+      ],
+    },
     heart_rate: { label: "Heart rate", unit: "bpm", rate: 1, color: "#d85151" },
     rr_interval: { label: "RR interval", unit: "ms", rate: 2, color: "#6c62a8" },
     acc_magnitude: { label: "ACC magnitude", unit: "g", rate: 200, color: "#3b78aa" },
@@ -102,7 +107,10 @@
     }
   }
 
-  const buffers = Object.fromEntries(Object.keys(visualDefinitions).map((id) => [id, new RingBuffer()]));
+  const bufferIds = new Set(Object.entries(visualDefinitions).flatMap(([id, definition]) => (
+    [id, ...(definition.channels?.map((channel) => channel.buffer) || [])]
+  )));
+  const buffers = Object.fromEntries([...bufferIds].map((id) => [id, new RingBuffer()]));
   const elements = {};
   const ids = [
     "app-state-dot", "app-state-text", "platform-label", "input-state", "connection-card",
@@ -110,7 +118,7 @@
     "scan-button", "scan-caption", "device-list", "activity-list", "output-state", "raw-ecg-value",
     "raw-acc-x", "raw-acc-y", "raw-acc-z", "ecg-spark", "stream-name", "lsl-toggle", "osc-toggle",
     "lsl-detail", "osc-detail", "included-count", "output-chips", "open-output-dialog", "visual-source",
-    "visual-current", "visual-unit", "visual-label", "render-rate", "chart-shell", "signal-canvas",
+    "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
     "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "dialog-output-status", "save-metric-output", "toast-region",
     "stream-name-preview", "metric-search", "metric-filters", "metric-library-summary",
@@ -1272,7 +1280,6 @@
     const definition = visualDefinitions[app.selectedVisual];
     const options = metricOptionFor(optionIdForVisual(app.selectedVisual));
     const normalized = options.normalization !== "none";
-    elements["visual-label"].textContent = definition?.label || "No output selected";
     elements["visual-unit"].textContent = app.selectedVisual === "breathing_phase" ? "" : normalized ? "0–1" : definition?.unit || "";
     elements["visual-window-label"].textContent = app.selectedVisual === "breathing_phase" ? "Live phase" : `${options.displayWindowSeconds} second window`;
     elements["visual-scale-label"].textContent = normalized
@@ -1280,7 +1287,26 @@
       : "Original scale";
     elements["adjust-visual"].disabled = !definition;
     elements["chart-shell"].classList.toggle("phase-visual", app.selectedVisual === "breathing_phase");
-    document.querySelector(".legend-line").style.background = definition?.color || "#87958d";
+    elements["chart-shell"].classList.toggle("stacked-axes", Boolean(definition?.channels));
+    elements["visual-current"].classList.toggle("stacked-value", Boolean(definition?.channels));
+    elements["signal-canvas"].setAttribute(
+      "aria-label",
+      definition?.channels
+        ? "Live raw accelerometer X, Y, and Z signals in three stacked plots"
+        : `Live ${definition?.label || "selected Polar H10"} signal`,
+    );
+    const legendItems = definition?.channels || (definition ? [{ label: definition.label, color: definition.color }] : []);
+    elements["visual-legend"].replaceChildren(...legendItems.map((item) => {
+      const legend = document.createElement("span");
+      legend.className = "legend-item";
+      const line = document.createElement("i");
+      line.className = "legend-line";
+      line.style.background = item.color || "#87958d";
+      const label = document.createElement("strong");
+      label.textContent = item.label;
+      legend.append(line, label);
+      return legend;
+    }));
     requestRender();
   }
 
@@ -1411,8 +1437,7 @@
     const canvas = elements["signal-canvas"];
     const context = signalContext;
     const definition = visualDefinitions[app.selectedVisual];
-    const buffer = buffers[app.selectedVisual];
-    if (!definition || !buffer) {
+    if (!definition) {
       context.clearRect(0, 0, canvas.width, canvas.height);
       elements["chart-empty"].hidden = false;
       elements["visual-current"].textContent = "—";
@@ -1420,6 +1445,13 @@
     }
 
     const options = metricOptionFor(optionIdForVisual(app.selectedVisual));
+    if (definition.channels) {
+      drawStackedSignal(context, canvas, definition, options);
+      return;
+    }
+
+    const buffer = buffers[app.selectedVisual];
+    if (!buffer) return;
     if (app.selectedVisual === "breathing_phase") {
       drawBreathingPhase(context, canvas, buffer);
       return;
@@ -1477,6 +1509,93 @@
     context.lineJoin = "round";
     context.lineCap = "round";
     context.stroke();
+  }
+
+  function drawStackedSignal(context, canvas, definition, options) {
+    const visibleCount = Math.max(10, Math.ceil(definition.rate * options.displayWindowSeconds));
+    const series = definition.channels.map((channel) => ({
+      ...channel,
+      buffer: buffers[channel.buffer],
+      valueCount: buffers[channel.buffer].tailSize(visibleCount),
+    }));
+    const hasData = series.some(({ valueCount }) => valueCount > 1);
+    elements["chart-empty"].hidden = hasData;
+    elements["visual-current"].textContent = series
+      .map(({ label, buffer }) => `${label} ${formatValue(buffer.latest(), 0)}`)
+      .join("  ·  ");
+    elements["y-max"].textContent = "—";
+    elements["y-min"].textContent = "—";
+
+    const width = canvas.width;
+    const height = canvas.height;
+    context.clearRect(0, 0, width, height);
+    if (!hasData) return;
+
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const padLeft = Math.max(Math.round(width * 0.08), Math.round(52 * pixelRatio));
+    const padRight = Math.round(width * 0.035);
+    const padY = Math.round(height * 0.035);
+    const laneGap = Math.round(10 * pixelRatio);
+    const laneHeight = (height - padY * 2 - laneGap * (series.length - 1)) / series.length;
+    const drawWidth = width - padLeft - padRight;
+    context.textBaseline = "middle";
+    context.lineJoin = "round";
+    context.lineCap = "round";
+
+    series.forEach(({ label, color, symmetric, buffer, valueCount }, seriesIndex) => {
+      const laneTop = padY + seriesIndex * (laneHeight + laneGap);
+      const laneBottom = laneTop + laneHeight;
+      if (seriesIndex > 0) {
+        const separatorY = laneTop - laneGap / 2;
+        context.beginPath();
+        context.moveTo(padLeft, separatorY);
+        context.lineTo(width - padRight, separatorY);
+        context.strokeStyle = "rgba(81, 103, 91, 0.18)";
+        context.lineWidth = Math.max(1, pixelRatio * 0.6);
+        context.stroke();
+      }
+
+      context.fillStyle = color;
+      context.font = `700 ${Math.round(10 * pixelRatio)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+      context.fillText(label, Math.round(10 * pixelRatio), laneTop + laneHeight / 2);
+      if (valueCount < 2) return;
+
+      let min = Infinity;
+      let max = -Infinity;
+      for (let index = 0; index < valueCount; index += 1) {
+        const value = buffer.tailValue(index, valueCount);
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      if (symmetric) {
+        const extent = Math.max(Math.abs(min), Math.abs(max), 1) * 1.08;
+        min = -extent;
+        max = extent;
+      } else {
+        const padding = Math.max((max - min) * 0.12, Math.abs(max) * 0.02, 0.5);
+        min -= padding;
+        max += padding;
+      }
+
+      context.fillStyle = "#85928a";
+      context.font = `${Math.round(8 * pixelRatio)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+      context.textAlign = "right";
+      context.fillText(shortAxis(max), padLeft - Math.round(6 * pixelRatio), laneTop + Math.round(7 * pixelRatio));
+      context.fillText("0", padLeft - Math.round(6 * pixelRatio), laneTop + laneHeight / 2);
+      context.fillText(shortAxis(min), padLeft - Math.round(6 * pixelRatio), laneBottom - Math.round(7 * pixelRatio));
+      context.textAlign = "left";
+
+      const range = max - min || 1;
+      context.beginPath();
+      for (let index = 0; index < valueCount; index += 1) {
+        const x = padLeft + (index / (valueCount - 1)) * drawWidth;
+        const y = laneTop + (1 - (buffer.tailValue(index, valueCount) - min) / range) * laneHeight;
+        if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      }
+      context.strokeStyle = color;
+      context.lineWidth = Math.max(1.4, pixelRatio * 0.9);
+      context.stroke();
+    });
   }
 
   function drawBreathingPhase(context, canvas, phaseBuffer) {
@@ -1667,6 +1786,33 @@
         source: structuredClone(metricPreviews?.source || {}),
       };
     }
+    if (name === "raw-accelerometer-stacked") {
+      app.outputs.add("raw_acc");
+      renderOutputs();
+      app.selectedVisual = "raw_acc";
+      elements["visual-source"].value = app.selectedVisual;
+      updateVisualLabels();
+      resizeCanvas();
+      for (const id of ["acc_x", "acc_y", "acc_z"]) ensureBuffer(id).clear();
+      ingestAccelerometer(Array.from({ length: 360 }, (_, index) => ({
+        xMg: Math.round(Math.sin(index / 15) * 850),
+        yMg: Math.round(Math.cos(index / 23) * 420),
+        zMg: Math.round(Math.sin(index / 31 + 0.8) * 1200),
+      })));
+      drawSignal();
+      await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+      resizeCanvas();
+      drawSignal();
+      return {
+        scenario: name,
+        selectedVisual: app.selectedVisual,
+        visualOptions: [...elements["visual-source"].options].map((option) => option.value),
+        legendLabels: [...elements["visual-legend"].querySelectorAll("strong")].map((label) => label.textContent),
+        currentLabel: elements["visual-current"].textContent,
+        chartClass: elements["chart-shell"].className,
+        canvasLabel: elements["signal-canvas"].getAttribute("aria-label"),
+      };
+    }
     const targets = {
       "breathing-phase-inhale": { phase: 1, volume: 0.82, label: "INHALE" },
       "breathing-phase-exhale": { phase: -1, volume: 0.18, label: "EXHALE" },
@@ -1714,6 +1860,7 @@
         "breathing-phase-pause",
         "breathing-phase-bad-signal",
         "breathing-phase-settings",
+        "raw-accelerometer-stacked",
         "metric-library-previews",
       ]),
       ready: () => initialization,

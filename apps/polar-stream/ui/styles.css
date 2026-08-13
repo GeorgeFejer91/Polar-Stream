@@ -216,6 +216,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .visual-toolbar select { min-width: 0; height: 31px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--surface); padding: 0 28px 0 9px; color: var(--ink); font-size: 11px; font-weight: 700; }
 .visual-value { justify-self: end; display: flex; align-items: baseline; gap: 5px; min-width: 0; }
 .visual-value strong { font: 700 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -.04em; }
+.visual-value strong.stacked-value { font-size: 12px; letter-spacing: -.02em; white-space: nowrap; }
 .visual-value span { color: var(--muted); font-size: 9px; }
 .visual-adjust-button { min-height: 29px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: white; color: var(--green-dark); font-size: 9px; font-weight: 750; }
 
@@ -223,6 +224,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .chart-shell::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(to right, rgb(42 84 64 / 5%) 1px, transparent 1px), linear-gradient(to bottom, rgb(42 84 64 / 5%) 1px, transparent 1px); background-size: 10% 25%; pointer-events: none; }
 .chart-shell.phase-visual::before { background-image: radial-gradient(circle at center, rgb(42 84 64 / 5%) 1px, transparent 1px); background-size: 22px 22px; }
 .chart-shell.phase-visual .chart-y-labels { display: none; }
+.chart-shell.stacked-axes .chart-y-labels { display: none; }
 #signal-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .chart-y-labels { position: absolute; inset: 11px auto 11px 9px; display: flex; flex-direction: column; justify-content: space-between; color: #85928a; font: 600 8px/1 ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; }
 .chart-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 6px; color: var(--muted); text-align: center; background: rgb(251 252 250 / 70%); backdrop-filter: blur(1px); }
@@ -232,7 +234,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .chart-empty strong { color: #536259; font-size: 12px; }
 .chart-empty span { font-size: 10px; }
 .chart-footer { min-height: 35px; display: flex; align-items: center; gap: 18px; padding: 0 11px; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 7px 7px; color: var(--muted); font-size: 9px; }
-.chart-footer span:first-child { margin-right: auto; color: var(--ink); }
+.chart-footer > span:first-child { margin-right: auto; color: var(--ink); }
+.visual-legend { display: inline-flex; align-items: center; gap: 13px; }
+.legend-item { display: inline-flex; align-items: center; }
 .legend-line { width: 17px; height: 2px; display: inline-block; margin-right: 7px; vertical-align: middle; background: var(--red); }
 
 .pipeline-note { display: flex; align-items: center; gap: 11px; margin-top: 13px; padding: 11px; border: 1px solid #cfe1d6; border-radius: 7px; background: #f2f8f4; }

@@ -165,7 +165,7 @@
         </div>
 
         <div class="chart-shell" id="chart-shell">
-          <canvas id="signal-canvas" aria-label="Live selected Polar H10 signal"></canvas>
+          <canvas id="signal-canvas" role="img" aria-label="Live selected Polar H10 signal"></canvas>
           <div class="chart-y-labels" aria-hidden="true"><span id="y-max">—</span><span>0</span><span id="y-min">—</span></div>
           <div class="chart-empty" id="chart-empty">
             <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M7 35h10l5-14 8 28 7-23 5 9h15"/></svg>
@@ -175,7 +175,7 @@
         </div>
 
         <div class="chart-footer">
-          <span><i class="legend-line"></i><strong id="visual-label">Raw ECG</strong></span>
+          <span class="visual-legend" id="visual-legend"><span class="legend-item"><i class="legend-line"></i><strong>Raw ECG</strong></span></span>
           <span id="visual-window-label">5 second window</span>
           <span id="visual-scale-label">Original scale</span>
         </div>

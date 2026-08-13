@@ -23,6 +23,10 @@ calibration, smoothing, threshold, inversion, adaptive-bound and stale-signal
 controls. Its circle visual expands during inhale, contracts during exhale, and
 uses distinct colors for inhale, exhale, pause and bad signal.
 
+Raw acceleration is presented as one visualizer choice with X, Y, and Z in
+three labeled, color-coded lanes, so comparing axes does not require switching
+the visualizer source.
+
 > Unofficial research software. Not affiliated with or endorsed by Polar
 > Electro. This is not a medical device.
 
