@@ -36,9 +36,111 @@ pub struct MetricSample {
     pub value: f32,
 }
 
+/// Compact, copyable processing plan derived from the outputs a user selected.
+/// Raw device signals do not activate any derived processor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetricSelection {
+    bits: u64,
+    ecg_features: bool,
+    acc_magnitude: bool,
+    breathing: bool,
+    breathing_dynamics: bool,
+    heart_rate: bool,
+    rr_interval: bool,
+    hrv: bool,
+    coherence: bool,
+    excitement_score: bool,
+    excitometer: bool,
+}
+
+impl MetricSelection {
+    pub fn from_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut selection = Self::none();
+        for id in ids {
+            if let Some(index) = METRIC_CATALOG.iter().position(|metric| metric.id == id) {
+                selection.bits |= 1_u64 << index;
+            }
+            match id {
+                "ecg_mean" | "ecg_rms" | "ecg_peak_to_peak" | "ecg_sd" => {
+                    selection.ecg_features = true;
+                }
+                "acc_magnitude" => selection.acc_magnitude = true,
+                "acc_breathing_magnitude"
+                | "breathing_volume"
+                | "breathing_phase"
+                | "breathing_calibration"
+                | "breathing_axis_range" => selection.breathing = true,
+                "breathing_rate" | "breathing_dynamics_confidence" => {
+                    selection.breathing = true;
+                    selection.breathing_dynamics = true;
+                }
+                "heart_rate" => selection.heart_rate = true,
+                "rr_interval" => selection.rr_interval = true,
+                "mean_nn" | "mean_heart_rate" | "rmssd" | "ln_rmssd" | "sdnn" | "pnn50" | "sd1" => {
+                    selection.hrv = true
+                }
+                "coherence"
+                | "coherence_confidence"
+                | "heartmath_coherence"
+                | "coherence_peak_frequency"
+                | "coherence_peak_power"
+                | "coherence_total_power" => selection.coherence = true,
+                "excitement_score" => selection.excitement_score = true,
+                "excitometer" => {
+                    selection.hrv = true;
+                    selection.excitometer = true;
+                }
+                _ if id.starts_with("breath_interval_") || id.starts_with("breath_amplitude_") => {
+                    selection.breathing = true;
+                    selection.breathing_dynamics = true;
+                }
+                _ => {}
+            }
+        }
+        selection
+    }
+
+    pub const fn none() -> Self {
+        Self {
+            bits: 0,
+            ecg_features: false,
+            acc_magnitude: false,
+            breathing: false,
+            breathing_dynamics: false,
+            heart_rate: false,
+            rr_interval: false,
+            hrv: false,
+            coherence: false,
+            excitement_score: false,
+            excitometer: false,
+        }
+    }
+
+    fn all() -> Self {
+        Self::from_ids(METRIC_CATALOG.iter().map(|metric| metric.id))
+    }
+
+    fn includes(self, id: &str) -> bool {
+        METRIC_CATALOG
+            .iter()
+            .position(|metric| metric.id == id)
+            .is_some_and(|index| self.bits & (1_u64 << index) != 0)
+    }
+
+    fn retain_selected(self, values: &mut Vec<MetricSample>) {
+        values.retain(|sample| self.includes(sample.id));
+    }
+}
+
+impl Default for MetricSelection {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
 /// Owns all stateful processors for one connected sensor.
-#[derive(Default)]
 pub struct MetricEngine {
+    selection: MetricSelection,
     hrv: HrvProcessor,
     coherence: CoherenceProcessor,
     breathing: BreathingProcessor,
@@ -48,7 +150,51 @@ pub struct MetricEngine {
     excitement_score: ExcitementScoreProcessor,
 }
 
+impl Default for MetricEngine {
+    fn default() -> Self {
+        Self::with_selection(MetricSelection::default())
+    }
+}
+
 impl MetricEngine {
+    pub fn with_selection(selection: MetricSelection) -> Self {
+        Self {
+            selection,
+            hrv: HrvProcessor::default(),
+            coherence: CoherenceProcessor::default(),
+            breathing: BreathingProcessor::default(),
+            breathing_dynamics: BreathingDynamicsProcessor::default(),
+            ecg: EcgProcessor::default(),
+            excitation: ExcitationProcessor::default(),
+            excitement_score: ExcitementScoreProcessor::default(),
+        }
+    }
+
+    /// Updates the processing plan without disturbing state for dependency
+    /// groups that remain active. Newly activated groups start a clean window.
+    pub fn apply_selection(&mut self, selection: MetricSelection) {
+        if self.selection.ecg_features != selection.ecg_features {
+            self.ecg = EcgProcessor::default();
+        }
+        if self.selection.breathing != selection.breathing {
+            self.breathing = BreathingProcessor::default();
+        }
+        if self.selection.breathing_dynamics != selection.breathing_dynamics {
+            self.breathing_dynamics = BreathingDynamicsProcessor::default();
+        }
+        if self.selection.hrv != selection.hrv {
+            self.hrv = HrvProcessor::default();
+            self.excitation = ExcitationProcessor::default();
+        }
+        if self.selection.coherence != selection.coherence {
+            self.coherence = CoherenceProcessor::default();
+        }
+        if self.selection.excitement_score != selection.excitement_score {
+            self.excitement_score = ExcitementScoreProcessor::default();
+        }
+        self.selection = selection;
+    }
+
     /// Applies saved classifier controls. Tuning changes intentionally restart
     /// calibration, matching the original tracker and avoiding mixed settings.
     pub fn apply_breathing_settings(&mut self, settings: BreathingSettings) {
@@ -57,64 +203,94 @@ impl MetricEngine {
     }
 
     pub fn process_heart_rate(&mut self, bpm: u16, rr_intervals_ms: &[f32]) -> Vec<MetricSample> {
-        let mut output = vec![MetricSample {
-            id: "heart_rate",
-            value: f32::from(bpm),
-        }];
+        let mut output = Vec::new();
+        if self.selection.heart_rate {
+            output.push(MetricSample {
+                id: "heart_rate",
+                value: f32::from(bpm),
+            });
+        }
 
         for &rr in rr_intervals_ms {
             if !is_valid_rr(rr) {
                 continue;
             }
-            output.push(MetricSample {
-                id: "rr_interval",
-                value: rr,
-            });
+            if self.selection.rr_interval {
+                output.push(MetricSample {
+                    id: "rr_interval",
+                    value: rr,
+                });
+            }
 
-            if let Some(score) = self.excitement_score.update(rr) {
+            if self.selection.excitement_score
+                && let Some(score) = self.excitement_score.update(rr)
+            {
                 output.push(MetricSample {
                     id: "excitement_score",
                     value: score,
                 });
             }
 
-            if let Some(hrv) = self.hrv.push(rr) {
+            if self.selection.hrv
+                && let Some(hrv) = self.hrv.push(rr)
+            {
                 output.extend(hrv.samples());
-                if let Some(excitation) = self.excitation.update(f32::from(bpm), hrv.ln_rmssd) {
+                if self.selection.excitometer
+                    && let Some(excitation) = self.excitation.update(f32::from(bpm), hrv.ln_rmssd)
+                {
                     output.push(MetricSample {
                         id: "excitometer",
                         value: excitation,
                     });
                 }
             }
-            if let Some(coherence) = self.coherence.push(rr) {
+            if self.selection.coherence
+                && let Some(coherence) = self.coherence.push(rr)
+            {
                 output.extend(coherence.samples());
             }
         }
+        self.selection.retain_selected(&mut output);
         output
     }
 
     pub fn process_ecg(&mut self, microvolts: &[i32]) -> Vec<MetricSample> {
+        if !self.selection.ecg_features {
+            return Vec::new();
+        }
         self.ecg
             .push(microvolts)
-            .map(EcgSnapshot::samples)
+            .map(|snapshot| {
+                let mut values = snapshot.samples();
+                self.selection.retain_selected(&mut values);
+                values
+            })
             .unwrap_or_default()
     }
 
     pub fn process_accelerometer(&mut self, samples: &[AccSample]) -> Vec<MetricSample> {
-        let mut output = samples
-            .iter()
-            .map(|sample| MetricSample {
-                id: "acc_magnitude",
-                value: sample.magnitude_g(),
-            })
-            .collect::<Vec<_>>();
-        if let Some(breathing) = self.breathing.push(samples) {
+        let mut output = if self.selection.acc_magnitude {
+            samples
+                .iter()
+                .map(|sample| MetricSample {
+                    id: "acc_magnitude",
+                    value: sample.magnitude_g(),
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if self.selection.breathing
+            && let Some(breathing) = self.breathing.push(samples)
+        {
             output.extend(breathing.samples());
-            if let Some(dynamics) = self.breathing_dynamics.push(breathing) {
+            if self.selection.breathing_dynamics
+                && let Some(dynamics) = self.breathing_dynamics.push(breathing)
+            {
                 output.extend(dynamics.samples());
             }
         }
+        self.selection.retain_selected(&mut output);
         output
     }
 }
@@ -199,5 +375,59 @@ mod tests {
             .map(|value| value.value)
             .collect::<Vec<_>>();
         assert_eq!(magnitudes, vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn raw_only_selection_skips_every_derived_processor() {
+        let mut engine =
+            MetricEngine::with_selection(MetricSelection::from_ids(["raw_ecg", "raw_acc"]));
+        assert!(engine.process_ecg(&[1, 2, 3]).is_empty());
+        assert!(
+            engine
+                .process_accelerometer(&[AccSample {
+                    x_mg: 1_000,
+                    y_mg: 0,
+                    z_mg: 0,
+                }])
+                .is_empty()
+        );
+        assert!(engine.process_heart_rate(72, &[833.0]).is_empty());
+    }
+
+    #[test]
+    fn selection_emits_only_requested_metric_group_results() {
+        let mut engine = MetricEngine::with_selection(MetricSelection::from_ids(["acc_magnitude"]));
+        let values = engine.process_accelerometer(&[AccSample {
+            x_mg: 1_000,
+            y_mg: 0,
+            z_mg: 0,
+        }]);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].id, "acc_magnitude");
+    }
+
+    #[test]
+    fn experimental_breathing_outputs_are_independent_scalar_streams() {
+        let mut magnitude =
+            MetricEngine::with_selection(MetricSelection::from_ids(["acc_breathing_magnitude"]));
+        let mut phase =
+            MetricEngine::with_selection(MetricSelection::from_ids(["breathing_phase"]));
+        let mut magnitude_values = Vec::new();
+        let mut phase_values = Vec::new();
+        for index in 0..2_500 {
+            let sample = AccSample {
+                x_mg: 0,
+                y_mg: 0,
+                z_mg: 1_000
+                    + (25.0 * (index as f32 / 200.0 * std::f32::consts::TAU * 0.2).sin()) as i16,
+            };
+            magnitude_values = magnitude.process_accelerometer(&[sample]);
+            phase_values = phase.process_accelerometer(&[sample]);
+        }
+        assert_eq!(magnitude_values.len(), 1);
+        assert_eq!(magnitude_values[0].id, "acc_breathing_magnitude");
+        assert_eq!(phase_values.len(), 1);
+        assert_eq!(phase_values[0].id, "breathing_phase");
+        assert!([-1.0, 0.0, 1.0].contains(&phase_values[0].value));
     }
 }

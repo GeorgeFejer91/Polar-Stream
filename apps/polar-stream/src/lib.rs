@@ -1,30 +1,70 @@
 //! Thin application coordinator. Protocol decoding, Bluetooth input, and
 //! network output are independent crates below `crates/`.
 
+mod error;
+mod preferences;
+
 use std::{path::PathBuf, sync::Arc};
 
 use polar_h10_core::AccSample;
 use polar_h10_input::{DeviceSummary, InputEvent, InputManager};
 use polar_h10_metrics::{
     BreathingSettings, METRIC_CATALOG, MetricDefinition, MetricEngine, MetricSample,
+    MetricSelection,
 };
 use polar_h10_output::{MetricValue, OutputConfig, OutputHealth, OutputRouter};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, ipc::Channel, path::BaseDirectory};
+use tauri_plugin_opener::OpenerExt;
+
+use error::{CommandError, CommandResult};
+use preferences::{PreferencesSnapshot, PreferencesStore, SavedDevice};
 
 struct AppState {
     input: Arc<InputManager>,
     output: Arc<OutputRouter>,
-    breathing_settings: tokio::sync::watch::Sender<BreathingSettings>,
+    preferences: Arc<PreferencesStore>,
+    output_configuration: tokio::sync::Mutex<()>,
+    processing_settings: tokio::sync::watch::Sender<ProcessingSettings>,
 }
 
 impl AppState {
-    fn new(bundled_lsl: Option<PathBuf>) -> Self {
-        let (breathing_settings, _) = tokio::sync::watch::channel(BreathingSettings::default());
+    fn new(bundled_lsl: Option<PathBuf>, preferences_path: PathBuf) -> Self {
+        let preferences = Arc::new(PreferencesStore::load(preferences_path));
+        let initial_config = preferences.snapshot().output_config;
+        let (processing_settings, _) =
+            tokio::sync::watch::channel(ProcessingSettings::from_config(&initial_config));
         Self {
             input: Arc::new(InputManager::new()),
             output: Arc::new(OutputRouter::with_bundled_lsl(bundled_lsl)),
-            breathing_settings,
+            preferences,
+            output_configuration: tokio::sync::Mutex::new(()),
+            processing_settings,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ProcessingSettings {
+    breathing: BreathingSettings,
+    metrics: MetricSelection,
+}
+
+impl ProcessingSettings {
+    fn from_config(config: &OutputConfig) -> Self {
+        let breathing = ["breathing_phase", "acc_breathing_magnitude"]
+            .iter()
+            .find_map(|id| {
+                config
+                    .metric_options
+                    .get(*id)
+                    .and_then(|options| options.processing.breathing)
+            })
+            .unwrap_or_default()
+            .clamped();
+        Self {
+            breathing,
+            metrics: MetricSelection::from_ids(config.outputs.iter().map(String::as_str)),
         }
     }
 }
@@ -59,6 +99,7 @@ enum AppEvent {
         values: Vec<MetricSample>,
     },
     Error {
+        code: &'static str,
         message: String,
     },
 }
@@ -67,76 +108,167 @@ enum AppEvent {
 #[serde(rename_all = "camelCase")]
 struct Bootstrap {
     config: OutputConfig,
+    preferences: PreferencesSnapshot,
+    has_saved_preferences: bool,
     platform: &'static str,
     metric_catalog: Vec<MetricDefinition>,
 }
 
 #[tauri::command]
-fn get_bootstrap(state: State<'_, Arc<AppState>>) -> Bootstrap {
+fn get_bootstrap(state: State<'_, AppState>) -> Bootstrap {
+    let preferences = state.preferences.snapshot();
     Bootstrap {
-        config: state.output.config(),
+        config: preferences.output_config.clone(),
+        preferences,
+        has_saved_preferences: state.preferences.has_saved_preferences(),
         platform: std::env::consts::OS,
         metric_catalog: METRIC_CATALOG.to_vec(),
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyPreferences {
+    output_config: Option<OutputConfig>,
+    last_device: Option<SavedDevice>,
+}
+
 #[tauri::command]
-async fn scan_devices(state: State<'_, Arc<AppState>>) -> Result<Vec<DeviceSummary>, String> {
-    state.input.scan().await
+async fn migrate_legacy_preferences(
+    state: State<'_, AppState>,
+    legacy: LegacyPreferences,
+) -> CommandResult<PreferencesSnapshot> {
+    if state.preferences.has_saved_preferences() {
+        return Ok(state.preferences.snapshot());
+    }
+    let output_config = legacy
+        .output_config
+        .map(OutputConfig::migrated)
+        .transpose()
+        .map_err(|message| CommandError::new("LEGACY_PREFERENCES_INVALID", message, false))?;
+    let last_device = legacy.last_device.map(validate_saved_device).transpose()?;
+    state
+        .preferences
+        .migrate_legacy(output_config, last_device)
+        .await
+        .map_err(|message| CommandError::new("PREFERENCES_WRITE_FAILED", message, true))
+}
+
+fn validate_saved_device(device: SavedDevice) -> CommandResult<SavedDevice> {
+    if !device.is_valid() {
+        return Err(CommandError::new(
+            "LEGACY_PREFERENCES_INVALID",
+            "The legacy preferred-sensor record is invalid.",
+            false,
+        ));
+    }
+    Ok(device)
+}
+
+#[tauri::command]
+async fn scan_devices(state: State<'_, AppState>) -> CommandResult<Vec<DeviceSummary>> {
+    state
+        .input
+        .scan()
+        .await
+        .map_err(|message| CommandError::new("BLUETOOTH_SCAN_FAILED", message, true))
 }
 
 #[tauri::command]
 async fn connect_device(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     device_id: String,
     events: Channel<AppEvent>,
-) -> Result<(), String> {
-    let mut input_events = state.input.connect(&device_id).await?;
+) -> CommandResult<()> {
+    let mut input_events = state
+        .input
+        .connect(&device_id)
+        .await
+        .map_err(|message| CommandError::new("POLAR_CONNECTION_FAILED", message, true))?;
     let output = state.output.clone();
-    let mut breathing_settings = state.breathing_settings.subscribe();
+    let preferences = state.preferences.clone();
+    let mut processing_settings = state.processing_settings.subscribe();
     output.reset_measurement();
     tauri::async_runtime::spawn(async move {
-        let mut metrics_engine = MetricEngine::default();
-        metrics_engine.apply_breathing_settings(*breathing_settings.borrow_and_update());
+        // Keep WebView serialization completely off the sensor/output path. A
+        // slow or hidden renderer may lose display frames, but never raw LSL or
+        // OSC data. Control events retain ordered delivery.
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<AppEvent>(8);
+        let ui_task = tauri::async_runtime::spawn(async move {
+            while let Some(event) = ui_rx.recv().await {
+                if events.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let settings = *processing_settings.borrow_and_update();
+        let mut metrics_engine = MetricEngine::with_selection(settings.metrics);
+        metrics_engine.apply_breathing_settings(settings.breathing);
         while let Some(event) = input_events.recv().await {
-            if breathing_settings.has_changed().unwrap_or(false) {
-                metrics_engine.apply_breathing_settings(*breathing_settings.borrow_and_update());
+            if processing_settings.has_changed().unwrap_or(false) {
+                let settings = *processing_settings.borrow_and_update();
+                metrics_engine.apply_selection(settings.metrics);
+                metrics_engine.apply_breathing_settings(settings.breathing);
             }
             let continue_streaming = match event {
-                InputEvent::Status { phase, message } => events
+                InputEvent::Status { phase, message } => ui_tx
                     .send(AppEvent::Status {
                         phase: phase.into(),
                         message,
                     })
+                    .await
                     .is_ok(),
                 InputEvent::Connected {
                     device_name,
                     battery_percent,
-                } => events
-                    .send(AppEvent::Connection {
-                        connected: true,
-                        streaming: true,
-                        device_name,
-                        battery_percent,
-                        message: "Raw ECG and accelerometer are streaming".into(),
-                    })
-                    .is_ok(),
+                } => {
+                    let save_preferences = preferences.clone();
+                    let save_events = ui_tx.clone();
+                    let saved_device = SavedDevice {
+                        id: device_id.clone(),
+                        name: device_name.clone(),
+                    };
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(message) = save_preferences.save_last_device(saved_device).await
+                        {
+                            let _ = save_events
+                                .send(AppEvent::Error {
+                                    code: "PREFERENCES_WRITE_FAILED",
+                                    message: format!(
+                                        "Connected, but the preferred sensor could not be saved: {message}"
+                                    ),
+                                })
+                                .await;
+                        }
+                    });
+                    ui_tx
+                        .send(AppEvent::Connection {
+                            connected: true,
+                            streaming: true,
+                            device_name,
+                            battery_percent,
+                            message: "Raw ECG and accelerometer are streaming".into(),
+                        })
+                        .await
+                        .is_ok()
+                }
                 InputEvent::Ecg {
                     sensor_timestamp_ns,
                     microvolts,
                 } => {
                     output.publish_ecg(sensor_timestamp_ns, &microvolts);
                     let derived = metrics_engine.process_ecg(&microvolts);
-                    if events
-                        .send(AppEvent::Ecg {
+                    if !forward_display_event(
+                        &ui_tx,
+                        AppEvent::Ecg {
                             sensor_timestamp_ns,
                             microvolts,
-                        })
-                        .is_err()
-                    {
+                        },
+                    ) {
                         false
                     } else {
-                        publish_metrics(&output, &events, derived)
+                        publish_metrics(&output, &ui_tx, derived)
                     }
                 }
                 InputEvent::Accelerometer {
@@ -145,16 +277,16 @@ async fn connect_device(
                 } => {
                     output.publish_accelerometer(sensor_timestamp_ns, &samples);
                     let derived = metrics_engine.process_accelerometer(&samples);
-                    if events
-                        .send(AppEvent::Accelerometer {
+                    if !forward_display_event(
+                        &ui_tx,
+                        AppEvent::Accelerometer {
                             sensor_timestamp_ns,
                             samples,
-                        })
-                        .is_err()
-                    {
+                        },
+                    ) {
                         false
                     } else {
-                        publish_metrics(&output, &events, derived)
+                        publish_metrics(&output, &ui_tx, derived)
                     }
                 }
                 InputEvent::HeartRate {
@@ -162,24 +294,30 @@ async fn connect_device(
                     rr_intervals_ms,
                 } => publish_metrics(
                     &output,
-                    &events,
+                    &ui_tx,
                     metrics_engine.process_heart_rate(beats_per_minute, &rr_intervals_ms),
                 ),
-                InputEvent::Error(message) => events.send(AppEvent::Error { message }).is_ok(),
+                InputEvent::Error(message) => forward_display_event(
+                    &ui_tx,
+                    AppEvent::Error {
+                        code: "SENSOR_DATA_WARNING",
+                        message,
+                    },
+                ),
                 InputEvent::Disconnected {
                     device_name,
                     battery_percent,
                 } => {
                     let phase_sent = publish_metrics(
                         &output,
-                        &events,
+                        &ui_tx,
                         vec![MetricSample {
                             id: "breathing_phase",
-                            value: -2.0,
+                            value: 0.0,
                         }],
                     );
                     phase_sent
-                        && events
+                        && ui_tx
                             .send(AppEvent::Connection {
                                 connected: false,
                                 streaming: false,
@@ -187,6 +325,7 @@ async fn connect_device(
                                 battery_percent,
                                 message: "Disconnected".into(),
                             })
+                            .await
                             .is_ok()
                 }
             };
@@ -194,13 +333,15 @@ async fn connect_device(
                 break;
             }
         }
+        drop(ui_tx);
+        let _ = ui_task.await;
     });
     Ok(())
 }
 
 fn publish_metrics(
     output: &OutputRouter,
-    events: &Channel<AppEvent>,
+    ui_tx: &tokio::sync::mpsc::Sender<AppEvent>,
     values: Vec<MetricSample>,
 ) -> bool {
     if values.is_empty() {
@@ -214,48 +355,111 @@ fn publish_metrics(
         })
         .collect::<Vec<_>>();
     output.publish_metrics(&routed);
-    events.send(AppEvent::Metrics { values }).is_ok()
+    forward_display_event(ui_tx, AppEvent::Metrics { values })
+}
+
+fn forward_display_event(ui_tx: &tokio::sync::mpsc::Sender<AppEvent>, event: AppEvent) -> bool {
+    match ui_tx.try_send(event) {
+        Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+    }
 }
 
 #[tauri::command]
-async fn disconnect_device(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.input.disconnect().await
+async fn disconnect_device(state: State<'_, AppState>) -> CommandResult<()> {
+    state
+        .input
+        .disconnect()
+        .await
+        .map_err(|message| CommandError::new("POLAR_DISCONNECT_FAILED", message, true))
 }
 
 #[tauri::command]
 async fn update_output_config(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     config: OutputConfig,
-) -> Result<OutputHealth, String> {
-    let breathing_settings = config
-        .metric_options
-        .get("breathing_phase")
-        .and_then(|options| options.processing.breathing_phase)
-        .unwrap_or_default()
-        .clamped();
-    let health = state.output.configure(config).await?;
-    state.breathing_settings.send_replace(breathing_settings);
+) -> CommandResult<OutputHealth> {
+    // Renderer updates can overlap when a name debounce and a destination
+    // toggle fire close together. Serialize the rare reconfiguration lifecycle
+    // so an older async OSC setup cannot overwrite a newer selection.
+    let _configuration = state.output_configuration.lock().await;
+    let health = state
+        .output
+        .configure(config)
+        .await
+        .map_err(|message| CommandError::new("OUTPUT_CONFIGURATION_FAILED", message, true))?;
+    let applied = state.output.config();
+    state
+        .processing_settings
+        .send_replace(ProcessingSettings::from_config(&applied));
+    state
+        .preferences
+        .save_output_config(applied)
+        .await
+        .map_err(|message| {
+            CommandError::new(
+                "PREFERENCES_WRITE_FAILED",
+                format!("Outputs are active for this session, but could not be saved: {message}"),
+                true,
+            )
+        })?;
     Ok(health)
+}
+
+#[tauri::command(async)]
+fn open_metric_citation(app: tauri::AppHandle, metric_id: String) -> CommandResult<()> {
+    let metric = MetricDefinition::for_id(&metric_id).ok_or_else(|| {
+        CommandError::new(
+            "UNKNOWN_METRIC",
+            "That metric is not in the catalog.",
+            false,
+        )
+    })?;
+    if !metric.citation_url.starts_with("https://") {
+        return Err(CommandError::new(
+            "UNSAFE_CITATION_URL",
+            "The citation URL was not opened because it is not HTTPS.",
+            false,
+        ));
+    }
+    app.opener()
+        .open_url(metric.citation_url, None::<&str>)
+        .map_err(|message| {
+            CommandError::new(
+                "CITATION_OPEN_FAILED",
+                format!("Could not open the citation in the system browser: {message}"),
+                true,
+            )
+        })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                // Keep the runtime taskbar/pinned-window icon explicit. The
+                // native bundle still uses the full ICO/ICNS/PNG icon sets.
+                window.set_icon(tauri::include_image!("icons/64x64.png"))?;
+            }
             let bundled_lsl = app
                 .path()
                 .resolve(lsl_resource_path(), BaseDirectory::Resource)
                 .ok()
                 .filter(|path| path.is_file());
-            app.manage(Arc::new(AppState::new(bundled_lsl)));
+            let preferences_path = app.path().app_config_dir()?.join("preferences.json");
+            app.manage(AppState::new(bundled_lsl, preferences_path));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_bootstrap,
+            migrate_legacy_preferences,
             scan_devices,
             connect_device,
             disconnect_device,
             update_output_config,
+            open_metric_citation,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Polar Stream");

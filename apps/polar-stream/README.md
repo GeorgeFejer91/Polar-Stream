@@ -79,12 +79,18 @@ configuration without touching acquisition or visualization code.
 
 ## Remembered preferences
 
-The WebView's app-local storage retains the last accepted stream base name and
-the last successfully connected sensor ID and name. On the next launch, Polar
-Stream applies the name immediately and scans automatically for that sensor. It
-prefers an exact device-ID match, falls back to a single unambiguous name match,
-and otherwise leaves all scan results available for manual selection. A failed
-connection never replaces the remembered sensor.
+The native Rust application owns a typed, schema-versioned preferences file in
+the operating system's application-config directory. Each accepted output
+configuration is flushed through a sibling temporary file before replacement;
+the last successfully connected sensor ID and name are saved independently.
+On the next launch, Polar Stream applies the name immediately and scans
+automatically for that sensor. It prefers an exact device-ID match, falls back
+to a single unambiguous name match, and otherwise leaves all scan results
+available for manual selection. A failed connection never replaces the
+remembered sensor. Browser-only interface previews use local storage and never
+write the native file. On the first upgraded launch only, the native app accepts
+the previous version's local preferences through a bounded Rust migration
+command, then uses the native file exclusively.
 
 ## Android
 

@@ -1,5 +1,6 @@
 use std::{env, path::PathBuf};
 
+use polar_h10_core::AccSample;
 use polar_h10_output::{OutputConfig, OutputRouter};
 
 #[tokio::main]
@@ -21,6 +22,24 @@ async fn main() -> Result<(), String> {
             health.lsl
         ));
     }
+    // Exercise the exact immediate notification-sized chunk paths used by the
+    // sensor coordinator, not only outlet construction.
+    router.publish_ecg(1, &[12, 18, -4, 9]);
+    router.publish_accelerometer(
+        2,
+        &[
+            AccSample {
+                x_mg: 1,
+                y_mg: 2,
+                z_mg: 1_000,
+            },
+            AccSample {
+                x_mg: 3,
+                y_mg: 4,
+                z_mg: 998,
+            },
+        ],
+    );
     println!("Bundled liblsl check passed: {}", health.lsl);
     Ok(())
 }

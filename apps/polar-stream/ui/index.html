@@ -6,10 +6,10 @@
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#17221d" />
     <title>Polar Stream</title>
-    <link rel="icon" href="favicon.svg" />
+    <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="stylesheet" href="styles.css" />
+    <script src="runtime-api.js" defer></script>
     <script src="preferences.js" defer></script>
-    <script src="metric-previews.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
@@ -17,10 +17,7 @@
 
     <header class="app-bar">
       <div class="brand">
-        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
-          <rect x="1" y="1" width="38" height="38" rx="10" />
-          <path d="M8 21h5l2.5-7 4.1 15 3.4-11 2.4 5H32" />
-        </svg>
+        <img class="brand-mark" src="favicon.png" alt="" />
         <span class="brand-copy"><strong>Polar Stream</strong><small>H10 signal bridge</small></span>
       </div>
       <div class="app-state" aria-live="polite">
@@ -154,7 +151,7 @@
             <p class="eyebrow">Visualization</p>
             <h2 id="visual-heading">Live signal</h2>
           </div>
-          <span class="section-state" id="render-rate">60 fps</span>
+          <span class="section-state" id="render-rate">Idle</span>
         </header>
 
         <div class="visual-toolbar">
@@ -168,7 +165,7 @@
         </div>
 
         <div class="chart-shell" id="chart-shell">
-          <canvas id="signal-canvas" aria-label="Live selected Polar H10 signal"></canvas>
+          <canvas id="signal-canvas" role="img" aria-label="Live selected Polar H10 signal"></canvas>
           <div class="chart-y-labels" aria-hidden="true"><span id="y-max">—</span><span>0</span><span id="y-min">—</span></div>
           <div class="chart-empty" id="chart-empty">
             <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M7 35h10l5-14 8 28 7-23 5 9h15"/></svg>
@@ -178,7 +175,7 @@
         </div>
 
         <div class="chart-footer">
-          <span><i class="legend-line"></i><strong id="visual-label">Raw ECG</strong></span>
+          <span class="visual-legend" id="visual-legend"><span class="legend-item"><i class="legend-line"></i><strong>Raw ECG</strong></span></span>
           <span id="visual-window-label">5 second window</span>
           <span id="visual-scale-label">Original scale</span>
         </div>
@@ -202,7 +199,24 @@
           <div><p class="eyebrow">Output library</p><h2 id="output-dialog-title">Add signals</h2></div>
           <button class="icon-button" value="cancel" aria-label="Close">×</button>
         </header>
-        <p class="dialog-intro">Choose one raw or preprocessed research output, review what it measures and the current scientific interpretation, then save it as a stream module.</p>
+        <p class="dialog-intro">Choose the sensor family first, then review and configure one output before adding it.</p>
+        <section class="metric-family-picker" aria-labelledby="metric-family-heading">
+          <div class="metric-family-heading">
+            <span id="metric-family-heading">Signal family</span>
+            <strong id="metric-family-context">ECG-first outputs</strong>
+          </div>
+          <div class="metric-family-toggle" id="metric-family-toggle" role="group" aria-label="Choose ECG or accelerometer metrics">
+            <button type="button" class="family-choice family-ecg active" data-family="ecg" aria-pressed="true">
+              <svg viewBox="0 0 28 28" aria-hidden="true"><path d="M2 15h6l2.2-7 4.1 13 2.8-9 2 3H26"/></svg>
+              <span><strong>ECG metrics</strong><small>H10's established core signal</small></span>
+            </button>
+            <button type="button" class="family-choice family-acc" data-family="acc" aria-pressed="false">
+              <svg viewBox="0 0 28 28" aria-hidden="true"><path d="M6 22V7m0 15h15M6 7l-2.5 3M6 7l2.5 3m12.5 12-3-2m3 2-2 3M11 17l8-8m0 0-4 .5M19 9l-.5 4"/></svg>
+              <span><strong>ACC metrics</strong><small>Experimental breathing research</small></span>
+            </button>
+          </div>
+          <p id="metric-family-note">Start with ECG for the signal the H10 is designed to measure; interpretation limits still apply.</p>
+        </section>
         <div class="metric-library-tools">
           <label class="metric-search">
             <span>Search metrics</span>

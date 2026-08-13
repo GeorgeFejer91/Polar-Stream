@@ -26,8 +26,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("asset_json", type=Path)
     args = parser.parse_args()
-    payload = json.loads(args.asset_json.read_text(encoding="utf-8"))
-    names = [asset["name"].lower() for asset in payload]
+    if args.asset_json.is_dir():
+        names = [path.name.lower() for path in args.asset_json.iterdir() if path.is_file()]
+    else:
+        payload = json.loads(args.asset_json.read_text(encoding="utf-8"))
+        names = [asset["name"].lower() for asset in payload]
     missing = [label for label, pattern in REQUIRED.items() if not any(re.search(pattern, name) for name in names)]
     if missing:
         raise SystemExit("Release remains a draft; missing: " + ", ".join(missing) + f". Assets: {names}")

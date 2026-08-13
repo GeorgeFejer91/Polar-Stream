@@ -5,11 +5,17 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     name: ${{ matrix.label }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -53,11 +59,17 @@ jobs:
             bundles: dmg
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable, pinned 2026-08-13
         with:
           toolchain: 1.88.0
           targets: ${{ matrix.rust_targets }}
+      - name: Install locked frontend tooling
+        run: npm ci
       - name: Install Linux packaging and smoke-test dependencies
         if: runner.os == 'Linux'
         run: |
@@ -96,38 +108,46 @@ jobs:
             macos) library=apps/polar-stream/resources/liblsl.dylib ;;
           esac
           cargo run -p polar-h10-output --example verify_lsl --locked -- "$library"
-      - name: Build installers into a draft release
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: apps/polar-stream
-          tagName: ${{ github.ref_name }}
-          releaseName: Polar Stream ${{ github.ref_name }}
-          releaseBody: |
-            Native Polar Stream packages for Windows, macOS, and Linux.
-
-            Choose the installer matching your operating system and CPU. The download guide is linked from the repository home page.
-          releaseDraft: true
-          prerelease: false
-          uploadUpdaterJson: false
-          retryAttempts: 2
-          releaseAssetNamePattern: Polar-Stream_[version]_[platform]_[arch][_setup][ext]
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
-      - name: Smoke-test Linux executable
+      - name: Build installers with the repository-pinned Tauri CLI
+        working-directory: apps/polar-stream
+        run: npx --no-install tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Stage deterministic release assets
+        run: >-
+          python scripts/stage_release_assets.py
+          --bundle-root target/${{ matrix.target }}/release/bundle
+          --output release-assets
+          --platform ${{ matrix.platform }}
+          --arch ${{ matrix.arch }}
+          --version ${{ github.ref_name }}
+      - name: Smoke-test exact Linux packages
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          appimage=$(find release-assets -iname '*.AppImage' -print -quit)
+          deb=$(find release-assets -iname '*.deb' -print -quit)
+          test -n "$appimage" && test -n "$deb"
+          chmod +x "$appimage"
           set +e
-          timeout 12s xvfb-run -a "target/${{ matrix.target }}/release/polar-stream" > smoke.log 2>&1
-          status=$?
+          APPIMAGE_EXTRACT_AND_RUN=1 timeout 12s xvfb-run -a "$appimage" > appimage-smoke.log 2>&1
+          appimage_status=$?
           set -e
-          if [ "$status" -ne 124 ]; then cat smoke.log; exit 1; fi
-      - name: Smoke-test macOS executable
+          if [ "$appimage_status" -ne 124 ]; then cat appimage-smoke.log; exit 1; fi
+          dpkg-deb --info "$deb" >/dev/null
+          deb_root=$(mktemp -d)
+          trap 'rm -rf "$deb_root"' EXIT
+          dpkg-deb --extract "$deb" "$deb_root"
+          deb_binary=$(find "$deb_root" -type f -path '*/bin/polar-stream' -print -quit)
+          test -n "$deb_binary"
+          set +e
+          timeout 12s xvfb-run -a "$deb_binary" > deb-smoke.log 2>&1
+          deb_status=$?
+          set -e
+          if [ "$deb_status" -ne 124 ]; then cat deb-smoke.log; exit 1; fi
+      - name: Smoke-test exact macOS DMG
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          dmg=$(find "target/${{ matrix.target }}/release/bundle/dmg" -name '*.dmg' -print -quit)
+          dmg=$(find release-assets -name '*.dmg' -print -quit)
           test -n "$dmg"
           mount_point=$(mktemp -d)
           cleanup() {
@@ -142,28 +162,65 @@ jobs:
           kill -0 "$pid" || { cat smoke.log; exit 1; }
           kill "$pid"
           wait "$pid" || true
-      - name: Smoke-test Windows executable
+      - name: Smoke-test exact Windows MSI payload
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $process = Start-Process "target\${{ matrix.target }}\release\polar-stream.exe" -PassThru
+          $msi = (Get-ChildItem release-assets -Filter *.msi -File -ErrorAction Stop).FullName
+          $nsis = (Get-ChildItem release-assets -Filter *.exe -File -ErrorAction Stop).FullName
+          $extract = Join-Path $env:RUNNER_TEMP "polar-stream-msi"
+          $installer = Start-Process msiexec.exe -ArgumentList @("/a", "`"$msi`"", "/qn", "TARGETDIR=`"$extract`"") -Wait -PassThru
+          if ($installer.ExitCode -ne 0) { throw "MSI administrative extraction failed with code $($installer.ExitCode)" }
+          $executable = Get-ChildItem $extract -Recurse -File -Filter polar-stream.exe | Select-Object -First 1
+          if (-not $executable) { throw "The MSI did not contain polar-stream.exe" }
+          $process = Start-Process $executable.FullName -PassThru
           Start-Sleep -Seconds 8
-          if ($process.HasExited) { throw "Polar Stream exited during its launch smoke test with code $($process.ExitCode)" }
+          if ($process.HasExited) { throw "Packaged Polar Stream exited with code $($process.ExitCode)" }
           Stop-Process -Id $process.Id
+          $header = [IO.File]::ReadAllBytes($nsis)[0..1]
+          if ($header[0] -ne 0x4d -or $header[1] -ne 0x5a) { throw "The NSIS package is not a Windows executable" }
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-assets/
+          if-no-files-found: error
+          compression-level: 0
 
   publish:
     name: Verify package set and publish
     needs: build
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
       - name: Verify every supported package exists
+        run: python scripts/verify_release_assets.py release-assets
+      - name: Generate checksums
+        working-directory: release-assets
+        run: sha256sum Polar-Stream_* > SHA256SUMS.txt
+      - name: Create or update the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api "repos/${{ github.repository }}/releases?per_page=100" \
-            --jq 'map(select(.tag_name == "${{ github.ref_name }}")) | first | .assets' \
-            > release-assets.json
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release upload "${{ github.ref_name }}" release-assets/* --clobber
+          else
+            gh release create "${{ github.ref_name }}" release-assets/* \
+              --draft \
+              --title "Polar Stream ${{ github.ref_name }}" \
+              --notes "Native Polar Stream packages for Windows, macOS, and Linux. Choose the installer matching your operating system and CPU. These packages are unsigned until platform signing credentials are configured."
+          fi
+      - name: Verify uploaded release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ github.ref_name }}" --json assets --jq '.assets' > release-assets.json
           python scripts/verify_release_assets.py release-assets.json
       - name: Publish the complete release
         env:

@@ -477,6 +477,7 @@ mod tests {
                     calibrated: true,
                     calibration_progress_01: 1.0,
                     volume_01: volume,
+                    magnitude_g: volume - 0.5,
                     phase: crate::BreathingPhase::Pausing,
                     axis_range_g: 0.02,
                     time_seconds: time,

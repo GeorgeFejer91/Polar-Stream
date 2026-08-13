@@ -10,20 +10,20 @@ use crate::MetricSample;
 
 const SAMPLE_RATE_HZ: f64 = 200.0;
 
-/// Saved, per-output controls for the accelerometer breathing classifier.
+/// Saved controls shared by the experimental accelerometer breathing outputs.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BreathingSettings {
+    #[serde(default = "default_axes")]
+    pub axes: [bool; 3],
     #[serde(default = "default_calibration_window_seconds")]
     pub calibration_window_seconds: f32,
     #[serde(default = "default_minimum_axis_range_g")]
     pub minimum_axis_range_g: f32,
-    #[serde(default = "default_sample_ema_alpha")]
-    pub sample_ema_alpha: f32,
-    #[serde(default = "default_projection_ema_alpha")]
-    pub projection_ema_alpha: f32,
-    #[serde(default = "default_phase_delta_threshold")]
-    pub phase_delta_threshold: f32,
+    #[serde(default = "default_smoothing_window_seconds")]
+    pub smoothing_window_seconds: f32,
+    #[serde(default = "default_sensitivity")]
+    pub sensitivity: f32,
     #[serde(default = "default_stale_timeout_seconds")]
     pub stale_timeout_seconds: f32,
     #[serde(default)]
@@ -41,11 +41,11 @@ pub struct BreathingSettings {
 impl Default for BreathingSettings {
     fn default() -> Self {
         Self {
+            axes: default_axes(),
             calibration_window_seconds: default_calibration_window_seconds(),
             minimum_axis_range_g: default_minimum_axis_range_g(),
-            sample_ema_alpha: default_sample_ema_alpha(),
-            projection_ema_alpha: default_projection_ema_alpha(),
-            phase_delta_threshold: default_phase_delta_threshold(),
+            smoothing_window_seconds: default_smoothing_window_seconds(),
+            sensitivity: default_sensitivity(),
             stale_timeout_seconds: default_stale_timeout_seconds(),
             invert_direction: false,
             adaptive_bounds: true,
@@ -58,13 +58,15 @@ impl Default for BreathingSettings {
 
 impl BreathingSettings {
     pub fn clamped(mut self) -> Self {
+        if self.axes.iter().filter(|enabled| **enabled).count() < 2 {
+            self.axes = default_axes();
+        }
         self.calibration_window_seconds =
             finite_or(self.calibration_window_seconds, 12.0).clamp(1.0, 60.0);
         self.minimum_axis_range_g = finite_or(self.minimum_axis_range_g, 0.01).clamp(0.001, 0.25);
-        self.sample_ema_alpha = finite_or(self.sample_ema_alpha, 0.10).clamp(0.01, 1.0);
-        self.projection_ema_alpha = finite_or(self.projection_ema_alpha, 0.10).clamp(0.01, 1.0);
-        self.phase_delta_threshold =
-            finite_or(self.phase_delta_threshold, 0.003).clamp(0.0001, 0.25);
+        self.smoothing_window_seconds =
+            finite_or(self.smoothing_window_seconds, 0.75).clamp(0.05, 5.0);
+        self.sensitivity = finite_or(self.sensitivity, 0.60).clamp(0.0, 1.0);
         self.stale_timeout_seconds = finite_or(self.stale_timeout_seconds, 3.0).clamp(0.25, 30.0);
         self.adaptive_window_seconds =
             finite_or(self.adaptive_window_seconds, 20.0).clamp(5.0, 300.0);
@@ -81,20 +83,20 @@ impl BreathingSettings {
 const fn enabled() -> bool {
     true
 }
+const fn default_axes() -> [bool; 3] {
+    [true, false, true]
+}
 const fn default_calibration_window_seconds() -> f32 {
     12.0
 }
 const fn default_minimum_axis_range_g() -> f32 {
     0.01
 }
-const fn default_sample_ema_alpha() -> f32 {
-    0.10
+const fn default_smoothing_window_seconds() -> f32 {
+    0.75
 }
-const fn default_projection_ema_alpha() -> f32 {
-    0.10
-}
-const fn default_phase_delta_threshold() -> f32 {
-    0.003
+const fn default_sensitivity() -> f32 {
+    0.60
 }
 const fn default_stale_timeout_seconds() -> f32 {
     3.0
@@ -118,13 +120,12 @@ pub enum BreathingPhase {
 }
 
 impl BreathingPhase {
-    /// Stable transport values: +1 inhale, -1 exhale, 0 pause, -2 bad signal.
+    /// Stable public transport values: +1 inhale, -1 exhale, and 0 pause/not ready.
     pub fn numeric(self) -> f32 {
         match self {
             Self::Inhaling => 1.0,
             Self::Exhaling => -1.0,
-            Self::Pausing => 0.0,
-            Self::BadSignal => -2.0,
+            Self::Pausing | Self::BadSignal => 0.0,
         }
     }
 }
@@ -134,6 +135,7 @@ pub struct BreathingSnapshot {
     pub calibrated: bool,
     pub calibration_progress_01: f32,
     pub volume_01: f32,
+    pub magnitude_g: f32,
     pub phase: BreathingPhase,
     pub axis_range_g: f32,
     pub time_seconds: f64,
@@ -153,6 +155,10 @@ impl BreathingSnapshot {
         ];
         if self.calibrated {
             values.extend([
+                MetricSample {
+                    id: "acc_breathing_magnitude",
+                    value: self.magnitude_g,
+                },
                 MetricSample {
                     id: "breathing_volume",
                     value: self.volume_01,
@@ -231,6 +237,15 @@ impl BreathingProcessor {
         (self.settings.calibration_window_seconds as f64 * SAMPLE_RATE_HZ).round() as usize
     }
 
+    fn smoothing_alpha(&self) -> f32 {
+        let sample_count = self.settings.smoothing_window_seconds * SAMPLE_RATE_HZ as f32;
+        (2.0 / (sample_count + 1.0)).clamp(0.001, 1.0)
+    }
+
+    fn phase_delta_threshold(&self) -> f32 {
+        0.0005 + (1.0 - self.settings.sensitivity).powi(2) * 0.015_625
+    }
+
     pub(crate) fn push(&mut self, samples: &[AccSample]) -> Option<BreathingSnapshot> {
         if samples.is_empty() {
             return None;
@@ -244,17 +259,23 @@ impl BreathingProcessor {
         let mut latest_volume = self.last_emitted_volume;
 
         for sample in samples {
-            let current = [
+            let mut current = [
                 f32::from(sample.x_mg) / 1_000.0,
                 f32::from(sample.y_mg) / 1_000.0,
                 f32::from(sample.z_mg) / 1_000.0,
             ];
+            for (index, enabled) in self.settings.axes.into_iter().enumerate() {
+                if !enabled {
+                    current[index] = 0.0;
+                }
+            }
             if !self.has_filtered {
                 self.filtered = current;
                 self.has_filtered = true;
             } else {
+                let smoothing_alpha = self.smoothing_alpha();
                 for (filtered, input) in self.filtered.iter_mut().zip(current) {
-                    *filtered += (input - *filtered) * self.settings.sample_ema_alpha;
+                    *filtered += (input - *filtered) * smoothing_alpha;
                 }
             }
             self.elapsed_seconds += 1.0 / SAMPLE_RATE_HZ;
@@ -278,8 +299,7 @@ impl BreathingProcessor {
                     self.projection_ema = projection;
                     self.has_projection = true;
                 } else {
-                    self.projection_ema +=
-                        (projection - self.projection_ema) * self.settings.projection_ema_alpha;
+                    self.projection_ema = projection;
                 }
                 self.update_adaptive_bounds();
                 latest_volume = inverse_lerp(self.bound_min, self.bound_max, self.projection_ema);
@@ -293,9 +313,9 @@ impl BreathingProcessor {
             BreathingPhase::Pausing
         } else {
             let delta = latest_volume - self.last_emitted_volume;
-            if delta > self.settings.phase_delta_threshold {
+            if delta > self.phase_delta_threshold() {
                 BreathingPhase::Inhaling
-            } else if delta < -self.settings.phase_delta_threshold {
+            } else if delta < -self.phase_delta_threshold() {
                 BreathingPhase::Exhaling
             } else {
                 BreathingPhase::Pausing
@@ -308,6 +328,7 @@ impl BreathingProcessor {
                 / self.calibration_target() as f32)
                 .clamp(0.0, 1.0),
             volume_01: latest_volume,
+            magnitude_g: self.projection_ema,
             phase,
             axis_range_g: self.bound_max - self.bound_min,
             time_seconds: self.elapsed_seconds,
@@ -475,7 +496,7 @@ mod tests {
             snapshot
                 .samples()
                 .iter()
-                .any(|sample| sample.id == "breathing_phase" && sample.value == -2.0)
+                .any(|sample| sample.id == "breathing_phase" && sample.value == 0.0)
         );
     }
 
@@ -507,11 +528,11 @@ mod tests {
     }
 
     #[test]
-    fn transport_values_include_a_distinct_bad_signal_state() {
+    fn transport_values_are_a_three_state_public_classifier() {
         assert_eq!(BreathingPhase::Inhaling.numeric(), 1.0);
         assert_eq!(BreathingPhase::Exhaling.numeric(), -1.0);
         assert_eq!(BreathingPhase::Pausing.numeric(), 0.0);
-        assert_eq!(BreathingPhase::BadSignal.numeric(), -2.0);
+        assert_eq!(BreathingPhase::BadSignal.numeric(), 0.0);
     }
 
     #[test]
@@ -519,7 +540,7 @@ mod tests {
         let settings = BreathingSettings {
             calibration_window_seconds: 5.0,
             adaptive_bounds: false,
-            phase_delta_threshold: 0.0001,
+            sensitivity: 1.0,
             ..BreathingSettings::default()
         };
         let mut normal = BreathingProcessor::new(settings);
@@ -557,5 +578,30 @@ mod tests {
         processor.last_push_at = Some(Instant::now() - Duration::from_secs(4));
         let snapshot = processor.push(&[clean_motion(201)]).unwrap();
         assert_eq!(snapshot.phase, BreathingPhase::BadSignal);
+        assert_eq!(snapshot.phase.numeric(), 0.0);
+    }
+
+    #[test]
+    fn fewer_than_two_axes_falls_back_to_recommended_x_and_z() {
+        let settings = BreathingSettings {
+            axes: [false, true, false],
+            ..BreathingSettings::default()
+        }
+        .clamped();
+        assert_eq!(settings.axes, [true, false, true]);
+    }
+
+    #[test]
+    fn selected_axes_and_smoothing_controls_are_clamped() {
+        let settings = BreathingSettings {
+            axes: [true, true, false],
+            smoothing_window_seconds: 50.0,
+            sensitivity: -2.0,
+            ..BreathingSettings::default()
+        }
+        .clamped();
+        assert_eq!(settings.axes, [true, true, false]);
+        assert_eq!(settings.smoothing_window_seconds, 5.0);
+        assert_eq!(settings.sensitivity, 0.0);
     }
 }

@@ -11,7 +11,6 @@ const targets = [
   ["breathing-phase-inhale", "INHALE", [22, 130, 89]],
   ["breathing-phase-exhale", "EXHALE", [209, 122, 40]],
   ["breathing-phase-pause", "PAUSE", [59, 120, 170]],
-  ["breathing-phase-bad-signal", "BAD SIGNAL", [185, 75, 64]],
 ];
 
 const mime = new Map([
@@ -83,6 +82,30 @@ function colorDistance(actual, expected) {
   return Math.hypot(...actual.map((channel, index) => channel - expected[index]));
 }
 
+async function inspectStackedCanvas(page) {
+  const colors = [[59, 120, 170], [22, 130, 89], [166, 109, 25]];
+  return page.locator("#signal-canvas").evaluate((canvas, expectedColors) => {
+    const context = canvas.getContext("2d");
+    const { data, width } = context.getImageData(0, 0, canvas.width, canvas.height);
+    return expectedColors.map((expected) => {
+      let count = 0;
+      let yTotal = 0;
+      for (let index = 0; index < data.length; index += 4) {
+        if (data[index + 3] < 100) continue;
+        const distance = Math.hypot(
+          data[index] - expected[0],
+          data[index + 1] - expected[1],
+          data[index + 2] - expected[2],
+        );
+        if (distance >= 42) continue;
+        count += 1;
+        yTotal += Math.floor(index / 4 / width);
+      }
+      return { count, averageY: count ? yTotal / count : 0 };
+    });
+  }, colors);
+}
+
 await mkdir(output, { recursive: true });
 const server = await startServer();
 const address = server.address();
@@ -113,11 +136,18 @@ try {
     measurements.get("breathing-phase-inhale").width > measurements.get("breathing-phase-exhale").width * 1.35,
     "inhale circle must render materially larger than exhale",
   );
+  const paused = await page.evaluate(() => window.PolarInterfaceRenderer.render("breathing-phase-pause"));
+  assert.ok(Math.abs(paused.phaseMotion.velocity) < 0.02, "pause should ease the circle velocity toward rest");
+  assert.ok(paused.phaseMotion.level > 0.58, "pause should retain motion inertia instead of abruptly freezing");
 
   const settings = await page.evaluate(() => window.PolarInterfaceRenderer.render("breathing-phase-settings"));
   assert.equal(settings.dialogOpen, true);
   assert.equal(await page.locator("#module-dialog-title").textContent(), "Adjust Breath phase classifier");
-  assert.ok(await page.locator("#module-settings input").count() >= 10, "classifier controls were not rendered");
+  assert.ok(await page.locator("#module-settings input").count() >= 7, "classifier controls were not rendered");
+  assert.equal(await page.getByLabel("X axis · recommended").isChecked(), true);
+  assert.equal(await page.getByLabel("Y axis · rotational").isChecked(), false);
+  assert.equal(await page.getByLabel("Z axis · recommended").isChecked(), true);
+  assert.equal(await page.getByLabel("Sensitivity").inputValue(), "0.6");
   await page.screenshot({ path: join(output, "breathing-phase-settings.png"), fullPage: true });
   await page.getByLabel("Display window").fill("12");
   await page.getByRole("button", { name: "Save module" }).click();
@@ -126,6 +156,22 @@ try {
   assert.equal(await page.locator("#visual-window-label").textContent(), "Live phase");
   await page.screenshot({ path: join(output, "breathing-phase-settings-saved.png"), fullPage: true });
 
+  const accelerometer = await page.evaluate(() => window.PolarInterfaceRenderer.render("raw-accelerometer-stacked"));
+  assert.equal(accelerometer.selectedVisual, "raw_acc");
+  assert.deepEqual(accelerometer.legendLabels, ["X", "Y", "Z"]);
+  assert.ok(accelerometer.visualOptions.includes("raw_acc"), "raw ACC is missing from the visualizer");
+  assert.ok(!accelerometer.visualOptions.some((id) => /^acc_[xyz]$/.test(id)), "individual ACC axes remain selectable");
+  assert.match(accelerometer.currentLabel, /^X [-\d]+  ·  Y [-\d]+  ·  Z [-\d]+$/);
+  assert.match(accelerometer.chartClass, /stacked-axes/);
+  assert.match(accelerometer.canvasLabel, /three stacked plots/);
+  const stackedColors = await inspectStackedCanvas(page);
+  assert.ok(stackedColors.every(({ count }) => count > 40), `one or more ACC traces were not drawn: ${JSON.stringify(stackedColors)}`);
+  assert.ok(stackedColors[0].averageY < stackedColors[1].averageY && stackedColors[1].averageY < stackedColors[2].averageY,
+    `ACC traces were not stacked X/Y/Z: ${JSON.stringify(stackedColors)}`);
+  const accelerometerScreenshot = join(output, "raw-accelerometer-stacked.png");
+  await page.screenshot({ path: accelerometerScreenshot, fullPage: true });
+  assert.ok((await stat(accelerometerScreenshot)).size > 20_000, "stacked ACC screenshot was unexpectedly empty");
+
   const library = await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));
   assert.equal(library.dialogOpen, true, "metric library did not open in the renderer");
   assert.equal(library.previewCount, library.catalogCount, "generated preview count differs from catalog count");
@@ -133,8 +179,10 @@ try {
   assert.equal(library.source.library, "NeuroKit2");
   assert.equal(library.source.version, "0.2.13");
   assert.equal(library.source.model, "ECGSYN");
-  assert.equal(await page.locator(".metric-option .metric-preview-svg").count(), library.catalogCount);
+  assert.equal(await page.locator(".metric-option .metric-preview-svg").count(), library.visibleCount);
   assert.equal(await page.locator(".metric-preview-missing").count(), 0);
+  assert.ok(!library.visibleIds.includes("raw_acc"), "ACC outputs leaked into ECG mode");
+  assert.ok(!library.visibleIds.includes("breathing_phase"), "ACC breathing leaked into ECG mode");
   const coverage = await page.locator(".metric-preview-compact").evaluateAll((figures) => figures.map((figure) => ({
     id: figure.dataset.metricId,
     paths: figure.querySelectorAll("path.metric-preview-line").length,
@@ -143,7 +191,7 @@ try {
     minimum: Number(figure.dataset.minimum),
     maximum: Number(figure.dataset.maximum),
   })));
-  assert.equal(new Set(coverage.map((preview) => preview.id)).size, library.catalogCount);
+  assert.equal(new Set(coverage.map((preview) => preview.id)).size, library.visibleCount);
   for (const preview of coverage) {
     assert.ok(preview.paths >= 1, `${preview.id} has no generated SVG path`);
     assert.ok(preview.pathLength > 120, `${preview.id} SVG path was unexpectedly small`);
@@ -151,20 +199,38 @@ try {
     assert.ok(preview.maximum >= preview.minimum, `${preview.id} has an inverted range`);
   }
 
-  for (const metricId of ["raw_ecg", "raw_acc", "rmssd", "breathing_phase", "excitement_score"]) {
+  for (const metricId of ["raw_ecg", "rmssd", "excitement_score"]) {
     await page.locator(`.metric-option:has(.metric-preview[data-metric-id="${metricId}"])`).click();
     const detail = page.locator(`.metric-preview-large[data-metric-id="${metricId}"]`);
     assert.equal(await detail.count(), 1, `${metricId} did not render a selected-metric preview`);
     assert.ok(await detail.locator(".metric-preview-line").count() >= 2, `${metricId} preview path is missing`);
     assert.equal(await detail.locator("animateTransform").count(), 1, `${metricId} preview is not looped`);
   }
+  await page.getByRole("button", { name: /ACC metrics/ }).click();
+  assert.equal(await page.locator("#output-dialog").getAttribute("data-family"), "acc");
+  const accIds = await page.locator(".metric-option").evaluateAll((options) => options.map((option) => option.dataset.metricId));
+  assert.deepEqual(accIds, ["raw_acc", "acc_magnitude", "acc_breathing_magnitude", "breathing_phase"]);
+  assert.match(await page.locator("#metric-library-summary").textContent(), /^4 of 4 ACC metrics$/);
+
+  await page.locator('.metric-option[data-metric-id="acc_breathing_magnitude"]').click();
+  assert.equal(await page.locator(".experimental-badge").textContent(), "Not validated");
+  const selectionSettings = page.locator(".breathing-selection-settings");
+  assert.equal(await selectionSettings.getByLabel("Normalize output to 0–1").isChecked(), true);
+  assert.equal(await selectionSettings.getByLabel("X · recommended").isChecked(), true);
+  assert.equal(await selectionSettings.getByLabel("Y · rotational").isChecked(), false);
+  assert.equal(await selectionSettings.getByLabel("Z · recommended").isChecked(), true);
+
+  await page.locator('.metric-option[data-metric-id="breathing_phase"]').click();
+  assert.equal(await selectionSettings.getByLabel("Sensitivity").inputValue(), "0.6");
+  assert.equal(await selectionSettings.getByLabel("Invert inhale / exhale").isChecked(), false);
+  assert.match(await page.locator("#metric-detail").textContent(), /inhale \(\+1\), pause\/not ready \(0\), and exhale \(−1\)/);
   assert.match(await page.locator(".metric-preview-provenance").textContent(), /NeuroKit2 0\.2\.13 · ECGSYN/);
   assert.match(await page.locator(".metric-preview-note").textContent(), /not expected personal values or validation accuracy/);
   const previewScreenshot = join(output, "metric-library-previews.png");
   await page.screenshot({ path: previewScreenshot, fullPage: true });
   assert.ok((await stat(previewScreenshot)).size > 20_000, "metric library screenshot was unexpectedly empty");
 
-  process.stdout.write(`Validated ${targets.length} classifier renders, saved controls, and ${library.catalogCount} NeuroKit previews in ${output}\n`);
+  process.stdout.write(`Validated stacked raw ACC, ${targets.length} classifier renders, saved controls, and ${library.catalogCount} NeuroKit previews in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));
