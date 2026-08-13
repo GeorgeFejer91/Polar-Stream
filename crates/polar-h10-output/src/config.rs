@@ -55,10 +55,6 @@ impl OutputConfig {
         }
         Ok(self)
     }
-
-    pub(crate) fn includes(&self, id: &str) -> bool {
-        self.outputs.iter().any(|candidate| candidate == id)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]

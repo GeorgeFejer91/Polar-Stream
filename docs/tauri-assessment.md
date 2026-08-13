@@ -18,6 +18,59 @@ packaging and interpreter/scientific dependency surface would be larger and it
 would be easier to accidentally place processing or publication on the UI
 runtime.
 
+## 13 August 2026 Rust/Tauri performance audit
+
+The `tauri-rust-developer` review found that the largest observed runtime cost
+was not Bluetooth or Rust: the original UI recursively requested animation
+frames even while disconnected. After more than an hour idle, the v0.4.0
+AppImage's WebKit content process was still using approximately **73% CPU** on
+this Linux machine (an earlier sample was 81%). The revised data-driven renderer
+requested no further idle frames; a three-sample `top` check measured **0.5%
+WebKit CPU and 0.0% native-app CPU** after startup.
+
+These point-in-time measurements are not a formal benchmark, but the order-of-
+magnitude change directly matches the removed perpetual repaint. The revised
+process group used about 475 MB RSS (158 MB app, 74 MB network process, 243 MB
+content process). An earlier old-build sample used about 572 MB; RSS comparisons
+between the AppImage's bundled WebKit and system WebKit remain approximate
+because mapped/shared pages and page reclamation differ.
+
+The structural changes behind that result are:
+
+- Derived Rust processors are activated from the selected output set. The
+  default raw-only configuration no longer maintains ECG-feature, HRV,
+  coherence, breathing, or excitation state.
+- LSL receives each **already-arrived Polar notification immediately** through
+  one `lsl_push_chunk_ftp(..., pushthrough = 1)` call. This removes repeated FFI
+  calls; it does not add a timer, accumulation interval, or application batch.
+  OSC likewise emits one immediate UDP packet per notification.
+- OSC names and packet storage are reused, LSL conversion storage is reused,
+  and selected-output membership is a hash lookup rather than a repeated vector
+  scan.
+- A small bounded display-only queue isolates Tauri/WebView serialization. If
+  the renderer cannot keep up, it may skip visualization frames; native LSL/OSC
+  publication is never made to wait and does not drop sensor notifications.
+- Canvas rendering is data-triggered and capped at 30 Hz, telemetry DOM updates
+  are coalesced to 10 Hz, and ring-buffer drawing no longer allocates a new typed
+  array per frame.
+- The development-generated preview bundle is loaded only when the metric
+  library opens, and all preview SVG nodes are removed when it closes. The SVGs
+  are not part of live-signal rendering.
+- Release builds use thin LTO, one codegen unit, and stripped symbols. The cold
+  optimized build took 19 minutes 49 seconds after clearing 7.6 GiB of prior
+  Cargo artifacts, reinforcing that build/cache cost is a genuine downside even
+  for a compact Tauri application.
+
+The optimized native executable is 7.2 MB on this machine. The waveform icon is
+now generated into native PNG, ICO, ICNS, Windows AppX, Android, and iOS sizes;
+the running Linux window exposes it through `_NET_WM_ICON` for taskbar/pin use.
+
+Implementation references:
+
+- [liblsl outlet/chunk API](https://labstreaminglayer.readthedocs.io/projects/liblsl/ref/outlet.html)
+- [Cargo release profile controls](https://doc.rust-lang.org/cargo/reference/profiles.html)
+- [Tauri icon generation](https://v2.tauri.app/develop/icons/)
+
 ## What Tauri contributes—and what it does not
 
 | Property in Polar Stream | Main source of the benefit | Tauri-specific? |

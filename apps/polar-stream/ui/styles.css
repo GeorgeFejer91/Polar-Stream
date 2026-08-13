@@ -47,9 +47,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 }
 
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.brand-mark { width: 34px; height: 34px; flex: 0 0 auto; }
-.brand-mark rect { fill: #21382e; stroke: #436055; }
-.brand-mark path { fill: none; stroke: var(--mint); stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
+.brand-mark { width: 34px; height: 34px; flex: 0 0 auto; border-radius: 9px; }
 .brand-copy { display: grid; line-height: 1.08; }
 .brand-copy strong { font-size: 15px; letter-spacing: .01em; }
 .brand-copy small { margin-top: 4px; color: #9aaba2; font-size: 10px; text-transform: uppercase; letter-spacing: .11em; }

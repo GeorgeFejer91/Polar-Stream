@@ -9,7 +9,9 @@ its scientific definition, interpretation limits, evidence level, cited source,
 and exact stream-name preview; an explicit **Save output** action then adds that
 single module to the enabled LSL and/or OSC publisher.
 
-Every library row also contains an SVG thumbnail of its expected output shape.
+When the output library is open, every row contains an SVG thumbnail of its
+expected output shape. Preview data and SVG nodes are kept out of normal startup
+and unloaded from the document when the library closes.
 Selecting the row opens a larger, smoothly looped preview generated at development
 time from deterministic NeuroKit2 ECGSYN ECG and respiratory signals. These are
 illustrative synthetic traces, not example participant norms, algorithm validation,
@@ -79,6 +81,10 @@ Acquisition and publication stay native in Rust:
   and experimental processors plus the evidence-backed metric catalog.
 - `polar-h10-output`: LSL/OSC naming and publication.
 - `apps/polar-stream`: thin Tauri coordinator and three-panel UI.
+
+Derived processors are demand-driven by the selected output set. Raw batches are
+published immediately in Rust; no timer-based batching is added, and a bounded
+display-only queue prevents a slow WebView from delaying LSL or OSC.
 
 See [the architecture notes](apps/polar-stream/ARCHITECTURE.md) for the data path
 and latency policy, and [the Tauri assessment](docs/tauri-assessment.md) for the

@@ -7,6 +7,7 @@ use polar_h10_core::AccSample;
 use polar_h10_input::{DeviceSummary, InputEvent, InputManager};
 use polar_h10_metrics::{
     BreathingSettings, METRIC_CATALOG, MetricDefinition, MetricEngine, MetricSample,
+    MetricSelection,
 };
 use polar_h10_output::{MetricValue, OutputConfig, OutputHealth, OutputRouter};
 use serde::Serialize;
@@ -15,16 +16,38 @@ use tauri::{Manager, State, ipc::Channel, path::BaseDirectory};
 struct AppState {
     input: Arc<InputManager>,
     output: Arc<OutputRouter>,
-    breathing_settings: tokio::sync::watch::Sender<BreathingSettings>,
+    processing_settings: tokio::sync::watch::Sender<ProcessingSettings>,
 }
 
 impl AppState {
     fn new(bundled_lsl: Option<PathBuf>) -> Self {
-        let (breathing_settings, _) = tokio::sync::watch::channel(BreathingSettings::default());
+        let (processing_settings, _) =
+            tokio::sync::watch::channel(ProcessingSettings::from_config(&OutputConfig::default()));
         Self {
             input: Arc::new(InputManager::new()),
             output: Arc::new(OutputRouter::with_bundled_lsl(bundled_lsl)),
-            breathing_settings,
+            processing_settings,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ProcessingSettings {
+    breathing: BreathingSettings,
+    metrics: MetricSelection,
+}
+
+impl ProcessingSettings {
+    fn from_config(config: &OutputConfig) -> Self {
+        let breathing = config
+            .metric_options
+            .get("breathing_phase")
+            .and_then(|options| options.processing.breathing_phase)
+            .unwrap_or_default()
+            .clamped();
+        Self {
+            breathing,
+            metrics: MetricSelection::from_ids(config.outputs.iter().map(String::as_str)),
         }
     }
 }
@@ -93,26 +116,42 @@ async fn connect_device(
 ) -> Result<(), String> {
     let mut input_events = state.input.connect(&device_id).await?;
     let output = state.output.clone();
-    let mut breathing_settings = state.breathing_settings.subscribe();
+    let mut processing_settings = state.processing_settings.subscribe();
     output.reset_measurement();
     tauri::async_runtime::spawn(async move {
-        let mut metrics_engine = MetricEngine::default();
-        metrics_engine.apply_breathing_settings(*breathing_settings.borrow_and_update());
+        // Keep WebView serialization completely off the sensor/output path. A
+        // slow or hidden renderer may lose display frames, but never raw LSL or
+        // OSC data. Control events retain ordered delivery.
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<AppEvent>(8);
+        let ui_task = tauri::async_runtime::spawn(async move {
+            while let Some(event) = ui_rx.recv().await {
+                if events.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let settings = *processing_settings.borrow_and_update();
+        let mut metrics_engine = MetricEngine::with_selection(settings.metrics);
+        metrics_engine.apply_breathing_settings(settings.breathing);
         while let Some(event) = input_events.recv().await {
-            if breathing_settings.has_changed().unwrap_or(false) {
-                metrics_engine.apply_breathing_settings(*breathing_settings.borrow_and_update());
+            if processing_settings.has_changed().unwrap_or(false) {
+                let settings = *processing_settings.borrow_and_update();
+                metrics_engine.apply_selection(settings.metrics);
+                metrics_engine.apply_breathing_settings(settings.breathing);
             }
             let continue_streaming = match event {
-                InputEvent::Status { phase, message } => events
+                InputEvent::Status { phase, message } => ui_tx
                     .send(AppEvent::Status {
                         phase: phase.into(),
                         message,
                     })
+                    .await
                     .is_ok(),
                 InputEvent::Connected {
                     device_name,
                     battery_percent,
-                } => events
+                } => ui_tx
                     .send(AppEvent::Connection {
                         connected: true,
                         streaming: true,
@@ -120,6 +159,7 @@ async fn connect_device(
                         battery_percent,
                         message: "Raw ECG and accelerometer are streaming".into(),
                     })
+                    .await
                     .is_ok(),
                 InputEvent::Ecg {
                     sensor_timestamp_ns,
@@ -127,16 +167,16 @@ async fn connect_device(
                 } => {
                     output.publish_ecg(sensor_timestamp_ns, &microvolts);
                     let derived = metrics_engine.process_ecg(&microvolts);
-                    if events
-                        .send(AppEvent::Ecg {
+                    if !forward_display_event(
+                        &ui_tx,
+                        AppEvent::Ecg {
                             sensor_timestamp_ns,
                             microvolts,
-                        })
-                        .is_err()
-                    {
+                        },
+                    ) {
                         false
                     } else {
-                        publish_metrics(&output, &events, derived)
+                        publish_metrics(&output, &ui_tx, derived)
                     }
                 }
                 InputEvent::Accelerometer {
@@ -145,16 +185,16 @@ async fn connect_device(
                 } => {
                     output.publish_accelerometer(sensor_timestamp_ns, &samples);
                     let derived = metrics_engine.process_accelerometer(&samples);
-                    if events
-                        .send(AppEvent::Accelerometer {
+                    if !forward_display_event(
+                        &ui_tx,
+                        AppEvent::Accelerometer {
                             sensor_timestamp_ns,
                             samples,
-                        })
-                        .is_err()
-                    {
+                        },
+                    ) {
                         false
                     } else {
-                        publish_metrics(&output, &events, derived)
+                        publish_metrics(&output, &ui_tx, derived)
                     }
                 }
                 InputEvent::HeartRate {
@@ -162,24 +202,24 @@ async fn connect_device(
                     rr_intervals_ms,
                 } => publish_metrics(
                     &output,
-                    &events,
+                    &ui_tx,
                     metrics_engine.process_heart_rate(beats_per_minute, &rr_intervals_ms),
                 ),
-                InputEvent::Error(message) => events.send(AppEvent::Error { message }).is_ok(),
+                InputEvent::Error(message) => ui_tx.send(AppEvent::Error { message }).await.is_ok(),
                 InputEvent::Disconnected {
                     device_name,
                     battery_percent,
                 } => {
                     let phase_sent = publish_metrics(
                         &output,
-                        &events,
+                        &ui_tx,
                         vec![MetricSample {
                             id: "breathing_phase",
                             value: -2.0,
                         }],
                     );
                     phase_sent
-                        && events
+                        && ui_tx
                             .send(AppEvent::Connection {
                                 connected: false,
                                 streaming: false,
@@ -187,6 +227,7 @@ async fn connect_device(
                                 battery_percent,
                                 message: "Disconnected".into(),
                             })
+                            .await
                             .is_ok()
                 }
             };
@@ -194,13 +235,15 @@ async fn connect_device(
                 break;
             }
         }
+        drop(ui_tx);
+        let _ = ui_task.await;
     });
     Ok(())
 }
 
 fn publish_metrics(
     output: &OutputRouter,
-    events: &Channel<AppEvent>,
+    ui_tx: &tokio::sync::mpsc::Sender<AppEvent>,
     values: Vec<MetricSample>,
 ) -> bool {
     if values.is_empty() {
@@ -214,7 +257,14 @@ fn publish_metrics(
         })
         .collect::<Vec<_>>();
     output.publish_metrics(&routed);
-    events.send(AppEvent::Metrics { values }).is_ok()
+    forward_display_event(ui_tx, AppEvent::Metrics { values })
+}
+
+fn forward_display_event(ui_tx: &tokio::sync::mpsc::Sender<AppEvent>, event: AppEvent) -> bool {
+    match ui_tx.try_send(event) {
+        Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+    }
 }
 
 #[tauri::command]
@@ -227,14 +277,11 @@ async fn update_output_config(
     state: State<'_, Arc<AppState>>,
     config: OutputConfig,
 ) -> Result<OutputHealth, String> {
-    let breathing_settings = config
-        .metric_options
-        .get("breathing_phase")
-        .and_then(|options| options.processing.breathing_phase)
-        .unwrap_or_default()
-        .clamped();
     let health = state.output.configure(config).await?;
-    state.breathing_settings.send_replace(breathing_settings);
+    let applied = state.output.config();
+    state
+        .processing_settings
+        .send_replace(ProcessingSettings::from_config(&applied));
     Ok(health)
 }
 
@@ -242,6 +289,11 @@ async fn update_output_config(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                // Keep the runtime taskbar/pinned-window icon explicit. The
+                // native bundle still uses the full ICO/ICNS/PNG icon sets.
+                window.set_icon(tauri::include_image!("icons/64x64.png"))?;
+            }
             let bundled_lsl = app
                 .path()
                 .resolve(lsl_resource_path(), BaseDirectory::Resource)

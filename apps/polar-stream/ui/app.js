@@ -6,7 +6,8 @@
   const invoke = nativeCore?.invoke?.bind(nativeCore);
   const NativeChannel = nativeCore?.Channel;
   const preferences = window.PolarPreferences;
-  const metricPreviews = window.PolarMetricPreviews;
+  let metricPreviews = null;
+  let metricPreviewsPromise = null;
   const isInterfaceRenderer = new URLSearchParams(window.location.search).has("renderer");
   const svgNamespace = "http://www.w3.org/2000/svg";
   let metricPreviewSequence = 0;
@@ -84,14 +85,13 @@
       for (const value of values) this.push(Number(value));
     }
 
-    tail(count) {
-      const size = Math.min(this.length, count);
-      const result = new Float32Array(size);
+    tailSize(count) {
+      return Math.min(this.length, count);
+    }
+
+    tailValue(index, size) {
       const start = (this.cursor - size + this.capacity) % this.capacity;
-      const first = Math.min(size, this.capacity - start);
-      result.set(this.values.subarray(start, start + first));
-      if (first < size) result.set(this.values.subarray(0, size - first), first);
-      return result;
+      return this.values[(start + index) % this.capacity];
     }
 
     latest() {
@@ -120,6 +120,10 @@
     "module-dialog-intro", "module-settings", "module-dialog-status", "save-module-settings",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
+  const signalContext = elements["signal-canvas"].getContext("2d", {
+    alpha: true,
+    desynchronized: true,
+  });
 
   const app = {
     connected: false,
@@ -208,6 +212,27 @@
     window.setTimeout(() => node.remove(), 4200);
   }
 
+  function ensureMetricPreviews() {
+    if (metricPreviews) return Promise.resolve(metricPreviews);
+    if (metricPreviewsPromise) return metricPreviewsPromise;
+    metricPreviewsPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "metric-previews.js";
+      script.async = true;
+      script.addEventListener("load", () => {
+        metricPreviews = window.PolarMetricPreviews || null;
+        if (metricPreviews) resolve(metricPreviews);
+        else reject(new Error("Metric preview data did not initialize."));
+      }, { once: true });
+      script.addEventListener("error", () => reject(new Error("Metric previews could not be loaded.")), { once: true });
+      document.head.append(script);
+    }).catch((error) => {
+      metricPreviewsPromise = null;
+      throw error;
+    });
+    return metricPreviewsPromise;
+  }
+
   async function initialize() {
     let bootstrap = {
       config: { streamName: "Polar-H10", lslEnabled: false, oscEnabled: false, outputs: ["raw_ecg", "raw_acc"], metricOptions: {} },
@@ -241,12 +266,11 @@
     }
 
     renderMetricFilters();
-    renderMetricOptions();
     renderOutputs();
     installInteractions();
     await configureOutputs({ quiet: true });
     resizeCanvas();
-    if (!isInterfaceRenderer) window.requestAnimationFrame(drawFrame);
+    if (!isInterfaceRenderer) requestRender();
     if (app.preferences.lastDevice) void scanDevices({ automatic: true });
   }
 
@@ -264,11 +288,20 @@
       nameTimer = window.setTimeout(configureOutputs, 320);
     });
 
-    elements["open-output-dialog"].addEventListener("click", () => {
+    elements["open-output-dialog"].addEventListener("click", async () => {
       app.selectedMetricId = null;
-      renderMetricOptions();
       renderMetricDetail();
       elements["output-dialog"].showModal();
+      const loading = document.createElement("p");
+      loading.className = "metric-library-empty";
+      loading.textContent = "Loading synthetic previews…";
+      elements["metric-options"].replaceChildren(loading);
+      try {
+        await ensureMetricPreviews();
+      } catch (error) {
+        toast(String(error), true);
+      }
+      if (elements["output-dialog"].open) renderMetricOptions();
     });
     elements["save-metric-output"].addEventListener("click", () => {
       const metric = app.catalog.find((candidate) => candidate.id === app.selectedMetricId);
@@ -293,11 +326,26 @@
     elements["visual-source"].addEventListener("change", () => {
       app.selectedVisual = elements["visual-source"].value;
       updateVisualLabels();
+      requestRender();
     });
     elements["adjust-visual"].addEventListener("click", () => openModuleSettings(optionIdForVisual(app.selectedVisual)));
     elements["save-module-settings"].addEventListener("click", saveModuleSettings);
 
-    const observer = new ResizeObserver(resizeCanvas);
+    elements["output-dialog"].addEventListener("close", () => {
+      app.selectedMetricId = null;
+      elements["metric-options"].replaceChildren();
+      renderMetricDetail();
+      elements["metric-library-summary"].textContent = `${app.catalog.length} metrics`;
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) cancelScheduledRender();
+      else requestRender();
+    });
+
+    const observer = new ResizeObserver(() => {
+      resizeCanvas();
+      requestRender();
+    });
     observer.observe(elements["chart-shell"]);
   }
 
@@ -520,15 +568,14 @@
     elements["input-state"].textContent = app.connected ? "Streaming" : "Idle";
     setTopStatus(app.connected ? "Sensor connected · streams live" : "Ready to connect", app.connected ? "connected" : "idle");
     addActivity(app.connected ? `${event.deviceName} connected` : "Sensor disconnected");
+    if (!app.connected) elements["render-rate"].textContent = "Idle";
+    markTelemetryDirty();
   }
 
   function ingestEcg(values) {
     buffers.raw_ecg.pushMany(values);
     app.sampleCount += values.length;
-    const latest = buffers.raw_ecg.latest();
-    elements["raw-ecg-value"].textContent = formatValue(latest, 0);
-    updateSparkline();
-    updateSampleCounter();
+    markTelemetryDirty();
   }
 
   function ingestAccelerometer(samples) {
@@ -542,17 +589,20 @@
       buffers.acc_z.push(z);
       ensureBuffer("acc_magnitude").push(visualValue("acc_magnitude", Math.hypot(x, y, z) / 1000));
     }
-    const last = samples[samples.length - 1];
-    elements["raw-acc-x"].textContent = formatValue(last.xMg ?? last.x_mg, 0);
-    elements["raw-acc-y"].textContent = formatValue(last.yMg ?? last.y_mg, 0);
-    elements["raw-acc-z"].textContent = formatValue(last.zMg ?? last.z_mg, 0);
     app.sampleCount += samples.length;
-    updateSampleCounter();
+    markTelemetryDirty();
   }
 
   function ingestMetrics(event) {
     if (Array.isArray(event.values)) {
-      for (const metric of event.values) ensureBuffer(metric.id).push(visualValue(metric.id, Number(metric.value)));
+      for (const metric of event.values) {
+        // ACC magnitude is already calculated while unpacking raw axes above;
+        // avoid drawing every native value twice.
+        if (metric.id !== "acc_magnitude") {
+          ensureBuffer(metric.id).push(visualValue(metric.id, Number(metric.value)));
+        }
+      }
+      markTelemetryDirty();
       return;
     }
     // Backward compatibility for early v0.1 event payloads.
@@ -562,6 +612,21 @@
     }
     const rmssd = event.rmssdMs ?? event.rmssd_ms;
     if (rmssd != null) ensureBuffer("rmssd").push(visualValue("rmssd", rmssd));
+    markTelemetryDirty();
+  }
+
+  function markTelemetryDirty() {
+    telemetryDirty = true;
+    requestRender();
+  }
+
+  function refreshTelemetry() {
+    elements["raw-ecg-value"].textContent = formatValue(buffers.raw_ecg.latest(), 0);
+    elements["raw-acc-x"].textContent = formatValue(buffers.acc_x.latest(), 0);
+    elements["raw-acc-y"].textContent = formatValue(buffers.acc_y.latest(), 0);
+    elements["raw-acc-z"].textContent = formatValue(buffers.acc_z.latest(), 0);
+    updateSparkline();
+    updateSampleCounter();
   }
 
   function updateSampleCounter() {
@@ -725,6 +790,7 @@
     const options = visible.map((metric) => {
       const option = document.createElement("button");
       option.type = "button";
+      option.dataset.metricId = metric.id;
       option.className = `metric-option${app.selectedMetricId === metric.id ? " selected" : ""}`;
       option.setAttribute("aria-pressed", String(app.selectedMetricId === metric.id));
       const mark = document.createElement("span");
@@ -747,7 +813,11 @@
       const preview = createMetricPreview(metric, { compact: true });
       option.addEventListener("click", () => {
         app.selectedMetricId = metric.id;
-        renderMetricOptions();
+        for (const candidate of elements["metric-options"].querySelectorAll(".metric-option")) {
+          const selected = candidate.dataset.metricId === metric.id;
+          candidate.classList.toggle("selected", selected);
+          candidate.setAttribute("aria-pressed", String(selected));
+        }
         renderMetricDetail();
       });
       option.append(mark, copy, preview, state);
@@ -1100,7 +1170,7 @@
     app.visualNormalizers = {};
     for (const buffer of Object.values(buffers)) buffer.clear();
     app.sampleCount = 0;
-    updateSampleCounter();
+    markTelemetryDirty();
   }
 
   function visualValue(id, input) {
@@ -1187,6 +1257,7 @@
     elements["adjust-visual"].disabled = !definition;
     elements["chart-shell"].classList.toggle("phase-visual", app.selectedVisual === "breathing_phase");
     document.querySelector(".legend-line").style.background = definition?.color || "#87958d";
+    requestRender();
   }
 
   async function configureOutputs({ quiet = false } = {}) {
@@ -1246,27 +1317,75 @@
     canvas.height = Math.max(1, Math.round(bounds.height * ratio));
   }
 
-  let previousFrame = performance.now();
+  const renderIntervalMs = 1000 / 30;
+  const telemetryIntervalMs = 100;
+  let renderFrameId = 0;
+  let renderTimerId = 0;
+  let renderPending = false;
+  let lastRenderAt = 0;
+  let lastTelemetryAt = 0;
+  let telemetryDirty = true;
+  let previousFrame = 0;
   let frameAccumulator = 0;
   let frameSamples = 0;
+
+  function scheduleRender(delayMs = 0) {
+    if (isInterfaceRenderer || document.hidden || renderPending) return;
+    renderPending = true;
+    const begin = () => {
+      renderTimerId = 0;
+      renderFrameId = window.requestAnimationFrame(drawFrame);
+    };
+    if (delayMs > 1) renderTimerId = window.setTimeout(begin, delayMs);
+    else begin();
+  }
+
+  function requestRender() {
+    const elapsed = performance.now() - lastRenderAt;
+    scheduleRender(lastRenderAt ? Math.max(0, renderIntervalMs - elapsed) : 0);
+  }
+
+  function cancelScheduledRender() {
+    if (renderTimerId) window.clearTimeout(renderTimerId);
+    if (renderFrameId) window.cancelAnimationFrame(renderFrameId);
+    renderTimerId = 0;
+    renderFrameId = 0;
+    renderPending = false;
+  }
+
   function drawFrame(now) {
-    const elapsed = now - previousFrame;
+    renderPending = false;
+    renderFrameId = 0;
+    lastRenderAt = now;
+    const elapsed = previousFrame ? now - previousFrame : 0;
     previousFrame = now;
-    frameAccumulator += elapsed;
-    frameSamples += 1;
+    if (elapsed > 0 && elapsed < 250) {
+      frameAccumulator += elapsed;
+      frameSamples += 1;
+    } else if (elapsed >= 250) {
+      frameAccumulator = 0;
+      frameSamples = 0;
+    }
     if (frameAccumulator >= 800) {
       elements["render-rate"].textContent = `${Math.round((frameSamples * 1000) / frameAccumulator)} fps`;
       frameAccumulator = 0;
       frameSamples = 0;
     }
 
+    if (telemetryDirty && now - lastTelemetryAt >= telemetryIntervalMs) {
+      refreshTelemetry();
+      telemetryDirty = false;
+      lastTelemetryAt = now;
+    }
     drawSignal();
-    window.requestAnimationFrame(drawFrame);
+    if (telemetryDirty) {
+      scheduleRender(Math.max(renderIntervalMs, telemetryIntervalMs - (now - lastTelemetryAt)));
+    }
   }
 
   function drawSignal() {
     const canvas = elements["signal-canvas"];
-    const context = canvas.getContext("2d", { alpha: true });
+    const context = signalContext;
     const definition = visualDefinitions[app.selectedVisual];
     const buffer = buffers[app.selectedVisual];
     if (!definition || !buffer) {
@@ -1283,18 +1402,19 @@
     }
 
     const visibleCount = Math.max(10, Math.ceil(definition.rate * options.displayWindowSeconds));
-    const values = buffer.tail(visibleCount);
+    const valueCount = buffer.tailSize(visibleCount);
     const normalized = options.normalization !== "none";
-    elements["chart-empty"].hidden = values.length > 1;
+    elements["chart-empty"].hidden = valueCount > 1;
     elements["visual-current"].textContent = formatValue(buffer.latest(), normalized ? 3 : definition.unit === "g" ? 3 : definition.unit === "bpm" ? 0 : 1);
-    if (values.length < 2) {
+    if (valueCount < 2) {
       context.clearRect(0, 0, canvas.width, canvas.height);
       return;
     }
 
     let min = Infinity;
     let max = -Infinity;
-    for (const value of values) {
+    for (let index = 0; index < valueCount; index += 1) {
+      const value = buffer.tailValue(index, valueCount);
       if (value < min) min = value;
       if (value > max) max = value;
     }
@@ -1322,9 +1442,10 @@
     const range = max - min || 1;
     context.clearRect(0, 0, width, height);
     context.beginPath();
-    for (let index = 0; index < values.length; index += 1) {
-      const x = padX + (index / (values.length - 1)) * drawWidth;
-      const y = padY + (1 - (values[index] - min) / range) * drawHeight;
+    for (let index = 0; index < valueCount; index += 1) {
+      const value = buffer.tailValue(index, valueCount);
+      const x = padX + (index / (valueCount - 1)) * drawWidth;
+      const y = padY + (1 - (value - min) / range) * drawHeight;
       if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
     }
     context.strokeStyle = definition.color;
@@ -1390,16 +1511,21 @@
   }
 
   function updateSparkline() {
-    const values = buffers.raw_ecg.tail(56);
-    if (values.length < 2) return;
+    const buffer = buffers.raw_ecg;
+    const valueCount = buffer.tailSize(56);
+    if (valueCount < 2) return;
     let min = Infinity;
     let max = -Infinity;
-    for (const value of values) { min = Math.min(min, value); max = Math.max(max, value); }
+    for (let index = 0; index < valueCount; index += 1) {
+      const value = buffer.tailValue(index, valueCount);
+      min = Math.min(min, value);
+      max = Math.max(max, value);
+    }
     const range = max - min || 1;
     const path = [];
-    for (let index = 0; index < values.length; index += 1) {
-      const x = (index / (values.length - 1)) * 280;
-      const y = 4 + (1 - (values[index] - min) / range) * 36;
+    for (let index = 0; index < valueCount; index += 1) {
+      const x = (index / (valueCount - 1)) * 280;
+      const y = 4 + (1 - (buffer.tailValue(index, valueCount) - min) / range) * 36;
       path.push(`${index ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`);
     }
     elements["ecg-spark"].setAttribute("d", path.join(" "));
@@ -1498,6 +1624,7 @@
 
   async function renderInterfaceScenario(name) {
     if (name === "metric-library-previews") {
+      await ensureMetricPreviews();
       app.selectedMetricId = "raw_ecg";
       app.metricFilter = "All";
       app.metricSearch = "";

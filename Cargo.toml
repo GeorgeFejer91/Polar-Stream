@@ -22,3 +22,10 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 uuid = "1"
+
+[profile.release]
+# Thin LTO retains cross-crate optimization with materially lower link cost
+# than fat LTO. One codegen unit and symbol stripping favor a compact package.
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

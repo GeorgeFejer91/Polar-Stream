@@ -9,7 +9,6 @@
     <link rel="icon" href="favicon.svg" />
     <link rel="stylesheet" href="styles.css" />
     <script src="preferences.js" defer></script>
-    <script src="metric-previews.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
@@ -17,10 +16,7 @@
 
     <header class="app-bar">
       <div class="brand">
-        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
-          <rect x="1" y="1" width="38" height="38" rx="10" />
-          <path d="M8 21h5l2.5-7 4.1 15 3.4-11 2.4 5H32" />
-        </svg>
+        <img class="brand-mark" src="favicon.svg" alt="" />
         <span class="brand-copy"><strong>Polar Stream</strong><small>H10 signal bridge</small></span>
       </div>
       <div class="app-state" aria-live="polite">
@@ -154,7 +150,7 @@
             <p class="eyebrow">Visualization</p>
             <h2 id="visual-heading">Live signal</h2>
           </div>
-          <span class="section-state" id="render-rate">60 fps</span>
+          <span class="section-state" id="render-rate">Idle</span>
         </header>
 
         <div class="visual-toolbar">

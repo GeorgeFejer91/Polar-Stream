@@ -5,7 +5,7 @@ mod lsl;
 mod osc;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::Mutex,
     time::{Duration, Instant},
@@ -34,6 +34,7 @@ struct RouterInner {
     osc: Option<OscPublisher>,
     lsl: LslPublisher,
     normalizers: HashMap<String, Normalizer>,
+    selected: HashSet<String>,
 }
 
 impl Default for OutputRouter {
@@ -54,20 +55,25 @@ impl OutputRouter {
                 osc: None,
                 lsl: LslPublisher::new(library_path),
                 normalizers: HashMap::new(),
+                selected: OutputConfig::default().outputs.into_iter().collect(),
             }),
         }
     }
 
     pub async fn configure(&self, config: OutputConfig) -> Result<OutputHealth, String> {
         let config = config.normalized()?;
-        let osc = if config.osc_enabled {
+        let mut osc = if config.osc_enabled {
             Some(OscPublisher::connect(OSC_TARGET).await?)
         } else {
             None
         };
+        if let Some(publisher) = &mut osc {
+            publisher.configure(&config.stream_name, &config.outputs);
+        }
 
         let mut inner = self.inner.lock().map_err(|_| "Output router lock failed")?;
         inner.reconcile_normalizers(&config);
+        inner.selected = config.outputs.iter().cloned().collect();
         inner.config = config;
         inner.osc = osc;
         inner.rebuild_lsl();
@@ -95,17 +101,17 @@ impl OutputRouter {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
-        if !inner.config.includes("raw_ecg") {
+        if !inner.selected.contains("raw_ecg") {
             return;
         }
         inner
             .lsl
             .push_scalar_series("raw_ecg", samples.iter().map(|value| *value as f32));
-        if let Some(osc) = &inner.osc {
+        if let Some(osc) = &mut inner.osc {
             osc.send_series(
-                &inner.config.stream_name,
                 "raw_ecg",
                 sensor_timestamp_ns,
+                samples.len(),
                 samples.iter().map(|value| *value as f32),
             );
         }
@@ -115,10 +121,10 @@ impl OutputRouter {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
-        if inner.config.includes("raw_acc") {
+        if inner.selected.contains("raw_acc") {
             inner.lsl.push_accelerometer(samples);
-            if let Some(osc) = &inner.osc {
-                osc.send_accelerometer(&inner.config.stream_name, sensor_timestamp_ns, samples);
+            if let Some(osc) = &mut inner.osc {
+                osc.send_accelerometer(sensor_timestamp_ns, samples);
             }
         }
     }
@@ -128,18 +134,13 @@ impl OutputRouter {
             return;
         };
         for metric in values {
-            if !inner.config.includes(metric.id) {
+            if !inner.selected.contains(metric.id) {
                 continue;
             }
             let value = inner.transform(metric.id, metric.value);
             inner.lsl.push_scalar(metric.id, value);
-            if let Some(osc) = &inner.osc {
-                osc.send_series(
-                    &inner.config.stream_name,
-                    metric.id,
-                    0,
-                    std::iter::once(value),
-                );
+            if let Some(osc) = &mut inner.osc {
+                osc.send_series(metric.id, 0, 1, std::iter::once(value));
             }
         }
     }
