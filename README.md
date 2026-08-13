@@ -9,6 +9,12 @@ its scientific definition, interpretation limits, evidence level, cited source,
 and exact stream-name preview; an explicit **Save output** action then adds that
 single module to the enabled LSL and/or OSC publisher.
 
+Every library row also contains an SVG thumbnail of its expected output shape.
+Selecting the row opens a larger, smoothly looped preview generated at development
+time from deterministic NeuroKit2 ECGSYN ECG and respiratory signals. These are
+illustrative synthetic traces, not example participant norms, algorithm validation,
+or diagnostic data; the app labels that limitation beside every expanded preview.
+
 Every output module has a saved visualizer window and, where meaningful,
 normalization controls. The four-state ACC breath classifier adds its own PCA
 calibration, smoothing, threshold, inversion, adaptive-bound and stale-signal
@@ -75,7 +81,9 @@ Acquisition and publication stay native in Rust:
 - `apps/polar-stream`: thin Tauri coordinator and three-panel UI.
 
 See [the architecture notes](apps/polar-stream/ARCHITECTURE.md) for the data path
-and latency policy. Scientific definitions, formula caveats, and the full
+and latency policy, and [the Tauri assessment](docs/tauri-assessment.md) for the
+evidence-based Rust/Tauri decision and its limits. Scientific definitions,
+formula caveats, and the full
 legacy-output mapping are in [the metric evidence inventory](docs/metric-evidence.md).
 
 ## Develop
@@ -90,15 +98,26 @@ cargo run -p polar-stream
 ```
 
 Visual validation uses a deterministic Playwright renderer, never a connected
-sensor or the running desktop app. It renders every breath-class target and the
-settings workflow in a background Chromium engine, checks canvas geometry,
-color, labels and saved controls, and writes review images under
+sensor or the running desktop app. It renders every breath-class target, the
+settings workflow, and all metric-library SVGs in a background Chromium engine,
+checks canvas geometry, color, labels, saved controls, preview coverage, path
+geometry and finite ranges, and writes review images under
 `artifacts/interface-renderer/`:
 
 ```bash
 npm ci
 npx playwright install chromium
 npm run validate:interface
+```
+
+NeuroKit is a development-only preview generator and is not shipped in the app.
+Regenerate and reproducibly verify the checked-in, dependency-free SVG bundle with:
+
+```bash
+python3 -m venv .venv-previews
+.venv-previews/bin/python -m pip install -r requirements-previews.txt
+.venv-previews/bin/python scripts/generate_metric_previews.py
+.venv-previews/bin/python scripts/generate_metric_previews.py --check
 ```
 
 The browser-only frontend preview contains synthetic data and never runs inside

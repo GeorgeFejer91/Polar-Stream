@@ -126,7 +126,45 @@ try {
   assert.equal(await page.locator("#visual-window-label").textContent(), "Live phase");
   await page.screenshot({ path: join(output, "breathing-phase-settings-saved.png"), fullPage: true });
 
-  process.stdout.write(`Validated ${targets.length} classifier renders and saved controls in ${output}\n`);
+  const library = await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));
+  assert.equal(library.dialogOpen, true, "metric library did not open in the renderer");
+  assert.equal(library.previewCount, library.catalogCount, "generated preview count differs from catalog count");
+  assert.deepEqual(library.missingPreviewIds, [], "one or more catalog metrics lack a generated preview");
+  assert.equal(library.source.library, "NeuroKit2");
+  assert.equal(library.source.version, "0.2.13");
+  assert.equal(library.source.model, "ECGSYN");
+  assert.equal(await page.locator(".metric-option .metric-preview-svg").count(), library.catalogCount);
+  assert.equal(await page.locator(".metric-preview-missing").count(), 0);
+  const coverage = await page.locator(".metric-preview-compact").evaluateAll((figures) => figures.map((figure) => ({
+    id: figure.dataset.metricId,
+    paths: figure.querySelectorAll("path.metric-preview-line").length,
+    pathLength: [...figure.querySelectorAll("path.metric-preview-line")]
+      .reduce((sum, path) => sum + (path.getAttribute("d")?.length || 0), 0),
+    minimum: Number(figure.dataset.minimum),
+    maximum: Number(figure.dataset.maximum),
+  })));
+  assert.equal(new Set(coverage.map((preview) => preview.id)).size, library.catalogCount);
+  for (const preview of coverage) {
+    assert.ok(preview.paths >= 1, `${preview.id} has no generated SVG path`);
+    assert.ok(preview.pathLength > 120, `${preview.id} SVG path was unexpectedly small`);
+    assert.ok(Number.isFinite(preview.minimum) && Number.isFinite(preview.maximum), `${preview.id} has no finite range`);
+    assert.ok(preview.maximum >= preview.minimum, `${preview.id} has an inverted range`);
+  }
+
+  for (const metricId of ["raw_ecg", "raw_acc", "rmssd", "breathing_phase", "excitement_score"]) {
+    await page.locator(`.metric-option:has(.metric-preview[data-metric-id="${metricId}"])`).click();
+    const detail = page.locator(`.metric-preview-large[data-metric-id="${metricId}"]`);
+    assert.equal(await detail.count(), 1, `${metricId} did not render a selected-metric preview`);
+    assert.ok(await detail.locator(".metric-preview-line").count() >= 2, `${metricId} preview path is missing`);
+    assert.equal(await detail.locator("animateTransform").count(), 1, `${metricId} preview is not looped`);
+  }
+  assert.match(await page.locator(".metric-preview-provenance").textContent(), /NeuroKit2 0\.2\.13 · ECGSYN/);
+  assert.match(await page.locator(".metric-preview-note").textContent(), /not expected personal values or validation accuracy/);
+  const previewScreenshot = join(output, "metric-library-previews.png");
+  await page.screenshot({ path: previewScreenshot, fullPage: true });
+  assert.ok((await stat(previewScreenshot)).size > 20_000, "metric library screenshot was unexpectedly empty");
+
+  process.stdout.write(`Validated ${targets.length} classifier renders, saved controls, and ${library.catalogCount} NeuroKit previews in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

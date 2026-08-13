@@ -87,9 +87,26 @@ not to the lifetime of the recording.
 Visual validation uses `scripts/render_interface.mjs`. It serves the production
 HTML, CSS, and JavaScript to headless Chromium and injects deterministic named
 scenarios through `window.PolarInterfaceRenderer`. Classifier labels, circle
-colors and geometry, module controls, and Save behavior are checked without
+colors and geometry, module controls, Save behavior, and all catalog preview
+SVG paths are checked without
 opening the installed desktop app, scanning Bluetooth, or enabling LSL/OSC. CI
-uploads all rendered classifier targets as review artifacts.
+uploads all rendered classifier targets and the metric library as review artifacts.
+
+## Synthetic metric previews
+
+`scripts/generate_metric_previews.py` uses pinned NeuroKit2 development tooling
+to create deterministic ECGSYN ECG and respiratory signals, processes their
+peaks and rates, derives illustrative metric series, and converts each series to
+a compact SVG path. `ui/metric-previews.js` is the generated, checked-in bundle;
+the shipped app loads only that static JavaScript and has no Python, NumPy, or
+NeuroKit runtime dependency. The UI draws static thumbnails for all rows and
+animates only the selected detail preview to keep library rendering inexpensive.
+
+The preview generator parses the native Rust catalog and fails on missing or
+extra IDs. CI regenerates it with the pinned dependency and compares bytes before
+the headless renderer checks all paths and representative animated previews.
+Synthetic previews explain output shape only and are not evidence of accuracy,
+real-world signal quality, expected ranges, or clinical validity.
 
 ## Adding outputs
 
@@ -97,6 +114,7 @@ uploads all rendered classifier targets as review artifacts.
    `crates/polar-h10-metrics/src/catalog.rs`.
 2. Produce a `MetricSample` in an appropriate processor module.
 3. Add or update formula tests in that module and the evidence inventory.
+4. Regenerate `ui/metric-previews.js`; the generator enforces catalog coverage.
 
 The UI and output router consume the same bootstrap catalog, so every registered
 metric automatically receives a stream name, metric-library entry, output card,
