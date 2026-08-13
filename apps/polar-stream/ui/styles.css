@@ -196,10 +196,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .destination-row strong { font-size: 10px; }
 .destination-row small { color: var(--muted); font-size: 8px; line-height: 1.35; }
 .destination-row small.warning { color: #a44535; }
-.browser-local-destination { cursor: default; border-color: #a9c7dc; background: #f2f8fc; }
+.browser-local-destination { align-items: start; cursor: default; border-color: #a9c7dc; background: #f2f8fc; }
 .browser-local-destination:hover { border-color: #a9c7dc; }
 .browser-mark { color: #176a96; background: #dceef8; }
 .local-only-mark { color: #176a96; font-size: 8px; letter-spacing: .12em; }
+.local-only-mark.recording { color: #b13f3f; }
+.local-only-mark.full { color: #a66d19; }
+.browser-destination-copy { min-width: 0; }
+.browser-recorder-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.recorder-button, .recorder-link { min-height: 29px; border-radius: 5px; padding: 0 9px; font-size: 8px; font-weight: 750; }
+.recorder-button { border: 1px solid #86abc5; background: white; color: #176a96; }
+.recorder-button:hover:not(:disabled) { border-color: #176a96; background: #e5f2fa; }
+.recorder-button:disabled { opacity: .52; cursor: default; }
+.recorder-link { border: 0; background: transparent; color: #9c443e; }
+.browser-recorder-count { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .switch-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .switch { position: relative; width: 31px; height: 18px; border-radius: 999px; background: #c8d0cb; transition: background .15s ease; }
 .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgb(0 0 0 / 20%); transition: transform .15s ease; }

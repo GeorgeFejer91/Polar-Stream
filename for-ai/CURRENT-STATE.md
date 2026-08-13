@@ -50,6 +50,11 @@ Last verified: 2026-08-13
   metrics, and visualization run without a localhost companion, installed
   helper, or remote relay. Native LSL/OSC destinations are hidden in browser
   mode and remain available only in the separately installed desktop app.
+- Pages has a browser-native live/recording destination. Every un-decimated
+  input batch is available through a same-tab event and same-origin
+  `BroadcastChannel`; selected outputs can be captured to a timestamped CSV.
+  The recorder stops visibly at 300,000 rows or input disconnect, never grows
+  without a bound, and is automated against mock input and CSV download.
 - The ACC breathing add/adjust workflows expose axes, smoothing, sensitivity,
   direction, calibration window/range, stale timeout, adaptive bounds/window,
   and robust quantiles. `docs/acc-breathing-handoff.md` documents provenance,
@@ -87,6 +92,9 @@ Last verified: 2026-08-13
 - Ordinary browser tabs do not publish LSL or OSC because they cannot open the
   raw UDP discovery/multicast and TCP/UDP sockets those protocols require. The
   browser workflow deliberately does not emulate them through another transport.
+- Browser CSV and the same-origin live channel are not discoverable by native
+  LabRecorder and do not provide cross-device clock synchronization. Use the
+  installed app when native LSL is a requirement.
 - Breathing phase sensitivity is currently applied to normalized change per ACC
   notification batch, not change per second. BLE batch cadence can therefore
   affect classification and must be corrected/versioned before cross-platform

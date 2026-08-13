@@ -16,6 +16,9 @@ items into the dated history instead of silently deleting them.
      destinations and do not depend on a companion, wrapper, or relay.
    - Keep direct browser H10 support feature-detected and permission-gated;
      preserve mock fallback everywhere.
+   - Keep the browser live channel and CSV recorder self-contained, bounded,
+     visibly stopped on capacity/disconnect, and explicit that they are not
+     discoverable native LSL outlets.
    - Deploy after successful changes to `main`, and fail CI if the staged Pages
      artifact or browser runtime drifts from the desktop UI.
    - Cover desktop Chromium and smartphone layouts down to 320 CSS pixels,
@@ -69,6 +72,10 @@ items into the dated history instead of silently deleting them.
 - 2026-08-13: superseded and removed the browser-to-LSL companion so the Pages
   workflow is fully self-contained; native LSL/OSC are hidden in browser mode
   and remain installed-app features.
+- 2026-08-13: added a from-scratch browser session outlet: exact incoming event
+  batches are available within the browser, while selected ECG/ACC/metric rows
+  can be recorded and downloaded as bounded timestamped CSV without a server,
+  helper, or native wrapper.
 - 2026-08-13: production hardening, stacked raw X/Y/Z acceleration, and the
   ECG/ACC output-library redesign passed cross-platform CI and merged in PR #5.
 - 2026-08-13: simplified the output library around an ECG/ACC family selector,

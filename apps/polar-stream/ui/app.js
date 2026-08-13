@@ -3,12 +3,14 @@
 
   const runtime = window.PolarRuntimeApi;
   const isNative = runtime.isNative;
+  const browserSession = window.PolarBrowserSession;
   const preferences = window.PolarPreferences;
   let metricPreviews = null;
   let metricPreviewsPromise = null;
   const isInterfaceRenderer = new URLSearchParams(window.location.search).has("renderer");
   const svgNamespace = "http://www.w3.org/2000/svg";
   let metricPreviewSequence = 0;
+  let browserRecorderCapacityNotified = false;
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
@@ -146,7 +148,8 @@
     "metric-family-toggle", "metric-family-context", "metric-family-note",
     "adjust-visual", "visual-window-label", "visual-scale-label", "module-dialog", "module-dialog-title",
     "module-dialog-intro", "module-settings", "module-dialog-status", "save-module-settings",
-    "pipeline-title", "pipeline-detail",
+    "pipeline-title", "pipeline-detail", "browser-record-button", "browser-export-button",
+    "browser-discard-button", "browser-recorder-count", "browser-recorder-status",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
   const signalContext = elements["signal-canvas"].getContext("2d", {
@@ -376,6 +379,7 @@
     renderOutputs();
     installInteractions();
     await configureOutputs({ quiet: true });
+    if (runtime.isBrowser && browserSession) browserSession.subscribe(renderBrowserRecorder);
     resizeCanvas();
     if (!isInterfaceRenderer) requestRender();
     if (app.preferences.lastDevice
@@ -390,6 +394,46 @@
     elements["disconnect-button"].addEventListener("click", disconnectDevice);
     elements["lsl-toggle"].addEventListener("change", configureOutputs);
     elements["osc-toggle"].addEventListener("change", configureOutputs);
+    if (runtime.isBrowser && browserSession) {
+      elements["browser-record-button"].addEventListener("click", () => {
+        const status = browserSession.status();
+        try {
+          if (status.state === "recording") {
+            browserSession.stop("user");
+            addActivity("Browser recording stopped");
+            toast("Recording stopped · download the CSV before closing this tab");
+          } else {
+            browserSession.start({
+              deviceName: elements["device-name"].textContent,
+              inputKind: app.currentInputKind || "browser",
+            });
+            addActivity("Browser recording started");
+            toast("Recording selected outputs in this tab");
+          }
+        } catch (error) {
+          toast(error.message || String(error), true);
+        }
+      });
+      elements["browser-export-button"].addEventListener("click", () => {
+        try {
+          const filename = browserSession.download();
+          addActivity(`Downloaded ${filename}`);
+          toast(`Saved ${filename}`);
+        } catch (error) {
+          toast(error.message || String(error), true);
+        }
+      });
+      elements["browser-discard-button"].addEventListener("click", () => {
+        if (!window.confirm("Discard the browser recording? It cannot be recovered after this tab closes.")) return;
+        browserSession.discard();
+        addActivity("Browser recording discarded");
+      });
+      window.addEventListener("beforeunload", (event) => {
+        if (browserSession.status().state !== "recording") return;
+        event.preventDefault();
+        event.returnValue = "";
+      });
+    }
 
     let nameTimer;
     elements["stream-name"].addEventListener("input", () => {
@@ -756,7 +800,37 @@
       renderMetricOptions();
     }
     renderOutputs();
+    if (runtime.isBrowser && browserSession) renderBrowserRecorder(browserSession.status());
     markTelemetryDirty();
+  }
+
+  function renderBrowserRecorder(status) {
+    if (!runtime.isBrowser || !status) return;
+    const recording = status.state === "recording";
+    const stopped = status.state === "stopped";
+    elements["browser-record-button"].disabled = !app.connected && !recording;
+    elements["browser-record-button"].textContent = recording ? "Stop recording" : "Start recording";
+    if (stopped && status.hasData) elements["browser-record-button"].disabled = true;
+    elements["browser-export-button"].disabled = !stopped || !status.hasData;
+    elements["browser-discard-button"].hidden = !stopped || !status.hasData;
+    elements["browser-recorder-status"].textContent = recording
+      ? "REC"
+      : status.stopReason === "capacity" ? "FULL" : stopped ? "FILE" : "READY";
+    elements["browser-recorder-status"].classList.toggle("recording", recording);
+    elements["browser-recorder-status"].classList.toggle("full", status.stopReason === "capacity");
+    elements["browser-recorder-count"].textContent = recording
+      ? `${status.rowCount.toLocaleString()} / ${status.maxRows.toLocaleString()} rows captured`
+      : status.stopReason === "capacity"
+        ? `File limit reached at ${status.rowCount.toLocaleString()} rows · download now`
+        : stopped
+          ? `${status.rowCount.toLocaleString()} rows ready to download`
+          : `Ready · up to ${status.maxRows.toLocaleString()} rows per file`;
+    if (status.stopReason === "capacity" && !browserRecorderCapacityNotified) {
+      browserRecorderCapacityNotified = true;
+      toast("Browser recording reached its safe file limit. Download it before starting another.", true);
+    } else if (status.stopReason !== "capacity") {
+      browserRecorderCapacityNotified = false;
+    }
   }
 
   function ingestEcg(values) {
@@ -1736,6 +1810,12 @@
     try {
       const health = await runtime.updateOutputConfig(config);
       if (sequence !== app.outputSequence) return;
+      if (runtime.isBrowser && browserSession) {
+        browserSession.configure({
+          ...config,
+          metricUnits: Object.fromEntries(app.catalog.map((metric) => [metric.id, metric.unit])),
+        });
+      }
       app.streamName = health.streamName || streamName;
       elements["stream-name"].value = app.streamName;
       config.streamName = app.streamName;

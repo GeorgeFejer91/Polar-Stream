@@ -10,6 +10,7 @@
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="stylesheet" href="styles.css" />
     <script src="polar-web-bluetooth.js" defer></script>
+    <script src="browser-session.js" defer></script>
     <script src="runtime-api.js" defer></script>
     <script src="preferences.js" defer></script>
     <script src="app.js" defer></script>
@@ -124,8 +125,17 @@
           <div class="mini-heading"><strong>Make available through</strong><span>Optional</span></div>
           <div class="destination-row browser-local-destination" id="browser-local-destination" hidden>
             <span class="protocol-mark browser-mark">WEB</span>
-            <span><strong>Browser-only session</strong><small>Bluetooth, processing and visualization stay in this tab</small></span>
-            <strong class="local-only-mark">LOCAL</strong>
+            <span class="browser-destination-copy">
+              <strong>Browser session + live channel</strong>
+              <small>Bluetooth, processing and recording stay in this site; download CSV before closing the tab.</small>
+              <span class="browser-recorder-controls">
+                <button class="recorder-button" id="browser-record-button" type="button" disabled>Start recording</button>
+                <button class="recorder-button" id="browser-export-button" type="button" disabled>Download CSV</button>
+                <button class="recorder-link" id="browser-discard-button" type="button" hidden>Discard</button>
+              </span>
+              <small class="browser-recorder-count" id="browser-recorder-count">Ready · up to 300,000 rows per file</small>
+            </span>
+            <strong class="local-only-mark" id="browser-recorder-status">READY</strong>
           </div>
           <label class="destination-row" id="lsl-destination-row">
             <span class="protocol-mark lsl-mark">LSL</span>

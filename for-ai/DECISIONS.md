@@ -1,5 +1,21 @@
 # Decision log
 
+## 2026-08-13 — Pages records and shares browser events without claiming LSL
+
+The self-contained Pages path exposes every exact browser input batch through a
+same-tab `polar-stream-data` event and same-origin `polar-stream-live-v1`
+`BroadcastChannel`. It also records the currently selected outputs to a local
+CSV before visualization decimation. Raw units are retained and device sample
+times are reconstructed from PMD frame timestamps when present.
+
+This path is implemented from scratch in the canonical UI and requires no
+localhost service, remote relay, browser extension, or installed wrapper. Its
+in-memory file is capped at 300,000 rows, stops visibly at capacity or input
+disconnect, and must be downloaded before the tab closes. The browser event,
+BroadcastChannel, and CSV are not LSL: native discovery and LabRecorder
+interoperability remain installed-app capabilities because a normal Pages tab
+cannot open LSL's multicast UDP and general TCP/UDP sockets.
+
 ## 2026-08-13 — GitHub Pages is a self-contained browser application
 
 This supersedes the paired browser-to-native LSL decision below. The browser

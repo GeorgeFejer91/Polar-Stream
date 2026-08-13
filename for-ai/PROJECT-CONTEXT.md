@@ -30,6 +30,9 @@ for direct H10 ECG/ACC/HR/RR input in supported secure Chromium contexts. A
 Pages session has no LSL/OSC publisher or paired mode: the runtime is
 intentionally self-contained and does not call a localhost companion, native
 wrapper, or remote relay. Native LSL/OSC remain separate installed-app features.
+Pages can instead expose exact batches to same-tab/same-origin browser code and
+record selected outputs to a bounded local CSV. These browser mechanisms are
+never labeled LSL and are not discoverable by native LabRecorder.
 This does not replace or enter the authoritative native H10 path.
 The Pages artifact must be built from the canonical UI tree; a
 separately maintained browser-interface copy is not allowed.
@@ -63,7 +66,8 @@ operational contract for that ordering.
   H10 adapter is experimental, permission-gated, local to the tab, and limited
   to raw ECG/ACC, HR/RR, and the two unvalidated ACC breathing outputs. Browser
   LSL/OSC are unavailable and hidden because the self-contained Pages runtime
-  cannot open the native sockets those protocols require.
+  cannot open the native sockets those protocols require. Browser recording
+  must remain bounded and surface capacity/disconnect stops visibly.
 - The NeuroKit mock input is also available offline in the installed app so the
   interface remains explorable without a Polar device. It must not enter or
   weaken the authoritative native acquisition/publication path.

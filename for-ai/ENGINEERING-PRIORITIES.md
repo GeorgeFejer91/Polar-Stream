@@ -138,6 +138,10 @@ copies, synchronization, serialization, or higher render cadence.
 - Do not add a localhost companion, installed helper, remote relay, or renamed
   WebSocket/HTTP protocol to make Pages appear to publish LSL. A genuine native
   LSL requirement belongs to the separately installed app.
+- Browser-native capture may expose exact input batches through same-tab or
+  same-origin browser APIs and may export selected outputs locally, but its
+  memory/storage queue must be bounded, overflow must stop or surface visibly,
+  and neither mechanism may be named or documented as native LSL.
 
 ## Review and definition of done
 
