@@ -6,7 +6,6 @@
   const isRenderer = new URLSearchParams(window.location.search).has("renderer");
   const mode = isNative ? "native" : isRenderer ? "renderer" : "browser-demo";
   const webBluetooth = window.PolarWebBluetooth;
-  const browserLslBridge = window.PolarBrowserLslBridge;
   const mockDevice = Object.freeze({
     id: "neurokit-mock",
     name: "NeuroKit simulated input",
@@ -39,7 +38,6 @@
 
   function deliverInputEvent(callback, event) {
     callback(event);
-    if (mode === "browser-demo") browserLslBridge?.publish(event);
   }
 
   function browserBluetoothModule() {
@@ -242,14 +240,6 @@
     isBrowserBluetoothDevice(deviceId) {
       return mode === "browser-demo" && deviceId === (webBluetooth?.moduleId || "web-bluetooth-polar-h10");
     },
-    browserLslBridgeStatus() {
-      return browserLslBridge?.status() || {
-        paired: false,
-        connected: false,
-        enabled: false,
-        health: "The browser LSL bridge adapter did not load.",
-      };
-    },
     outputSupport(metricId, inputKind) {
       if (inputKind !== "web-bluetooth" || browserBluetoothOutputs.has(metricId)) {
         return { supported: true, reason: null };
@@ -267,7 +257,6 @@
     },
     async getBootstrap(fallback) {
       if (isNative) return invoke("get_bootstrap");
-      if (mode === "browser-demo") await browserLslBridge?.initialize();
       return { ...fallback, platform: "browser demo" };
     },
     async migrateLegacyPreferences(legacy) {
@@ -319,18 +308,10 @@
       demo.outputs = new Set(config.outputs || []);
       if (activeInput === "web-bluetooth") webBluetooth.updateConfig(config);
       if (!isNative) {
-        if (mode === "browser-demo") {
-          const bridgeHealth = await browserLslBridge.configure(config);
-          return {
-            streamName: bridgeHealth.streamName || config.streamName,
-            lsl: config.lslEnabled ? `Desktop bridge · ${bridgeHealth.lsl}` : browserLslBridge.status().health,
-            osc: "Desktop app only · browser OSC is unavailable",
-          };
-        }
         return {
           streamName: config.streamName,
-          lsl: "Off",
-          osc: "Off",
+          lsl: "Not part of browser-only mode",
+          osc: "Not part of browser-only mode",
         };
       }
       if (activeInput === "mock") {
@@ -341,15 +322,6 @@
         };
       }
       return invoke("update_output_config", { config });
-    },
-    async openBrowserLslBridge() {
-      if (!isNative) {
-        throw new RuntimeError(
-          "BROWSER_LSL_BRIDGE_NATIVE_REQUIRED",
-          "Open this action in the installed Polar Stream app.",
-        );
-      }
-      return invoke("open_browser_lsl_bridge");
     },
     async openMetricCitation(metricId, url) {
       if (isNative) return invoke("open_metric_citation", { metricId });

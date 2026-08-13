@@ -56,24 +56,15 @@ configuration, and visualization behavior only; it is not recorded Polar data,
 device or algorithm validation. By itself it does not open BLE, LSL, or OSC
 connections.
 
-Ordinary browser tabs cannot implement LSL's native discovery/data sockets. The
-installed app therefore provides an explicit **Open browser with authenticated
-LSL bridge** action below the LSL destination. It starts a loopback-only native
-companion, opens the canonical Pages site with an ephemeral secret in the URL
-fragment, and the page removes that fragment immediately after pairing. Keep
-the app open, allow Chromium's local-network permission, then enable LSL on the
-page. Web Bluetooth or the visibly synthetic mock input can then feed real
-native liblsl outlets through bounded, ordered notification batches. A page
-opened normally remains unpaired and keeps LSL disabled; browser OSC remains
-unavailable. Reopening the paired workflow replaces the old secret, and one
-authenticated browser tab owns each launch so copied tabs cannot mix samples.
+The browser demo is deliberately self-contained: Bluetooth acquisition, mock
+replay, selected browser-supported metrics, and visualization all run in the
+tab without Tauri, Python, a localhost service, or another installed process.
+LSL and OSC are not shown as browser destinations because ordinary web pages
+cannot open the raw UDP discovery/multicast and TCP/UDP sockets those native
+protocols require. Native LSL/OSC remain features of the separately installed
+desktop app; the website does not relay data to it and does not label a
+WebSocket or HTTP transport as LSL.
 
-The LSL companion is a same-computer desktop workflow. A phone can run the
-responsive mock or experimental Web Bluetooth interface, but it cannot reach a
-desktop process through the phone's loopback address and therefore cannot emit
-LSL without a native companion installed on that phone. See the
-[browser LSL bridge handoff](docs/browser-lsl-bridge.md) for the exact boundary,
-security model, and timing limits.
 GitHub Pages is rebuilt from the canonical UI after changes land on `main`, and
 CI checks byte-for-byte asset parity plus desktop, 390px, and 320px layouts.
 
@@ -127,14 +118,13 @@ Acquisition and publication stay native in Rust:
 - `polar-h10-metrics`: independent ECG, HRV, coherence, breathing, complexity,
   and experimental processors plus the evidence-backed metric catalog.
 - `polar-h10-output`: LSL/OSC naming and publication.
-- `apps/polar-stream`: thin Tauri coordinator, authenticated browser-to-LSL
-  loopback companion, and three-panel UI.
+- `apps/polar-stream`: thin Tauri coordinator and shared three-panel UI.
 
 Derived processors are demand-driven by the selected output set. Raw batches are
 published immediately in Rust; no timer-based batching is added, and a bounded
 display-only queue prevents a slow WebView from delaying LSL or OSC.
 Native preferences are stored by one schema-versioned Rust service, and the
-frontend reaches the eight-command IPC surface only through a small runtime
+frontend reaches the seven-command IPC surface only through a small runtime
 adapter with stable error objects.
 
 See [the architecture notes](apps/polar-stream/ARCHITECTURE.md) for the data path

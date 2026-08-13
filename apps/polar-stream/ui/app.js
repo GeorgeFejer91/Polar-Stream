@@ -137,8 +137,8 @@
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value",
     "scan-button", "scan-caption", "device-list", "activity-list", "output-state", "raw-ecg-value",
-    "raw-acc-x", "raw-acc-y", "raw-acc-z", "ecg-spark", "stream-name", "lsl-toggle", "osc-toggle",
-    "lsl-detail", "osc-detail", "open-browser-lsl-bridge", "included-count", "output-chips", "open-output-dialog", "visual-source",
+    "raw-acc-x", "raw-acc-y", "raw-acc-z", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle",
+    "lsl-detail", "osc-detail", "lsl-destination-row", "osc-destination-row", "browser-local-destination", "included-count", "output-chips", "open-output-dialog", "visual-source",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
     "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "dialog-output-status", "save-metric-output", "toast-region",
@@ -281,13 +281,13 @@
     if (transport === "web-bluetooth") {
       elements["runtime-path-label"].textContent = "Browser Bluetooth · experimental";
       elements["pipeline-title"].textContent = "Acquisition stays in this tab";
-      elements["pipeline-detail"].textContent = "Chromium reads H10 ECG, ACC, HR and RR directly. Use the desktop app when native LSL or OSC output is required.";
+      elements["pipeline-detail"].textContent = "Chromium reads H10 ECG, ACC, HR and RR directly. No companion or installed process is used.";
       return;
     }
     if (runtime.isBrowser) {
       elements["runtime-path-label"].textContent = "Browser-local inputs";
       elements["pipeline-title"].textContent = "Choose live or simulated input";
-      elements["pipeline-detail"].textContent = "Connect an H10 with Chromium Web Bluetooth, or run the same interface with the offline NeuroKit fixture.";
+      elements["pipeline-detail"].textContent = "Connect an H10 with Chromium Web Bluetooth, or run the offline NeuroKit fixture. All processing stays in this tab.";
       return;
     }
     elements["runtime-path-label"].textContent = "Native data path";
@@ -346,14 +346,14 @@
     elements["lsl-toggle"].checked = Boolean(initialConfig.lslEnabled);
     elements["osc-toggle"].checked = Boolean(initialConfig.oscEnabled);
     if (runtime.isBrowser) {
-      const bridge = runtime.browserLslBridgeStatus();
-      elements["lsl-toggle"].checked = Boolean(initialConfig.lslEnabled && bridge.connected);
+      elements["lsl-toggle"].checked = false;
       elements["osc-toggle"].checked = false;
-      elements["lsl-toggle"].disabled = !bridge.connected;
+      elements["lsl-toggle"].disabled = true;
       elements["osc-toggle"].disabled = true;
-      elements["lsl-detail"].textContent = bridge.health;
-    } else if (isNative) {
-      elements["open-browser-lsl-bridge"].hidden = false;
+      elements["lsl-destination-row"].hidden = true;
+      elements["osc-destination-row"].hidden = true;
+      elements["browser-local-destination"].hidden = false;
+      elements["stream-name-label"].textContent = "Signal base name";
     }
     document.body.dataset.runtime = runtime.mode;
     elements["platform-label"].textContent = isInterfaceRenderer ? "RENDERER" : String(bootstrap.platform || "local").toUpperCase();
@@ -390,22 +390,6 @@
     elements["disconnect-button"].addEventListener("click", disconnectDevice);
     elements["lsl-toggle"].addEventListener("change", configureOutputs);
     elements["osc-toggle"].addEventListener("change", configureOutputs);
-    elements["open-browser-lsl-bridge"].addEventListener("click", async () => {
-      try {
-        await runtime.openBrowserLslBridge();
-        toast("Authenticated browser demo opened. Keep this app running while the page publishes LSL.");
-      } catch (error) {
-        toast(runtime.formatError(error), true);
-      }
-    });
-    window.addEventListener("polar-browser-lsl-status", (event) => {
-      if (!runtime.isBrowser) return;
-      const bridge = event.detail || runtime.browserLslBridgeStatus();
-      elements["lsl-toggle"].disabled = !bridge.connected;
-      if (!bridge.connected) elements["lsl-toggle"].checked = false;
-      elements["lsl-detail"].textContent = bridge.health;
-      elements["lsl-detail"].classList.toggle("warning", Boolean(bridge.lastError || bridge.droppedEvents));
-    });
 
     let nameTimer;
     elements["stream-name"].addEventListener("input", () => {
@@ -1671,8 +1655,9 @@
       return;
     }
     const extra = names.length > 2 ? ` · +${names.length - 2} more` : "";
+    const prefix = runtime.isBrowser ? "Available in this tab" : "Publishes";
     elements["stream-name-preview"].textContent = names.length
-      ? `Publishes ${names.slice(0, 2).join(" · ")}${extra}`
+      ? `${prefix} ${names.slice(0, 2).join(" · ")}${extra}`
       : "No outputs are currently selected.";
   }
 
@@ -1742,8 +1727,8 @@
     app.streamName = streamName;
     const config = {
       streamName,
-      lslEnabled: elements["lsl-toggle"].checked,
-      oscEnabled: elements["osc-toggle"].checked,
+      lslEnabled: runtime.isBrowser ? false : elements["lsl-toggle"].checked,
+      oscEnabled: runtime.isBrowser ? false : elements["osc-toggle"].checked,
       outputs: [...app.outputs],
       metricOptions: Object.fromEntries([...app.outputs].map((id) => [id, metricOptionFor(id)])),
     };

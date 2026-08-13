@@ -132,14 +132,12 @@ copies, synchronization, serialization, or higher render cadence.
 - Web Bluetooth is not a portability assumption. The browser H10 path is an
   explicit experimental adapter with secure-context, permission,
   browser-support, PMD protocol, and physical-device validation boundaries.
-  It must stay feature-detected and may reach LSL only through the explicit
-  token-authenticated, loopback-only companion with bounded observable queues.
-  Browser OSC stays unavailable. Neither browser transport may weaken or enter
-  the native authoritative data path.
-- Treat browser-to-loopback publication as a separate, slower acquisition path:
-  exact origin/Host/token checks, Chromium Local Network Access permission,
-  request/body/concurrency limits, one in-flight page request, explicit drop
-  counts, and same-computer scope are stable safety contracts.
+  It must stay feature-detected and self-contained. Browser LSL/OSC stay
+  unavailable and hidden; neither browser input may weaken or enter the native
+  authoritative data path.
+- Do not add a localhost companion, installed helper, remote relay, or renamed
+  WebSocket/HTTP protocol to make Pages appear to publish LSL. A genuine native
+  LSL requirement belongs to the separately installed app.
 
 ## Review and definition of done
 
