@@ -3,10 +3,11 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
-const root = normalize(new URL("../apps/polar-stream/ui/", import.meta.url).pathname);
-const output = normalize(new URL("../artifacts/interface-renderer/", import.meta.url).pathname);
+const root = normalize(fileURLToPath(new URL("../apps/polar-stream/ui/", import.meta.url)));
+const output = normalize(fileURLToPath(new URL("../artifacts/interface-renderer/", import.meta.url)));
 const targets = [
   ["breathing-phase-inhale", "INHALE", [22, 130, 89]],
   ["breathing-phase-exhale", "EXHALE", [209, 122, 40]],

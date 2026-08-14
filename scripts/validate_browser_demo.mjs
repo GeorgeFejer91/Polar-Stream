@@ -4,11 +4,14 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
-const repository = normalize(new URL("../", import.meta.url).pathname);
-const root = normalize(new URL("../artifacts/browser-demo/", import.meta.url).pathname);
-const output = normalize(new URL("../artifacts/browser-demo-validation/", import.meta.url).pathname);
+const repository = normalize(fileURLToPath(new URL("../", import.meta.url)));
+const root = normalize(fileURLToPath(new URL("../artifacts/browser-demo/", import.meta.url)));
+const output = normalize(
+  fileURLToPath(new URL("../artifacts/browser-demo-validation/", import.meta.url)),
+);
 const mime = new Map([
   [".html", "text/html; charset=utf-8"],
   [".json", "application/json; charset=utf-8"],
@@ -319,7 +322,8 @@ try {
   const audioWav = join(output, "audio-data-link-fixture.wav");
   const decodedAudioCsv = join(output, "audio-data-link-fixture.decoded.csv");
   await writeFile(audioWav, stereoPcmWav(audioFixture.left, audioFixture.right, 44_100));
-  const decoder = spawnSync("python3", [
+  const python = process.env.PYTHON || (process.platform === "win32" ? "python" : "python3");
+  const decoder = spawnSync(python, [
     join(repository, "scripts/decode_audio_data.py"),
     audioWav,
     "--output",
