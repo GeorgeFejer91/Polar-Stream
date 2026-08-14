@@ -159,6 +159,7 @@ async function installFakeWebBluetooth(page) {
       async connect() { server.connected = true; return server; },
     };
     let cancelNextChooser = false;
+    let disableNextChooser = false;
     Object.defineProperty(navigator, "bluetooth", {
       configurable: true,
       value: {
@@ -167,6 +168,10 @@ async function installFakeWebBluetooth(page) {
           if (cancelNextChooser) {
             cancelNextChooser = false;
             throw new DOMException("User cancelled the chooser", "NotFoundError");
+          }
+          if (disableNextChooser) {
+            disableNextChooser = false;
+            throw new DOMException("Web Bluetooth API globally disabled.", "NotFoundError");
           }
           return device;
         },
@@ -193,6 +198,7 @@ async function installFakeWebBluetooth(page) {
       wakeLockRequests: [],
       lastRequest: null,
       cancelNextChooser() { cancelNextChooser = true; },
+      disableNextChooser() { disableNextChooser = true; },
       emitPmd(bytes) { characteristics.pmd.emit(bytes); },
       emitHeartRate(bytes) { characteristics.heartRate.emit(bytes); },
     };
@@ -338,6 +344,13 @@ try {
   assert.match(await bluetooth.locator("#connection-detail").textContent(), /No sensor was selected/);
   assert.equal(await bluetooth.locator(".toast.error").count(), 0, "chooser cancellation must not create an error toast");
   assert.equal(await bluetooth.locator("#scan-button span").textContent(), "Choose Polar H10");
+  await bluetooth.evaluate(() => window.__polarFake.disableNextChooser());
+  await bluetooth.locator("#scan-button").click();
+  await bluetooth.locator("#input-state").filter({ hasText: "Error" }).waitFor();
+  assert.equal(await bluetooth.locator("#app-state-text").textContent(), "Connection failed");
+  assert.match(await bluetooth.locator("#connection-detail").textContent(), /browser blocks Web Bluetooth/i);
+  assert.equal(await bluetooth.locator(".toast.error").count(), 1, "a browser-level Bluetooth block must be visible as an error");
+  await bluetooth.waitForFunction(() => !document.querySelector(".toast"));
   await bluetooth.locator("#scan-button").click();
   await bluetooth.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
   assert.equal(await bluetooth.locator("#battery-value").textContent(), "87%");

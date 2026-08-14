@@ -44,6 +44,12 @@ The Pages workflow is entirely in-browser and never connects to a localhost
 companion; native destinations are hidden instead of presented as unavailable
 switches.
 
+Desktop Brave on Linux disables Web Bluetooth. Its Chromium feature switch may
+make `navigator.bluetooth` visible while the chooser remains blocked, so Linux
+desktop hardware tests require Chrome or Chromium with **Experimental Web
+Platform features** enabled. Brave on Android is a separate implementation and
+must be evaluated through the physical-phone acceptance procedure.
+
 Chrome on Android can use this foreground path. The adapter requests a screen
 wake lock while visible, but neither Pages nor an installed PWA can guarantee
 capture after Android hides/freezes/discards the page or locks the screen; Web

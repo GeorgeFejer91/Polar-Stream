@@ -424,14 +424,25 @@
       return { supported: false, reason: "Web Bluetooth requires HTTPS or localhost." };
     }
     if (typeof navigator.bluetooth?.requestDevice !== "function") {
-      return { supported: false, reason: "Use Chrome or Edge with Web Bluetooth support." };
+      return {
+        supported: false,
+        reason: "Web Bluetooth is unavailable in this browser. On Linux, use Chrome or Chromium with Experimental Web Platform features enabled.",
+      };
     }
     return { supported: true, reason: "Chromium Web Bluetooth · experimental" };
   }
 
   function normalizeBrowserError(error) {
     if (error instanceof WebBluetoothError) return error;
+    const browserMessage = String(error?.message || "");
     if (error?.name === "NotFoundError") {
+      if (/globally disabled|permission (?:has been |is )?blocked/i.test(browserMessage)) {
+        return new WebBluetoothError(
+          "WEB_BLUETOOTH_DISABLED",
+          "This browser blocks Web Bluetooth. On Linux, use Chrome or Chromium with Experimental Web Platform features enabled.",
+          true,
+        );
+      }
       return new WebBluetoothError("BLUETOOTH_CHOOSER_CANCELLED", "No Polar H10 was selected.", true);
     }
     if (error?.name === "SecurityError" || error?.name === "NotAllowedError") {
