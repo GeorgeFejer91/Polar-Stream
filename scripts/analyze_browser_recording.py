@@ -252,7 +252,7 @@ def analyze_recording(path: Path, limits: AcceptanceLimits = AcceptanceLimits())
         },
         "errors": errors,
         "manualEvidenceStillRequired": [
-            "ordinary Brave tab and public GitHub Pages URL visible",
+            "ordinary Google Chrome tab and public GitHub Pages URL visible",
             "physical H10 selected in Android chooser",
             "no malformed-frame error or unexpected disconnect",
             "reconnect produces data within five seconds without duplicate subscriptions",

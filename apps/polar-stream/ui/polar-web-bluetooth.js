@@ -419,15 +419,25 @@
     }
   }
 
+  function unavailableMessage(blocked = false) {
+    const prefix = blocked
+      ? "This browser blocks Web Bluetooth."
+      : "Web Bluetooth is unavailable in this browser.";
+    if (/Android/i.test(navigator.userAgent)) {
+      return `${prefix} Open this site in Google Chrome on Android.`;
+    }
+    if (/Linux/i.test(navigator.userAgentData?.platform || navigator.platform || navigator.userAgent)) {
+      return `${prefix} On Linux, use Chrome or Chromium with Experimental Web Platform features enabled.`;
+    }
+    return `${prefix} Use a Chrome or Edge browser with Web Bluetooth support.`;
+  }
+
   function supportStatus() {
     if (!window.isSecureContext) {
       return { supported: false, reason: "Web Bluetooth requires HTTPS or localhost." };
     }
     if (typeof navigator.bluetooth?.requestDevice !== "function") {
-      return {
-        supported: false,
-        reason: "Web Bluetooth is unavailable in this browser. On Linux, use Chrome or Chromium with Experimental Web Platform features enabled.",
-      };
+      return { supported: false, reason: unavailableMessage() };
     }
     return { supported: true, reason: "Chromium Web Bluetooth · experimental" };
   }
@@ -439,7 +449,7 @@
       if (/globally disabled|permission (?:has been |is )?blocked/i.test(browserMessage)) {
         return new WebBluetoothError(
           "WEB_BLUETOOTH_DISABLED",
-          "This browser blocks Web Bluetooth. On Linux, use Chrome or Chromium with Experimental Web Platform features enabled.",
+          unavailableMessage(true),
           true,
         );
       }

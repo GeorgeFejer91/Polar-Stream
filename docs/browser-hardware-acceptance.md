@@ -2,8 +2,8 @@
 
 This procedure is the release-blocking browser test for Polar Stream. A pass
 must use the exact public site at
-<https://georgefejer91.github.io/Polar-Stream/> in an ordinary Brave tab on the
-Motorola phone. Localhost, Tauri, ADB, remote debugging, fake GATT, and the
+<https://georgefejer91.github.io/Polar-Stream/> in an ordinary Google Chrome tab
+on the Motorola phone. Localhost, Tauri, ADB, remote debugging, fake GATT, and the
 NeuroKit input cannot produce a hardware pass.
 
 Record the exact deployment before touching the phone:
@@ -25,7 +25,7 @@ Last-Modified values, and writes ignored JSON evidence under
    server, or private-network relay during acquisition.
 3. Disconnect the phone from USB. Disable Wi-Fi and VPN and use cellular data.
 4. Close Polar Beat, Polar Flow, and every other possible H10 Bluetooth consumer.
-5. Clear the GitHub Pages site's Brave storage so the page and chooser permission
+5. Clear the GitHub Pages site's Chrome storage so the page and chooser permission
    are fresh.
 
 Other unrelated computer processes do not participate in the test, but the
@@ -35,13 +35,13 @@ acquisition path.
 
 ## Physical Run
 
-1. Wear and moisten the H10. Start a phone screen recording that shows the Brave
+1. Wear and moisten the H10. Start a phone screen recording that shows the Chrome
    address bar and exact public URL.
 2. Confirm LSL and OSC are absent. Press **Choose Polar H10** and select the
    physical strap in Android's chooser.
 3. Confirm connected state, ECG and ACC activity within five seconds, finite HR
    and RR values, and an increasing sample counter. Battery is optional.
-4. Enable **Save local CSV** and keep Brave visible in the foreground for at
+4. Enable **Save local CSV** and keep Chrome visible in the foreground for at
    least two uninterrupted minutes.
 5. Disable **Save local CSV** to download the recording. Disconnect, reconnect
    through Android's chooser, and observe another 30 seconds of data. First data
@@ -75,5 +75,5 @@ second, finite raw values, plausible HR/RR, and a normal user/export stop.
 
 A CSV pass is not the complete hardware pass. The screen recording or connected
 screenshot and manual reconnect observation still establish chooser identity,
-the ordinary public Brave context, absence of runtime errors, and clean
+the ordinary public Chrome context, absence of runtime errors, and clean
 resubscription.

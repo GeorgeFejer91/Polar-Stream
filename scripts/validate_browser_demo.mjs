@@ -427,6 +427,7 @@ try {
     deviceScaleFactor: 1,
     hasTouch: true,
     isMobile: true,
+    userAgent: "Mozilla/5.0 (Linux; Android 14; Moto G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36",
   });
   await installFakeWebBluetooth(phone);
   await phone.goto(baseUrl, { waitUntil: "networkidle" });
@@ -435,6 +436,11 @@ try {
   assert.ok(panelTops[0] < panelTops[1] && panelTops[1] < panelTops[2], `phone panels are not stacked: ${panelTops}`);
   const scanBox = await phone.locator("#scan-button").boundingBox();
   assert.ok(scanBox.height >= 44, `phone primary action is too short: ${scanBox.height}`);
+  await phone.evaluate(() => window.__polarFake.disableNextChooser());
+  await phone.locator("#scan-button").click();
+  await phone.locator("#input-state").filter({ hasText: "Error" }).waitFor();
+  assert.match(await phone.locator("#connection-detail").textContent(), /Google Chrome on Android/);
+  await phone.waitForFunction(() => !document.querySelector(".toast"));
   await phone.locator('.device-row[data-input-kind="web-bluetooth"]').click();
   await phone.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
   assert.deepEqual(await phone.evaluate(() => window.__polarFake.wakeLockRequests), ["screen"]);

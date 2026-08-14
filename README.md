@@ -48,11 +48,11 @@ platform and is covered by mobile-layout plus emulated-GATT tests here; a
 physical Android/H10 run is still required. Unsupported phones and browsers
 keep the input visible with a compatibility explanation.
 
-Desktop Brave on Linux disables Web Bluetooth and cannot acquire an H10 from
-the Pages site. Enabling Chromium's experimental feature switch may expose the
-JavaScript API while Brave still rejects the chooser. Use Chrome or Chromium
-with **Experimental Web Platform features** enabled for Linux desktop testing.
-This limitation does not imply the same result for Brave on Android.
+Brave disables Web Bluetooth and cannot acquire an H10 from the Pages site on
+the currently tested Linux desktop and Android installations. Its Chromium API
+may be visible while Brave still rejects the chooser. Use Google Chrome on
+Android, or Chrome/Chromium with **Experimental Web Platform features** enabled
+for Linux desktop testing.
 
 While browser Bluetooth is connected, Polar Stream makes a best-effort screen
 wake-lock request. This can keep a visible foreground session awake, but a pure
