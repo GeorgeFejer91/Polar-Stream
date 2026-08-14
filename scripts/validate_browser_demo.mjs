@@ -158,11 +158,16 @@ async function installFakeWebBluetooth(page) {
     device.gatt = {
       async connect() { server.connected = true; return server; },
     };
+    let cancelNextChooser = false;
     Object.defineProperty(navigator, "bluetooth", {
       configurable: true,
       value: {
         async requestDevice(options) {
           window.__polarFake.lastRequest = options;
+          if (cancelNextChooser) {
+            cancelNextChooser = false;
+            throw new DOMException("User cancelled the chooser", "NotFoundError");
+          }
           return device;
         },
       },
@@ -187,6 +192,7 @@ async function installFakeWebBluetooth(page) {
       writes,
       wakeLockRequests: [],
       lastRequest: null,
+      cancelNextChooser() { cancelNextChooser = true; },
       emitPmd(bytes) { characteristics.pmd.emit(bytes); },
       emitHeartRate(bytes) { characteristics.heartRate.emit(bytes); },
     };
@@ -324,7 +330,15 @@ try {
   const webBluetoothRow = bluetooth.locator('.device-row[data-input-kind="web-bluetooth"]');
   assert.match(await webBluetoothRow.textContent(), /EXPERIMENTAL/);
   assert.match(await webBluetoothRow.textContent(), /Choose H10/);
-  await webBluetoothRow.click();
+  assert.equal(await bluetooth.locator("#scan-button span").textContent(), "Choose Polar H10");
+  await bluetooth.evaluate(() => window.__polarFake.cancelNextChooser());
+  await bluetooth.locator("#scan-button").click();
+  await bluetooth.locator("#input-state").filter({ hasText: "Browser ready" }).waitFor();
+  assert.equal(await bluetooth.locator("#app-state-text").textContent(), "Browser inputs ready");
+  assert.match(await bluetooth.locator("#connection-detail").textContent(), /No sensor was selected/);
+  assert.equal(await bluetooth.locator(".toast.error").count(), 0, "chooser cancellation must not create an error toast");
+  assert.equal(await bluetooth.locator("#scan-button span").textContent(), "Choose Polar H10");
+  await bluetooth.locator("#scan-button").click();
   await bluetooth.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
   assert.equal(await bluetooth.locator("#battery-value").textContent(), "87%");
   assert.equal(await bluetooth.locator("#runtime-path-label").textContent(), "Browser Bluetooth · experimental");

@@ -244,10 +244,15 @@
   }
 
   function toast(message, error = false) {
+    const region = elements["toast-region"];
+    const key = `${error ? "error" : "status"}:${message}`;
+    if ([...region.children].some((child) => child.dataset.toastKey === key)) return;
+    while (region.childElementCount >= 3) region.firstElementChild?.remove();
     const node = document.createElement("div");
     node.className = `toast${error ? " error" : ""}`;
+    node.dataset.toastKey = key;
     node.textContent = message;
-    elements["toast-region"].append(node);
+    region.append(node);
     window.setTimeout(() => node.remove(), 4200);
   }
 
@@ -370,7 +375,7 @@
     renderRuntimeContext();
     if (runtime.isDemo) {
       elements["scan-caption"].textContent = "Web Bluetooth or offline mock";
-      elements["scan-button"].querySelector("span").textContent = "Refresh inputs";
+      elements["scan-button"].querySelector("span").textContent = "Choose Polar H10";
     } else if (isInterfaceRenderer) {
       elements["scan-caption"].textContent = "Deterministic background render";
     }
@@ -398,7 +403,16 @@
   }
 
   function installInteractions() {
-    elements["scan-button"].addEventListener("click", () => scanDevices());
+    elements["scan-button"].addEventListener("click", () => {
+      if (runtime.isBrowser) {
+        const browserBluetooth = app.devices.find((device) => runtime.isBrowserBluetoothDevice(device.id));
+        if (browserBluetooth?.available !== false) {
+          void connectDevice(browserBluetooth);
+          return;
+        }
+      }
+      void scanDevices();
+    });
     elements["disconnect-button"].addEventListener("click", disconnectDevice);
     elements["lsl-toggle"].addEventListener("change", configureOutputs);
     elements["osc-toggle"].addEventListener("change", configureOutputs);
@@ -637,7 +651,7 @@
       app.scanning = false;
       elements["scan-button"].disabled = false;
       elements["scan-button"].classList.remove("scanning");
-      elements["scan-button"].querySelector("span").textContent = "Scan again";
+      elements["scan-button"].querySelector("span").textContent = runtime.isBrowser ? "Choose Polar H10" : "Scan again";
     }
   }
 
@@ -716,11 +730,14 @@
   }
 
   async function connectDevice(device, { automatic = false } = {}) {
+    if (app.connecting) return;
     const generation = ++app.connectionGeneration;
     const isMock = runtime.isMockDevice(device.id);
     const isWebBluetooth = runtime.isBrowserBluetoothDevice(device.id);
     app.connecting = true;
     app.pendingDevice = device;
+    elements["scan-button"].disabled = true;
+    elements["scan-button"].querySelector("span").textContent = isWebBluetooth ? "Waiting for selection…" : "Connecting…";
     renderDevices(app.devices);
     setTopStatus(
       isMock
@@ -747,6 +764,17 @@
       if (generation !== app.connectionGeneration) return;
       app.connecting = false;
       app.pendingDevice = null;
+      elements["scan-button"].disabled = false;
+      elements["scan-button"].querySelector("span").textContent = runtime.isBrowser ? "Choose Polar H10" : "Scan again";
+      if (isWebBluetooth && error?.code === "BLUETOOTH_CHOOSER_CANCELLED") {
+        setTopStatus("Browser inputs ready");
+        elements["input-state"].textContent = "Browser ready";
+        elements["device-name"].textContent = "No sensor connected";
+        elements["connection-detail"].textContent = "No sensor was selected. Wear the strap, close other Polar apps, then choose the H10 again.";
+        addActivity("Bluetooth chooser closed without selecting a sensor");
+        renderDevices(app.devices);
+        return;
+      }
       setTopStatus("Connection failed", "error");
       elements["input-state"].textContent = "Error";
       const message = runtime.formatError(error);
@@ -819,6 +847,8 @@
     });
     app.connecting = false;
     app.pendingDevice = null;
+    elements["scan-button"].disabled = false;
+    elements["scan-button"].querySelector("span").textContent = runtime.isBrowser ? "Choose Polar H10" : "Scan again";
     if (app.connected) {
       resetMeasurementVisuals();
       const connectedDevice = device || app.devices.find((candidate) => candidate.name === event.deviceName);
