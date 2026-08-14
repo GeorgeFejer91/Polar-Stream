@@ -110,6 +110,7 @@ async function installFakeWebBluetooth(page) {
       async startNotifications() { return this; }
       async stopNotifications() { return this; }
       async writeValueWithResponse(value) { writes.push(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))); }
+      async writeValue(value) { writes.push(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))); }
       async readValue() {
         const bytes = Uint8Array.from(this.readBytes);
         return new DataView(bytes.buffer);
@@ -155,16 +156,29 @@ async function installFakeWebBluetooth(page) {
     const device = new EventTarget();
     device.name = "Polar H10 TEST1234";
     device.id = "fake-polar-h10";
+    let failGattConnectAttempts = 0;
+    let gattConnectAttempts = 0;
     device.gatt = {
-      async connect() { server.connected = true; return server; },
+      async connect() {
+        gattConnectAttempts += 1;
+        if (failGattConnectAttempts > 0) {
+          failGattConnectAttempts -= 1;
+          throw new DOMException("Transient GATT connection failure", "NetworkError");
+        }
+        server.connected = true;
+        return server;
+      },
     };
     let cancelNextChooser = false;
     let disableNextChooser = false;
+    let blockNextChooserByPolicy = false;
+    let activationAtRequest = null;
     Object.defineProperty(navigator, "bluetooth", {
       configurable: true,
       value: {
         async requestDevice(options) {
           window.__polarFake.lastRequest = options;
+          activationAtRequest = navigator.userActivation?.isActive ?? null;
           if (cancelNextChooser) {
             cancelNextChooser = false;
             throw new DOMException("User cancelled the chooser", "NotFoundError");
@@ -172,6 +186,10 @@ async function installFakeWebBluetooth(page) {
           if (disableNextChooser) {
             disableNextChooser = false;
             throw new DOMException("Web Bluetooth API globally disabled.", "NotFoundError");
+          }
+          if (blockNextChooserByPolicy) {
+            blockNextChooserByPolicy = false;
+            throw new DOMException("Web Bluetooth is not allowed by permissions policy.", "NotAllowedError");
           }
           return device;
         },
@@ -197,8 +215,13 @@ async function installFakeWebBluetooth(page) {
       writes,
       wakeLockRequests: [],
       lastRequest: null,
+      get activationAtRequest() { return activationAtRequest; },
+      get gattConnectAttempts() { return gattConnectAttempts; },
       cancelNextChooser() { cancelNextChooser = true; },
       disableNextChooser() { disableNextChooser = true; },
+      blockNextChooserWithPolicy() { blockNextChooserByPolicy = true; },
+      failNextGattConnect() { failGattConnectAttempts = 1; },
+      useLegacyControlWrites() { characteristics.control.writeValueWithResponse = undefined; },
       emitPmd(bytes) { characteristics.pmd.emit(bytes); },
       emitHeartRate(bytes) { characteristics.heartRate.emit(bytes); },
     };
@@ -351,6 +374,15 @@ try {
   assert.match(await bluetooth.locator("#connection-detail").textContent(), /browser blocks Web Bluetooth/i);
   assert.equal(await bluetooth.locator(".toast.error").count(), 1, "a browser-level Bluetooth block must be visible as an error");
   await bluetooth.waitForFunction(() => !document.querySelector(".toast"));
+  await bluetooth.evaluate(() => window.__polarFake.blockNextChooserWithPolicy());
+  await bluetooth.locator("#scan-button").click();
+  await bluetooth.locator("#input-state").filter({ hasText: "Error" }).waitFor();
+  assert.match(await bluetooth.locator("#connection-detail").textContent(), /embedding policy blocks Web Bluetooth/i);
+  await bluetooth.waitForFunction(() => !document.querySelector(".toast"));
+  await bluetooth.evaluate(() => {
+    window.__polarFake.failNextGattConnect();
+    window.__polarFake.useLegacyControlWrites();
+  });
   await bluetooth.locator("#scan-button").click();
   await bluetooth.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
   assert.equal(await bluetooth.locator("#battery-value").textContent(), "87%");
@@ -359,12 +391,21 @@ try {
     writes: window.__polarFake.writes,
     request: window.__polarFake.lastRequest,
     wakeLockRequests: window.__polarFake.wakeLockRequests,
+    activationAtRequest: window.__polarFake.activationAtRequest,
+    gattConnectAttempts: window.__polarFake.gattConnectAttempts,
   }));
   assert.deepEqual(bluetoothContract.writes.slice(0, 2), [
     [0x02, 0x00, 0x00, 0x01, 130, 0, 0x01, 0x01, 14, 0],
     [0x02, 0x02, 0x02, 0x01, 8, 0, 0x00, 0x01, 200, 0, 0x01, 0x01, 16, 0],
   ]);
   assert.deepEqual(bluetoothContract.request.filters, [{ namePrefix: "Polar H10" }]);
+  assert.deepEqual(bluetoothContract.request.optionalServices, [
+    "fb005c80-02e7-f387-1cad-8acd2d8df0c8",
+    "0000180d-0000-1000-8000-00805f9b34fb",
+    "0000180f-0000-1000-8000-00805f9b34fb",
+  ]);
+  assert.equal(bluetoothContract.activationAtRequest, true, "chooser lost its initiating user activation");
+  assert.equal(bluetoothContract.gattConnectAttempts, 2, "transient GATT failure was not retried exactly once");
   assert.deepEqual(bluetoothContract.wakeLockRequests, ["screen"]);
   await bluetooth.evaluate(() => {
     window.__polarFake.emitPmd([0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 100, 0, 0, 156, 255, 255]);

@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-14 - Browser Bluetooth compatibility is capability-based
+
+The Pages adapter does not admit or reject browsers by brand. It checks the
+secure context and `navigator.bluetooth.requestDevice`, then lets the chooser
+remain authoritative and diagnoses `bluetooth` Permissions Policy rejection if
+it occurs. Browser names remain guidance only because Chromium forks can
+independently ship, gate, or remove Web Bluetooth. A browser-level or
+administrator-level block cannot be repaired by site code.
+
+The H10 chooser must be the first awaited browser operation in the click/touch
+connection path so transient user activation survives stricter Chromium
+implementations. After selection, the adapter may retry one transient
+`NetworkError`/`AbortError` from the initial GATT connection before any service
+subscription exists. PMD control writes prefer `writeValueWithResponse` and
+retain the older `writeValue` fallback. These changes improve compatibility
+without retrying the chooser, duplicating subscriptions, or weakening the
+foreground-only and physical-validation boundaries.
+
 ## 2026-08-14 — Local CSV is bounded and independent of native publication
 
 The shared Output panel exposes one **Save local CSV** toggle in Tauri and

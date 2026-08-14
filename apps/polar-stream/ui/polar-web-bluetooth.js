@@ -18,6 +18,7 @@
     stopAccelerometer: Object.freeze([0x03, 0x02]),
   });
   const SAMPLE_RATE_HZ = 200;
+  const GATT_CONNECT_RETRY_DELAY_MS = 300;
 
   class WebBluetoothError extends Error {
     constructor(code, message, retryable = false) {
@@ -397,7 +398,7 @@
 
     updateAdaptiveBounds() {
       if (!this.settings.adaptiveBounds) return;
-      const last = this.adaptiveProjections.at(-1);
+      const last = this.adaptiveProjections[this.adaptiveProjections.length - 1];
       if (last && this.elapsedSeconds - last.time < 0.05) return;
       this.adaptiveProjections.push({ time: this.elapsedSeconds, value: this.projection });
       const cutoff = this.elapsedSeconds - this.settings.adaptiveWindowSeconds;
@@ -442,24 +443,59 @@
     return { supported: true, reason: "Chromium Web Bluetooth · experimental" };
   }
 
+  function browserBlocksBluetooth(error) {
+    const browserMessage = String(error?.message || "");
+    return error?.name === "NotSupportedError"
+      || /globally disabled|web bluetooth (?:is )?not supported|permission (?:has been |is )?blocked/i.test(browserMessage);
+  }
+
+  function normalizeChooserError(error) {
+    if (error instanceof WebBluetoothError) return error;
+    if (browserBlocksBluetooth(error)) {
+      return new WebBluetoothError(
+        "WEB_BLUETOOTH_DISABLED",
+        unavailableMessage(true),
+        true,
+      );
+    }
+    if (error?.name === "NotFoundError") {
+      return new WebBluetoothError("BLUETOOTH_CHOOSER_CANCELLED", "No Polar H10 was selected.", true);
+    }
+    return normalizeBrowserError(error);
+  }
+
   function normalizeBrowserError(error) {
     if (error instanceof WebBluetoothError) return error;
+    if (browserBlocksBluetooth(error)) {
+      return new WebBluetoothError("WEB_BLUETOOTH_DISABLED", unavailableMessage(true), true);
+    }
     const browserMessage = String(error?.message || "");
-    if (error?.name === "NotFoundError") {
-      if (/globally disabled|permission (?:has been |is )?blocked/i.test(browserMessage)) {
+    if (error?.name === "SecurityError" || error?.name === "NotAllowedError") {
+      if (/permissions? policy|feature policy|not allowed to use (?:web )?bluetooth/i.test(browserMessage)) {
         return new WebBluetoothError(
-          "WEB_BLUETOOTH_DISABLED",
-          unavailableMessage(true),
+          "WEB_BLUETOOTH_POLICY_BLOCKED",
+          "This page's embedding policy blocks Web Bluetooth. Open Polar Stream directly in a top-level tab.",
           true,
         );
       }
-      return new WebBluetoothError("BLUETOOTH_CHOOSER_CANCELLED", "No Polar H10 was selected.", true);
-    }
-    if (error?.name === "SecurityError" || error?.name === "NotAllowedError") {
       return new WebBluetoothError("BLUETOOTH_PERMISSION_DENIED", "Bluetooth permission was not granted.", true);
     }
-    if (error?.name === "NetworkError") {
+    if (error?.name === "InvalidStateError") {
+      return new WebBluetoothError(
+        "BLUETOOTH_ADAPTER_UNAVAILABLE",
+        "The Bluetooth adapter is not ready. Turn Bluetooth on, then try again.",
+        true,
+      );
+    }
+    if (error?.name === "NetworkError" || error?.name === "AbortError") {
       return new WebBluetoothError("BLUETOOTH_CONNECTION_FAILED", "The H10 Bluetooth connection failed.", true);
+    }
+    if (error?.name === "NotFoundError") {
+      return new WebBluetoothError(
+        "POLAR_SERVICE_UNAVAILABLE",
+        "The selected device did not expose a required Polar H10 service.",
+        true,
+      );
     }
     return new WebBluetoothError(
       "BROWSER_BLE_FAILED",
@@ -511,19 +547,31 @@
     async connect(onEvent, config = {}) {
       const status = supportStatus();
       if (!status.supported) throw new WebBluetoothError("WEB_BLUETOOTH_UNAVAILABLE", status.reason);
-      await this.disconnect({ emit: false });
+      if (this.device || this.server || this.connected) {
+        throw new WebBluetoothError(
+          "BROWSER_BLE_BUSY",
+          "Disconnect the current browser Bluetooth session before choosing another H10.",
+          true,
+        );
+      }
       this.onEvent = onEvent;
       this.updateConfig(config);
       this.disconnecting = false;
       try {
         this.emit({ kind: "status", message: "Choose your Polar H10 in the browser Bluetooth prompt…" });
-        this.device = await navigator.bluetooth.requestDevice({
-          filters: [{ namePrefix: "Polar H10" }],
-          optionalServices: [UUIDS.pmdService, UUIDS.heartRateService, UUIDS.batteryService],
-        });
+        try {
+          // Keep requestDevice as the first awaited browser operation so strict Chromium
+          // variants still associate the chooser with the initiating click/touch gesture.
+          this.device = await navigator.bluetooth.requestDevice({
+            filters: [{ namePrefix: "Polar H10" }],
+            optionalServices: [UUIDS.pmdService, UUIDS.heartRateService, UUIDS.batteryService],
+          });
+        } catch (error) {
+          throw normalizeChooserError(error);
+        }
         this.device.addEventListener("gattserverdisconnected", this.boundDisconnected);
         this.emit({ kind: "status", message: "Connecting and discovering Polar PMD services…" });
-        this.server = await this.device.gatt.connect();
+        this.server = await this.connectGatt();
         const pmdService = await this.server.getPrimaryService(UUIDS.pmdService);
         this.control = await pmdService.getCharacteristic(UUIDS.pmdControl);
         this.pmdData = await pmdService.getCharacteristic(UUIDS.pmdData);
@@ -572,6 +620,22 @@
         this.onEvent = null;
         throw normalizeBrowserError(error);
       }
+    }
+
+    async connectGatt() {
+      let lastError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          return await this.device.gatt.connect();
+        } catch (error) {
+          lastError = error;
+          const transient = error?.name === "NetworkError" || error?.name === "AbortError";
+          if (!transient || attempt === 1) throw error;
+          this.emit({ kind: "status", message: "Retrying the browser GATT connection…" });
+          await new Promise((resolve) => window.setTimeout(resolve, GATT_CONNECT_RETRY_DELAY_MS));
+        }
+      }
+      throw lastError;
     }
 
     async writeControl(command) {

@@ -45,8 +45,10 @@ items into the dated history instead of silently deleting them.
 - Validate the Pages Web Bluetooth adapter with a physical H10 on supported
   desktop and Android Chromium, including PMD frame variants, MTU/batch cadence,
   disconnect/reconnect behavior, and long-run sample counts. Use the checked-in
-  live Pages provenance verifier and strict offline CSV analyzer for the initial
-  Motorola Brave foreground run; do not substitute localhost or mock evidence.
+  live Pages provenance verifier and strict offline CSV analyzer for the full
+  Motorola Google Chrome foreground run; do not substitute localhost or mock
+  evidence. The public-site chooser and connection smoke test passed on
+  2026-08-14, while the timed CSV and reconnect evidence remains pending.
 - Record measured renderer, queue, and output latency under representative MTUs.
 - Measure the p99 runtime of each selected derived processor set against the BLE
   notification interval; isolate derived work if it can delay the next raw batch.
@@ -68,6 +70,11 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-14: hardened browser-H10 compatibility around capability and
+  Permissions Policy error diagnosis, immediate user-gesture chooser invocation,
+  one transient GATT retry, and legacy characteristic writes. A physical
+  Motorola/Chrome public-Pages connection smoke test passed; complete
+  CSV/rate/reconnect acceptance remains pending.
 - 2026-08-14: added a public-Pages-only Motorola Brave hardware acceptance
   procedure, complete deployed-asset/header provenance capture, and strict
   offline H10 CSV analysis for source, sensor time, rates, loss, gaps, raw

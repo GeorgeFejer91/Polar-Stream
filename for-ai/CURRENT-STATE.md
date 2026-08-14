@@ -46,6 +46,10 @@ Last verified: 2026-08-14
   Chromium contexts. It requests a Polar H10, writes the canonical PMD ECG/ACC
   start commands, and decodes ECG, uncompressed/variable-delta ACC, HR/RR, and
   battery notifications into the shared UI event contract.
+- A physical Motorola phone running Google Chrome selected and connected to an
+  H10 from the public GitHub Pages site on 2026-08-14. This confirms the hosted
+  chooser/GATT path, but not yet the timed CSV rates, loss, gaps, or reconnect
+  acceptance criteria.
 - The browser adapter includes a JavaScript mirror of the two retained ACC
   breathing outputs. Playwright validates the browser chooser/GATT contract,
   commands, protocol edge cases, breathing calibration, and responsive UI with
@@ -105,11 +109,11 @@ Last verified: 2026-08-14
 - The mock input demonstrates interface behavior only. It does not validate H10
   fidelity, timing, ACC respiration, or output transports, and it never opens
   native BLE, LSL, or OSC connections.
-- The Web Bluetooth adapter has not yet been exercised against a physical H10.
-  Browser/OS support remains non-portable, and BLE throughput, reconnect,
-  compressed-frame behavior, and timing must be recorded on real hardware.
-  Follow `docs/browser-hardware-acceptance.md`; only the public Pages site in an
-  ordinary browser tab can satisfy that browser acceptance run.
+- The Web Bluetooth adapter has a physical public-Pages connection smoke test on
+  Android Chrome, but browser/OS support remains non-portable. BLE throughput,
+  reconnect, compressed-frame behavior, and timing still need a complete saved
+  hardware run. Follow `docs/browser-hardware-acceptance.md`; only the public
+  Pages site in an ordinary browser tab can satisfy that acceptance run.
 - Web Bluetooth is unavailable to workers/service workers, and mobile Chrome
   may freeze or discard a hidden page. The screen wake lock is released when
   the document becomes inactive. Pages therefore cannot guarantee Bluetooth,

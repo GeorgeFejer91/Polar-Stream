@@ -41,18 +41,30 @@ The [live Polar Stream browser demo](https://georgefejer91.github.io/Polar-Strea
 is deployed from the same `apps/polar-stream/ui/` HTML, CSS, and JavaScript used
 by the Tauri application. On supported Chrome/Edge browsers, choose **Polar H10
 via browser** to grant Web Bluetooth permission and stream ECG, ACC, HR, and RR
-directly in the tab. This path is experimental and still requires validation on
-physical H10 hardware. Web Bluetooth requires HTTPS (or localhost), an explicit
-user chooser, and browser/OS support. Chrome on Android is supported by the web
-platform and is covered by mobile-layout plus emulated-GATT tests here; a
-physical Android/H10 run is still required. Unsupported phones and browsers
-keep the input visible with a compatibility explanation.
+directly in the tab. A physical Motorola/Chrome smoke test selected and connected
+to an H10 from the public Pages site on 2026-08-14. The full two-minute CSV,
+sample-rate, loss, and reconnect acceptance run is still pending. Web Bluetooth
+requires HTTPS (or localhost), an explicit user chooser, and browser/OS support.
+Unsupported phones and browsers keep the input visible with a compatibility
+explanation.
+
+Compatibility is capability-based rather than tied to a browser-name allowlist.
+The adapter checks the secure context and `navigator.bluetooth.requestDevice`,
+then reports Permissions Policy rejection from the chooser. It opens the chooser
+at the first asynchronous boundary, retries one transient pre-subscription GATT
+connection, and supports both current and legacy characteristic-write methods.
+Upstream browser/platform coverage is tracked in the
+[Web Bluetooth implementation table](https://github.com/WebBluetoothCG/web-bluetooth/blob/main/implementation-status.md).
+It reports support in Chrome, Edge 79+, Samsung Internet, and Android Opera/Vivaldi;
+only Android Chrome has been physically smoke-tested with Polar Stream so far.
+Linux Chrome/Chromium may require **Experimental Web Platform features**.
 
 Brave disables Web Bluetooth and cannot acquire an H10 from the Pages site on
 the currently tested Linux desktop and Android installations. Its Chromium API
-may be visible while Brave still rejects the chooser. Use Google Chrome on
-Android, or Chrome/Chromium with **Experimental Web Platform features** enabled
-for Linux desktop testing.
+may be visible while Brave still rejects the chooser. Android WebView, iOS
+Chromium browsers, and desktop Opera/Vivaldi are also listed upstream as lacking
+a working Web Bluetooth implementation. Website code cannot enable an API that
+the browser or its administrator has disabled.
 
 While browser Bluetooth is connected, Polar Stream makes a best-effort screen
 wake-lock request. This can keep a visible foreground session awake, but a pure
