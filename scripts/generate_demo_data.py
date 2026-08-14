@@ -15,9 +15,6 @@ import sys
 import warnings
 from pathlib import Path
 
-import neurokit2 as nk
-import numpy as np
-
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "apps/polar-stream/ui/demo-data.js"
@@ -26,10 +23,28 @@ ECG_RATE = 130
 ACC_RATE = 200
 METRIC_RATE = 20
 SEED = 314_159
-# ECGSYN integration can differ by a few microvolts across CPU math libraries.
-# This is a visual fixture check, so allow 2% of a typical 1 mV waveform while
-# retaining exact schema/shape checks and tight ACC/respiration tolerances.
-ECG_MAX_TOLERANCE_UV = 20.0
+METRIC_IDS = (
+    "heart_rate",
+    "rr_interval",
+    "rmssd",
+    "ln_rmssd",
+    "acc_breathing_magnitude",
+    "breathing_phase",
+    "breathing_rate",
+)
+
+
+def load_generation_dependencies() -> None:
+    global nk, np
+    try:
+        import neurokit2 as nk_module
+        import numpy as np_module
+    except ImportError as error:
+        raise SystemExit(
+            "Generating demo-data.js requires the development dependencies in requirements-previews.txt"
+        ) from error
+    nk = nk_module
+    np = np_module
 
 
 def finite(values: np.ndarray, fallback: float = 0.0) -> np.ndarray:
@@ -75,6 +90,7 @@ def rounded(values: np.ndarray, digits: int) -> list[float | int]:
 
 
 def generate() -> dict:
+    load_generation_dependencies()
     warnings.filterwarnings("ignore", category=RuntimeWarning)
     ecg = np.asarray(nk.ecg_simulate(
         duration=DURATION_SECONDS,
@@ -176,53 +192,87 @@ def parse(rendered: str) -> dict:
     return json.loads(rendered[start + len(prefix): rendered.rfind(");")])
 
 
-def validate(existing: dict, expected: dict) -> list[str]:
+def validate_stored_fixture(existing: dict) -> list[str]:
     errors: list[str] = []
-    for key in ("schemaVersion", "source", "durationSeconds"):
-        if existing.get(key) != expected.get(key):
-            errors.append(f"top-level {key} differs")
-    shapes = {
-        "ecg.microvolts": DURATION_SECONDS * ECG_RATE,
-        "accelerometer.milligravity": 3,
-        "metrics.values": 7,
-    }
-    if len(existing.get("ecg", {}).get("microvolts", [])) != shapes["ecg.microvolts"]:
-        errors.append("ECG sample count differs")
-    axes = existing.get("accelerometer", {}).get("milligravity", [])
-    if len(axes) != shapes["accelerometer.milligravity"] or any(len(axis) != DURATION_SECONDS * ACC_RATE for axis in axes):
-        errors.append("accelerometer shape differs")
-    metric_values = existing.get("metrics", {}).get("values", {})
-    if list(metric_values) != list(expected["metrics"]["values"]):
-        errors.append("metric IDs/order differ")
-    elif any(len(values) != DURATION_SECONDS * METRIC_RATE for values in metric_values.values()):
-        errors.append("metric sample count differs")
 
-    for path, actual, wanted, tolerance in (
-        ("ecg", existing.get("ecg", {}).get("microvolts", []), expected["ecg"]["microvolts"], ECG_MAX_TOLERANCE_UV),
-        ("acc-x", axes[0] if len(axes) == 3 else [], expected["accelerometer"]["milligravity"][0], 2.0),
-        ("breathing", metric_values.get("acc_breathing_magnitude", []), expected["metrics"]["values"]["acc_breathing_magnitude"], 0.002),
-    ):
-        if len(actual) != len(wanted):
-            continue
-        delta = np.abs(np.asarray(actual, dtype=float) - np.asarray(wanted, dtype=float))
-        if not np.isfinite(delta).all() or float(np.max(delta)) > tolerance:
-            errors.append(f"{path} fixture drifted beyond tolerance")
+    def validate_series(name: str, values: object, count: int) -> list[float]:
+        if not isinstance(values, list) or len(values) != count:
+            errors.append(f"{name} sample count differs")
+            return []
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in values):
+            errors.append(f"{name} contains a non-numeric value")
+            return []
+        numbers = [float(value) for value in values]
+        if not all(math.isfinite(value) for value in numbers):
+            errors.append(f"{name} contains a non-finite value")
+            return []
+        return numbers
+
+    source_value = existing.get("source", {})
+    source = source_value if isinstance(source_value, dict) else {}
+    if existing.get("schemaVersion") != 1:
+        errors.append("schemaVersion is not 1")
+    if existing.get("durationSeconds") != DURATION_SECONDS:
+        errors.append(f"durationSeconds is not {DURATION_SECONDS}")
+    if not isinstance(source_value, dict) or source.get("library") != "NeuroKit2":
+        errors.append("source does not identify NeuroKit2")
+    if source.get("models") != ["ECGSYN", "RSP"] or source.get("seed") != SEED:
+        errors.append("source models or seed differ")
+    if "Synthetic offline interface fixture" not in str(source.get("note", "")):
+        errors.append("source note does not identify a synthetic fixture")
+
+    ecg = existing.get("ecg", {})
+    if not isinstance(ecg, dict) or ecg.get("samplingRateHz") != ECG_RATE:
+        errors.append(f"ECG sampling rate is not {ECG_RATE} Hz")
+    ecg_values = validate_series(
+        "ECG", ecg.get("microvolts", []) if isinstance(ecg, dict) else [], DURATION_SECONDS * ECG_RATE
+    )
+    if ecg_values and (max(abs(value) for value in ecg_values) > 10_000 or max(ecg_values) == min(ecg_values)):
+        errors.append("ECG values are outside fixture bounds or constant")
+
+    accelerometer = existing.get("accelerometer", {})
+    if not isinstance(accelerometer, dict) or accelerometer.get("samplingRateHz") != ACC_RATE:
+        errors.append(f"accelerometer sampling rate is not {ACC_RATE} Hz")
+    axes = accelerometer.get("milligravity", []) if isinstance(accelerometer, dict) else []
+    if not isinstance(axes, list) or len(axes) != 3:
+        errors.append("accelerometer does not contain three axes")
+    else:
+        for label, axis in zip(("X", "Y", "Z"), axes, strict=True):
+            values = validate_series(f"accelerometer {label}", axis, DURATION_SECONDS * ACC_RATE)
+            if values and (max(abs(value) for value in values) > 4_000 or max(values) == min(values)):
+                errors.append(f"accelerometer {label} values are outside fixture bounds or constant")
+
+    metrics = existing.get("metrics", {})
+    if not isinstance(metrics, dict) or metrics.get("samplingRateHz") != METRIC_RATE:
+        errors.append(f"metric sampling rate is not {METRIC_RATE} Hz")
+    metric_values = metrics.get("values", {}) if isinstance(metrics, dict) else {}
+    if not isinstance(metric_values, dict) or tuple(metric_values) != METRIC_IDS:
+        errors.append("metric IDs/order differ")
+    else:
+        checked_metrics = {
+            name: validate_series(name, metric_values[name], DURATION_SECONDS * METRIC_RATE)
+            for name in METRIC_IDS
+        }
+        if checked_metrics["heart_rate"] and not all(20 <= value <= 240 for value in checked_metrics["heart_rate"]):
+            errors.append("heart_rate leaves plausible fixture bounds")
+        if checked_metrics["rr_interval"] and not all(250 <= value <= 3_000 for value in checked_metrics["rr_interval"]):
+            errors.append("rr_interval leaves plausible fixture bounds")
+        if checked_metrics["breathing_phase"] and not set(checked_metrics["breathing_phase"]) <= {-1.0, 0.0, 1.0}:
+            errors.append("breathing_phase contains a value outside -1, 0, and 1")
     return errors
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true", help="fail when the checked-in fixture is stale")
+    parser.add_argument("--check", action="store_true", help="validate the checked-in fixture without regenerating it")
     arguments = parser.parse_args()
-    payload = generate()
-    rendered = render(payload)
     if arguments.check:
         try:
             existing = parse(OUTPUT.read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
             print(f"{OUTPUT.relative_to(ROOT)} is invalid: {error}", file=sys.stderr)
             return 1
-        errors = validate(existing, payload)
+        errors = validate_stored_fixture(existing)
         if errors:
             print(f"{OUTPUT.relative_to(ROOT)} is stale or invalid:", file=sys.stderr)
             for error in errors:
@@ -230,6 +280,8 @@ def main() -> int:
             return 1
         print(f"Validated {DURATION_SECONDS}s NeuroKit offline demo fixture")
         return 0
+    payload = generate()
+    rendered = render(payload)
     OUTPUT.write_text(rendered, encoding="utf-8")
     print(f"Generated NeuroKit offline demo fixture in {OUTPUT.relative_to(ROOT)}")
     return 0
