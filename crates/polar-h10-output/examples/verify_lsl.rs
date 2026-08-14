@@ -24,8 +24,8 @@ async fn main() -> Result<(), String> {
     }
     // Exercise the exact immediate notification-sized chunk paths used by the
     // sensor coordinator, not only outlet construction.
-    router.publish_ecg(1, &[12, 18, -4, 9]);
-    router.publish_accelerometer(
+    let _ = router.publish_ecg(1, &[12, 18, -4, 9]);
+    let _ = router.publish_accelerometer(
         2,
         &[
             AccSample {

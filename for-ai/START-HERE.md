@@ -32,7 +32,8 @@ If the skill is not installed or cannot be loaded:
 - `crates/polar-h10-core/`: Polar PMD/HR decoding and protocol primitives.
 - `crates/polar-h10-input/`: Bluetooth discovery, connection, and input events.
 - `crates/polar-h10-metrics/`: derived metric processors and evidence catalog.
-- `crates/polar-h10-output/`: canonical names plus LSL/OSC publication.
+- `crates/polar-h10-output/`: canonical names, LSL/OSC publication, and bounded
+  native CSV persistence.
 - `scripts/`: build, release, preview, and interface-validation tooling.
 - `docs/`: scientific evidence and architecture assessments.
 - `.github/workflows/`: CI, release, and download-page automation.

@@ -9,7 +9,7 @@ raw ACC, 3D motion magnitude, and only two experimental breathing outputs.
 Selecting a metric opens
 its scientific definition, interpretation limits, evidence level, cited source,
 and exact stream-name preview; an explicit **Save output** action then adds that
-single module to the enabled LSL and/or OSC publisher.
+single module to the enabled destinations.
 
 When the output library is open, every row contains an SVG thumbnail of its
 expected output shape. Preview data and SVG nodes are kept out of normal startup
@@ -43,8 +43,18 @@ by the Tauri application. On supported Chrome/Edge browsers, choose **Polar H10
 via browser** to grant Web Bluetooth permission and stream ECG, ACC, HR, and RR
 directly in the tab. This path is experimental and still requires validation on
 physical H10 hardware. Web Bluetooth requires HTTPS (or localhost), an explicit
-user chooser, and browser/OS support; unsupported phones and browsers keep the
-input visible with a compatibility explanation.
+user chooser, and browser/OS support. Chrome on Android is supported by the web
+platform and is covered by mobile-layout plus emulated-GATT tests here; a
+physical Android/H10 run is still required. Unsupported phones and browsers
+keep the input visible with a compatibility explanation.
+
+While browser Bluetooth is connected, Polar Stream makes a best-effort screen
+wake-lock request. This can keep a visible foreground session awake, but a pure
+website cannot guarantee recording after the user changes tabs/apps or locks
+the screen: Android may freeze or discard the page, and Web Bluetooth is not
+available to a service worker. The desktop app avoids this tab lifecycle; a
+reliable smartphone background/screen-off workflow requires a future native
+Android build with a foreground service, not the GitHub Pages site.
 
 Choose **NeuroKit simulated input** to replay deterministic ECGSYN ECG and
 respiration-derived accelerometer data without Bluetooth hardware. The same
@@ -59,13 +69,33 @@ connections.
 The browser demo is deliberately self-contained: Bluetooth acquisition, mock
 replay, selected browser-supported metrics, and visualization all run in the
 tab without Tauri, Python, a localhost service, or another installed process.
-After connecting either input, **Start recording** captures the selected raw and
-derived outputs before chart decimation. **Download CSV** saves timestamped ECG,
-ACC, and selected metric rows locally from the browser. Files are bounded to
-300,000 rows (about 15 minutes with the default raw ECG + ACC outputs); reaching
-the limit stops visibly instead of dropping rows or growing memory without a
-bound. Export or discard that file before starting the next segment, and always
-download it before closing the tab.
+Turn on **Save local CSV** to capture every incoming raw ECG/ACC row and every
+metric event produced in the browser before chart decimation. Turning it off
+downloads the timestamped CSV immediately. Files are bounded to 300,000 rows
+(about 15 minutes at the raw ECG + ACC rates); reaching the limit stops visibly
+instead of dropping rows or growing memory without a bound. Download or discard
+that stopped file before starting the next segment, and always download it
+before closing the tab.
+
+The installed app exposes the same **Save local CSV** toggle. Native recordings
+are written under `Downloads/Polar Stream` (with an app-data fallback) by a
+dedicated bounded writer thread. Raw LSL/OSC publication happens first and never
+waits for disk I/O; if the 128-notification CSV queue fills or writing fails,
+CSV stops and the interface reports the error.
+
+The **Audio data output** toggle emits an experimental 22.05 kbit/s stereo PCM
+modem signal for a digital recorder or line-level AUX/USB audio cable. It is
+modulation, not encryption, and currently uses Manchester coding plus CRC32
+without forward error correction. A checked-in decoder converts a stereo PCM
+WAV back into CSV:
+
+```bash
+python3 scripts/decode_audio_data.py recording.wav
+```
+
+See [the audio data-output design and recording guide](docs/audio-data-output.md)
+for the researched alternatives, packet format, hardware requirements, and
+reliability limits.
 
 The site also publishes the same event batches as a `polar-stream-data` browser
 event and on the same-origin `polar-stream-live-v1` `BroadcastChannel`. This is
@@ -130,7 +160,7 @@ Acquisition and publication stay native in Rust:
 - `polar-h10-input`: BLE discovery, connection, and typed sensor events.
 - `polar-h10-metrics`: independent ECG, HRV, coherence, breathing, complexity,
   and experimental processors plus the evidence-backed metric catalog.
-- `polar-h10-output`: LSL/OSC naming and publication.
+- `polar-h10-output`: LSL/OSC naming and publication plus bounded native CSV.
 - `apps/polar-stream`: thin Tauri coordinator and shared three-panel UI.
 
 Derived processors are demand-driven by the selected output set. Raw batches are
@@ -165,7 +195,8 @@ sensor or the running desktop app. They render every breath-class target, the
 settings workflow, all metric-library SVGs, the staged Pages application, and
 touch layouts. Checks cover canvas geometry, color, labels, saved controls,
 preview coverage, Pages parity, NeuroKit replay, bounded browser recording and
-CSV download, the tab-local live event contract, and responsive overflow:
+CSV download, audio packet/WAV decode, the tab-local live event contract,
+emulated Android-style Web Bluetooth, and responsive overflow:
 
 ```bash
 npm ci

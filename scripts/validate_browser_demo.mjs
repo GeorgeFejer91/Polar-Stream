@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { chromium } from "playwright";
@@ -51,6 +52,29 @@ async function assertNoHorizontalOverflow(page, label) {
     dimensions.scrollWidth <= dimensions.clientWidth + 1,
     `${label} has horizontal page overflow: ${JSON.stringify(dimensions)}`,
   );
+}
+
+function stereoPcmWav(left, right, sampleRate) {
+  const frames = Math.min(left.length, right.length);
+  const dataLength = frames * 4;
+  const wav = Buffer.alloc(44 + dataLength);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(36 + dataLength, 4);
+  wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(2, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * 4, 28);
+  wav.writeUInt16LE(4, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(dataLength, 40);
+  for (let index = 0; index < frames; index += 1) {
+    wav.writeInt16LE(Math.round(Math.max(-1, Math.min(1, left[index])) * 32767), 44 + index * 4);
+    wav.writeInt16LE(Math.round(Math.max(-1, Math.min(1, right[index])) * 32767), 46 + index * 4);
+  }
+  return wav;
 }
 
 async function connectMock(page) {
@@ -143,8 +167,25 @@ async function installFakeWebBluetooth(page) {
         },
       },
     });
+    const wakeLockSentinel = new EventTarget();
+    wakeLockSentinel.released = false;
+    wakeLockSentinel.release = async () => {
+      wakeLockSentinel.released = true;
+      wakeLockSentinel.dispatchEvent(new Event("release"));
+    };
+    Object.defineProperty(navigator, "wakeLock", {
+      configurable: true,
+      value: {
+        async request(type) {
+          window.__polarFake.wakeLockRequests.push(type);
+          wakeLockSentinel.released = false;
+          return wakeLockSentinel;
+        },
+      },
+    });
     window.__polarFake = {
       writes,
+      wakeLockRequests: [],
       lastRequest: null,
       emitPmd(bytes) { characteristics.pmd.emit(bytes); },
       emitHeartRate(bytes) { characteristics.heartRate.emit(bytes); },
@@ -176,6 +217,8 @@ try {
   assert.match(await desktop.locator(".device-row.mock").textContent(), /SYNTHETIC/);
   assert.match(await desktop.locator(".device-row.mock").textContent(), /no Polar H10 required/);
   assert.equal(await desktop.locator("#browser-local-destination").isVisible(), true, "browser-local destination is missing");
+  assert.equal(await desktop.locator("#csv-destination-row").isVisible(), true, "local CSV toggle is missing");
+  assert.equal(await desktop.locator("#audio-destination-row").isVisible(), true, "audio-data toggle is missing");
   assert.equal(await desktop.locator("#lsl-destination-row").isHidden(), true, "browser mode must not offer native LSL");
   assert.equal(await desktop.locator("#osc-destination-row").isHidden(), true, "browser mode must not offer native OSC");
   assert.equal(await desktop.evaluate(() => "PolarBrowserLslBridge" in window), false, "browser build still exposes the native bridge adapter");
@@ -188,15 +231,12 @@ try {
   });
   await connectMock(desktop);
   await desktop.waitForFunction(() => window.__polarBrowserEvents > 3 && window.__polarChannelEvents > 3);
-  assert.equal(await desktop.locator("#browser-record-button").isEnabled(), true, "browser recorder is unavailable after connecting");
-  await desktop.locator("#browser-record-button").click();
+  await desktop.locator("#csv-destination-row").click();
   await desktop.locator("#browser-recorder-status").filter({ hasText: "REC" }).waitFor();
   await desktop.waitForFunction(() => window.PolarBrowserSession.status().rowCount >= 20);
-  await desktop.locator("#browser-record-button").click();
-  await desktop.locator("#browser-recorder-status").filter({ hasText: "FILE" }).waitFor();
   const [recordingDownload] = await Promise.all([
     desktop.waitForEvent("download"),
-    desktop.locator("#browser-export-button").click(),
+    desktop.locator("#csv-destination-row").click(),
   ]);
   assert.match(recordingDownload.suggestedFilename(), /^Polar-H10_.*Z\.csv$/);
   const recordingPath = await recordingDownload.path();
@@ -205,6 +245,7 @@ try {
   assert.match(recordingCsv, /host_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream/);
   assert.match(recordingCsv, /,raw_ecg,/);
   assert.match(recordingCsv, /,raw_acc,/);
+  assert.equal(await desktop.locator("#browser-recorder-status").textContent(), "READY");
   const boundedRecorder = await desktop.evaluate(async () => {
     let now = 1_000;
     const recorder = window.PolarBrowserSession.createRecorder({ maxRows: 2, now: () => now });
@@ -220,6 +261,40 @@ try {
   assert.equal(boundedRecorder.status.stopReason, "capacity");
   assert.equal(boundedRecorder.status.rowCount, 2);
   assert.match(boundedRecorder.csv, /,raw_ecg,0,,,,1,uV/);
+  const audioFixture = await desktop.evaluate(() => {
+    const packet = window.PolarAudioDataLink.encodeBatch({
+      ecg: [1, -2, 3],
+      ecgTimestamp: "1000000000",
+      accelerometer: [{ xMg: 4, yMg: -5, zMg: 6 }],
+      accTimestamp: "2000000000",
+      metrics: [{ id: "heart_rate", value: 61 }],
+    }, 7);
+    const decoded = window.PolarAudioDataLink.decodePacket(packet);
+    const waveform = window.PolarAudioDataLink.packetWaveform(packet, 44_100);
+    return {
+      packet: Array.from(packet),
+      sequence: decoded.sequence,
+      schemaVersion: decoded.schemaVersion,
+      left: Array.from(waveform.left),
+      right: Array.from(waveform.right),
+    };
+  });
+  assert.equal(audioFixture.sequence, 7);
+  assert.equal(audioFixture.schemaVersion, 1);
+  const audioWav = join(output, "audio-data-link-fixture.wav");
+  const decodedAudioCsv = join(output, "audio-data-link-fixture.decoded.csv");
+  await writeFile(audioWav, stereoPcmWav(audioFixture.left, audioFixture.right, 44_100));
+  const decoder = spawnSync("python3", [
+    join(repository, "scripts/decode_audio_data.py"),
+    audioWav,
+    "--output",
+    decodedAudioCsv,
+  ], { encoding: "utf8" });
+  assert.equal(decoder.status, 0, `audio reference decoder failed: ${decoder.stderr}`);
+  const decodedAudio = await readFile(decodedAudioCsv, "utf8");
+  assert.match(decodedAudio, /7,.*raw_ecg,0,,,,1,uV/);
+  assert.match(decodedAudio, /7,.*raw_acc,0,4,-5,6,,mg/);
+  assert.match(decodedAudio, /7,,heart_rate,0,,,,61(?:\.0)?,bpm/);
   const fixture = await desktop.evaluate(() => ({
     source: window.PolarDemoData?.source,
     ecgSamples: window.PolarDemoData?.ecg?.microvolts?.length,
@@ -256,12 +331,14 @@ try {
   const bluetoothContract = await bluetooth.evaluate(() => ({
     writes: window.__polarFake.writes,
     request: window.__polarFake.lastRequest,
+    wakeLockRequests: window.__polarFake.wakeLockRequests,
   }));
   assert.deepEqual(bluetoothContract.writes.slice(0, 2), [
     [0x02, 0x00, 0x00, 0x01, 130, 0, 0x01, 0x01, 14, 0],
     [0x02, 0x02, 0x02, 0x01, 8, 0, 0x00, 0x01, 200, 0, 0x01, 0x01, 16, 0],
   ]);
   assert.deepEqual(bluetoothContract.request.filters, [{ namePrefix: "Polar H10" }]);
+  assert.deepEqual(bluetoothContract.wakeLockRequests, ["screen"]);
   await bluetooth.evaluate(() => {
     window.__polarFake.emitPmd([0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 100, 0, 0, 156, 255, 255]);
     window.__polarFake.emitPmd([0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 1, 0, 254, 255, 3, 0]);
@@ -324,12 +401,18 @@ try {
     hasTouch: true,
     isMobile: true,
   });
+  await installFakeWebBluetooth(phone);
   await phone.goto(baseUrl, { waitUntil: "networkidle" });
   await assertNoHorizontalOverflow(phone, "phone browser demo before connection");
   const panelTops = await phone.locator(".workspace-panel").evaluateAll((panels) => panels.map((panel) => panel.getBoundingClientRect().top));
   assert.ok(panelTops[0] < panelTops[1] && panelTops[1] < panelTops[2], `phone panels are not stacked: ${panelTops}`);
   const scanBox = await phone.locator("#scan-button").boundingBox();
   assert.ok(scanBox.height >= 44, `phone primary action is too short: ${scanBox.height}`);
+  await phone.locator('.device-row[data-input-kind="web-bluetooth"]').click();
+  await phone.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
+  assert.deepEqual(await phone.evaluate(() => window.__polarFake.wakeLockRequests), ["screen"]);
+  await phone.locator("#disconnect-button").click();
+  await phone.locator("#input-state").filter({ hasText: "Browser ready" }).waitFor();
   await connectMock(phone);
 
   await phone.locator("#open-output-dialog").scrollIntoViewIfNeeded();

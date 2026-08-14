@@ -14,7 +14,7 @@ Polar H10
   -> polar-h10-input
   -> thin Tauri coordinator
      -> polar-h10-metrics (only selected processors)
-     -> polar-h10-output -> LSL / OSC
+     -> polar-h10-output -> LSL / OSC / bounded native CSV
      -> bounded display queue -> JavaScript ring buffers -> Canvas 2D
 ```
 
@@ -31,9 +31,13 @@ Pages session has no LSL/OSC publisher or paired mode: the runtime is
 intentionally self-contained and does not call a localhost companion, native
 wrapper, or remote relay. Native LSL/OSC remain separate installed-app features.
 Pages can instead expose exact batches to same-tab/same-origin browser code and
-record selected outputs to a bounded local CSV. These browser mechanisms are
+record every received raw row plus produced metric events to a bounded local
+CSV. These browser mechanisms are
 never labeled LSL and are not discoverable by native LabRecorder.
 This does not replace or enter the authoritative native H10 path.
+Both runtimes also expose an explicitly experimental Web Audio data modem. It is
+a cable/digital-loopback transport with CRC32, not encryption or an
+authoritative replacement for native CSV/LSL/OSC.
 The Pages artifact must be built from the canonical UI tree; a
 separately maintained browser-interface copy is not allowed.
 
@@ -74,6 +78,11 @@ operational contract for that ordering.
 - GitHub Pages must deploy the canonical UI after successful changes to `main`.
   Desktop and browser parity, plus narrow touch layouts down to 320 CSS pixels,
   are CI contracts rather than manual synchronization tasks.
+- Chrome on Android may use the foreground Web Bluetooth path, with a
+  best-effort visible-document screen wake lock. Pure Pages/PWA code cannot
+  guarantee capture after a tab is hidden, the app is switched, or the screen
+  locks because Web Bluetooth is unavailable to workers and mobile Chrome may
+  freeze/discard the page.
 
 ## Repository and releases
 

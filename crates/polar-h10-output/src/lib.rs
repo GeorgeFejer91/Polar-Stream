@@ -1,6 +1,7 @@
 //! Native output fan-out. Sensor traffic never takes a detour through the web UI.
 
 mod config;
+mod csv;
 mod lsl;
 mod osc;
 
@@ -15,6 +16,7 @@ pub use config::{
     MetricOutputOptions, MetricProcessingOptions, MetricSpec, NormalizationMode, OutputConfig,
     OutputHealth, normalize_stream_base, output_stream_name,
 };
+use csv::CsvPublisher;
 use lsl::LslPublisher;
 use osc::{OSC_TARGET, OscPublisher};
 use polar_h10_core::AccSample;
@@ -33,6 +35,8 @@ struct RouterInner {
     config: OutputConfig,
     osc: Option<OscPublisher>,
     lsl: LslPublisher,
+    csv: Option<CsvPublisher>,
+    csv_directory: PathBuf,
     normalizers: HashMap<String, Normalizer>,
     selected: HashSet<String>,
 }
@@ -49,11 +53,23 @@ impl OutputRouter {
     }
 
     pub fn with_bundled_lsl(library_path: Option<PathBuf>) -> Self {
+        Self::with_bundled_lsl_and_recordings(
+            library_path,
+            std::env::temp_dir().join("Polar Stream recordings"),
+        )
+    }
+
+    pub fn with_bundled_lsl_and_recordings(
+        library_path: Option<PathBuf>,
+        csv_directory: PathBuf,
+    ) -> Self {
         Self {
             inner: Mutex::new(RouterInner {
                 config: OutputConfig::default(),
                 osc: None,
                 lsl: LslPublisher::new(library_path),
+                csv: None,
+                csv_directory,
                 normalizers: HashMap::new(),
                 selected: OutputConfig::default().outputs.into_iter().collect(),
             }),
@@ -71,7 +87,34 @@ impl OutputRouter {
             publisher.configure(&config.stream_name, &config.outputs);
         }
 
+        let csv_to_install = if config.csv_enabled {
+            let needs_writer = self
+                .inner
+                .lock()
+                .map_err(|_| "Output router lock failed")?
+                .csv
+                .is_none();
+            if needs_writer {
+                let directory = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "Output router lock failed")?
+                    .csv_directory
+                    .clone();
+                Some(CsvPublisher::start(&directory, &config.stream_name)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let mut inner = self.inner.lock().map_err(|_| "Output router lock failed")?;
+        if !config.csv_enabled {
+            inner.csv = None;
+        } else if inner.csv.is_none() {
+            inner.csv = csv_to_install;
+        }
         inner.reconcile_normalizers(&config);
         inner.selected = config.outputs.iter().cloned().collect();
         inner.config = config;
@@ -97,29 +140,40 @@ impl OutputRouter {
         inner.reconcile_normalizers(&config);
     }
 
-    pub fn publish_ecg(&self, sensor_timestamp_ns: u64, samples: &[i32]) {
+    pub fn publish_ecg(&self, sensor_timestamp_ns: u64, samples: &[i32]) -> Option<String> {
         let Ok(mut inner) = self.inner.lock() else {
-            return;
+            return None;
         };
-        if !inner.selected.contains("raw_ecg") {
-            return;
+        if inner.selected.contains("raw_ecg") {
+            inner
+                .lsl
+                .push_scalar_series("raw_ecg", samples.iter().map(|value| *value as f32));
+            if let Some(osc) = &mut inner.osc {
+                osc.send_series(
+                    "raw_ecg",
+                    sensor_timestamp_ns,
+                    samples.len(),
+                    samples.iter().map(|value| *value as f32),
+                );
+            }
         }
-        inner
-            .lsl
-            .push_scalar_series("raw_ecg", samples.iter().map(|value| *value as f32));
-        if let Some(osc) = &mut inner.osc {
-            osc.send_series(
-                "raw_ecg",
-                sensor_timestamp_ns,
-                samples.len(),
-                samples.iter().map(|value| *value as f32),
-            );
+        let error = inner
+            .csv
+            .as_ref()
+            .and_then(|csv| csv.publish_ecg(sensor_timestamp_ns, samples).err());
+        if error.is_some() {
+            inner.csv = None;
         }
+        error
     }
 
-    pub fn publish_accelerometer(&self, sensor_timestamp_ns: u64, samples: &[AccSample]) {
+    pub fn publish_accelerometer(
+        &self,
+        sensor_timestamp_ns: u64,
+        samples: &[AccSample],
+    ) -> Option<String> {
         let Ok(mut inner) = self.inner.lock() else {
-            return;
+            return None;
         };
         if inner.selected.contains("raw_acc") {
             inner.lsl.push_accelerometer(samples);
@@ -127,12 +181,39 @@ impl OutputRouter {
                 osc.send_accelerometer(sensor_timestamp_ns, samples);
             }
         }
+        let error = inner.csv.as_ref().and_then(|csv| {
+            csv.publish_accelerometer(sensor_timestamp_ns, samples)
+                .err()
+        });
+        if error.is_some() {
+            inner.csv = None;
+        }
+        error
     }
 
-    pub fn publish_metrics(&self, values: &[MetricValue<'_>]) {
+    pub fn publish_heart_rate(
+        &self,
+        beats_per_minute: u16,
+        rr_intervals_ms: &[f32],
+    ) -> Option<String> {
         let Ok(mut inner) = self.inner.lock() else {
-            return;
+            return None;
         };
+        let error = inner.csv.as_ref().and_then(|csv| {
+            csv.publish_heart_rate(beats_per_minute, rr_intervals_ms)
+                .err()
+        });
+        if error.is_some() {
+            inner.csv = None;
+        }
+        error
+    }
+
+    pub fn publish_metrics(&self, values: &[MetricValue<'_>]) -> Option<String> {
+        let Ok(mut inner) = self.inner.lock() else {
+            return None;
+        };
+        let mut recorded = Vec::with_capacity(values.len());
         for metric in values {
             if !inner.selected.contains(metric.id) {
                 continue;
@@ -142,7 +223,16 @@ impl OutputRouter {
             if let Some(osc) = &mut inner.osc {
                 osc.send_series(metric.id, 0, 1, std::iter::once(value));
             }
+            recorded.push((metric.id, value));
         }
+        let error = inner
+            .csv
+            .as_ref()
+            .and_then(|csv| csv.publish_metrics(&recorded).err());
+        if error.is_some() {
+            inner.csv = None;
+        }
+        error
     }
 }
 
@@ -194,6 +284,28 @@ impl RouterInner {
                 format!("Sending to {OSC_TARGET}")
             } else {
                 "Unavailable".into()
+            },
+            csv: if !self.config.csv_enabled {
+                "Off".into()
+            } else if let Some(csv) = &self.csv {
+                if let Some(error) = csv.error() {
+                    error
+                } else {
+                    format!(
+                        "Recording {}",
+                        csv.path()
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("local CSV")
+                    )
+                }
+            } else {
+                "Unavailable".into()
+            },
+            audio: if self.config.audio_enabled {
+                "Experimental PCM data modem".into()
+            } else {
+                "Off".into()
             },
         }
     }

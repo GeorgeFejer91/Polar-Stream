@@ -29,14 +29,21 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(bundled_lsl: Option<PathBuf>, preferences_path: PathBuf) -> Self {
+    fn new(
+        bundled_lsl: Option<PathBuf>,
+        preferences_path: PathBuf,
+        recording_directory: PathBuf,
+    ) -> Self {
         let preferences = Arc::new(PreferencesStore::load(preferences_path));
         let initial_config = preferences.snapshot().output_config;
         let (processing_settings, _) =
             tokio::sync::watch::channel(ProcessingSettings::from_config(&initial_config));
         Self {
             input: Arc::new(InputManager::new()),
-            output: Arc::new(OutputRouter::with_bundled_lsl(bundled_lsl)),
+            output: Arc::new(OutputRouter::with_bundled_lsl_and_recordings(
+                bundled_lsl,
+                recording_directory,
+            )),
             preferences,
             output_configuration: tokio::sync::Mutex::new(()),
             processing_settings,
@@ -257,15 +264,20 @@ async fn connect_device(
                     sensor_timestamp_ns,
                     microvolts,
                 } => {
-                    output.publish_ecg(sensor_timestamp_ns, &microvolts);
-                    let derived = metrics_engine.process_ecg(&microvolts);
-                    if !forward_display_event(
+                    let output_open = forward_output_warning(
                         &ui_tx,
-                        AppEvent::Ecg {
-                            sensor_timestamp_ns,
-                            microvolts,
-                        },
-                    ) {
+                        output.publish_ecg(sensor_timestamp_ns, &microvolts),
+                    );
+                    let derived = metrics_engine.process_ecg(&microvolts);
+                    if !output_open
+                        || !forward_display_event(
+                            &ui_tx,
+                            AppEvent::Ecg {
+                                sensor_timestamp_ns,
+                                microvolts,
+                            },
+                        )
+                    {
                         false
                     } else {
                         publish_metrics(&output, &ui_tx, derived)
@@ -275,15 +287,20 @@ async fn connect_device(
                     sensor_timestamp_ns,
                     samples,
                 } => {
-                    output.publish_accelerometer(sensor_timestamp_ns, &samples);
-                    let derived = metrics_engine.process_accelerometer(&samples);
-                    if !forward_display_event(
+                    let output_open = forward_output_warning(
                         &ui_tx,
-                        AppEvent::Accelerometer {
-                            sensor_timestamp_ns,
-                            samples,
-                        },
-                    ) {
+                        output.publish_accelerometer(sensor_timestamp_ns, &samples),
+                    );
+                    let derived = metrics_engine.process_accelerometer(&samples);
+                    if !output_open
+                        || !forward_display_event(
+                            &ui_tx,
+                            AppEvent::Accelerometer {
+                                sensor_timestamp_ns,
+                                samples,
+                            },
+                        )
+                    {
                         false
                     } else {
                         publish_metrics(&output, &ui_tx, derived)
@@ -292,11 +309,18 @@ async fn connect_device(
                 InputEvent::HeartRate {
                     beats_per_minute,
                     rr_intervals_ms,
-                } => publish_metrics(
-                    &output,
-                    &ui_tx,
-                    metrics_engine.process_heart_rate(beats_per_minute, &rr_intervals_ms),
-                ),
+                } => {
+                    let output_open = forward_output_warning(
+                        &ui_tx,
+                        output.publish_heart_rate(beats_per_minute, &rr_intervals_ms),
+                    );
+                    output_open
+                        && publish_metrics(
+                            &output,
+                            &ui_tx,
+                            metrics_engine.process_heart_rate(beats_per_minute, &rr_intervals_ms),
+                        )
+                }
                 InputEvent::Error(message) => forward_display_event(
                     &ui_tx,
                     AppEvent::Error {
@@ -354,8 +378,23 @@ fn publish_metrics(
             value: metric.value,
         })
         .collect::<Vec<_>>();
-    output.publish_metrics(&routed);
-    forward_display_event(ui_tx, AppEvent::Metrics { values })
+    let output_open = forward_output_warning(ui_tx, output.publish_metrics(&routed));
+    output_open && forward_display_event(ui_tx, AppEvent::Metrics { values })
+}
+
+fn forward_output_warning(
+    ui_tx: &tokio::sync::mpsc::Sender<AppEvent>,
+    message: Option<String>,
+) -> bool {
+    message.is_none_or(|message| {
+        forward_display_event(
+            ui_tx,
+            AppEvent::Error {
+                code: "CSV_RECORDING_STOPPED",
+                message,
+            },
+        )
+    })
 }
 
 fn forward_display_event(ui_tx: &tokio::sync::mpsc::Sender<AppEvent>, event: AppEvent) -> bool {
@@ -449,7 +488,26 @@ pub fn run() {
                 .ok()
                 .filter(|path| path.is_file());
             let preferences_path = app.path().app_config_dir()?.join("preferences.json");
-            app.manage(AppState::new(bundled_lsl, preferences_path));
+            let recording_directory = app
+                .path()
+                .download_dir()
+                .map(|path| path.join("Polar Stream"))
+                .unwrap_or_else(|_| {
+                    app.path()
+                        .app_data_dir()
+                        .unwrap_or_else(|_| {
+                            preferences_path
+                                .parent()
+                                .unwrap_or_else(|| std::path::Path::new("."))
+                                .to_path_buf()
+                        })
+                        .join("recordings")
+                });
+            app.manage(AppState::new(
+                bundled_lsl,
+                preferences_path,
+                recording_directory,
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

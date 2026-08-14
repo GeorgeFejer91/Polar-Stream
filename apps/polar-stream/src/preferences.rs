@@ -15,7 +15,7 @@ use polar_h10_output::OutputConfig;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-const SCHEMA_VERSION: u16 = 1;
+const SCHEMA_VERSION: u16 = 2;
 const MAX_PREFERENCES_BYTES: u64 = 1_048_576;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -272,6 +272,8 @@ mod tests {
             .unwrap();
         let config = OutputConfig {
             stream_name: "participant_07".into(),
+            csv_enabled: true,
+            audio_enabled: true,
             ..OutputConfig::default()
         };
         store.save_output_config(config).await.unwrap();
@@ -279,6 +281,8 @@ mod tests {
         let loaded = PreferencesStore::load(path.clone()).snapshot();
         assert_eq!(loaded.schema_version, SCHEMA_VERSION);
         assert_eq!(loaded.output_config.stream_name, "participant_07");
+        assert!(loaded.output_config.csv_enabled);
+        assert!(loaded.output_config.audio_enabled);
         assert_eq!(loaded.last_device.unwrap().id, "device-7");
         let _ = fs::remove_file(path);
     }
@@ -320,6 +324,31 @@ mod tests {
         let snapshot = PreferencesStore::load(path.clone()).snapshot();
         assert_eq!(snapshot.schema_version, SCHEMA_VERSION);
         assert_eq!(snapshot.output_config.outputs, ["raw_ecg", "raw_acc"]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn version_one_preferences_default_new_destinations_off() {
+        let path = test_path("version-one-destinations");
+        fs::write(
+            &path,
+            br#"{
+              "schemaVersion": 1,
+              "outputConfig": {
+                "streamName": "legacy_stream",
+                "lslEnabled": true,
+                "oscEnabled": false,
+                "outputs": ["raw_ecg", "raw_acc"],
+                "metricOptions": {}
+              },
+              "lastDevice": null
+            }"#,
+        )
+        .unwrap();
+        let snapshot = PreferencesStore::load(path.clone()).snapshot();
+        assert_eq!(snapshot.schema_version, SCHEMA_VERSION);
+        assert!(!snapshot.output_config.csv_enabled);
+        assert!(!snapshot.output_config.audio_enabled);
         let _ = fs::remove_file(path);
     }
 }

@@ -4,6 +4,7 @@
   const runtime = window.PolarRuntimeApi;
   const isNative = runtime.isNative;
   const browserSession = window.PolarBrowserSession;
+  const audioDataLink = window.PolarAudioDataLink;
   const preferences = window.PolarPreferences;
   let metricPreviews = null;
   let metricPreviewsPromise = null;
@@ -11,6 +12,7 @@
   const svgNamespace = "http://www.w3.org/2000/svg";
   let metricPreviewSequence = 0;
   let browserRecorderCapacityNotified = false;
+  let browserLifecycleWarningPending = false;
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
@@ -139,8 +141,8 @@
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value",
     "scan-button", "scan-caption", "device-list", "activity-list", "output-state", "raw-ecg-value",
-    "raw-acc-x", "raw-acc-y", "raw-acc-z", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle",
-    "lsl-detail", "osc-detail", "lsl-destination-row", "osc-destination-row", "browser-local-destination", "included-count", "output-chips", "open-output-dialog", "visual-source",
+    "raw-acc-x", "raw-acc-y", "raw-acc-z", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
+    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "browser-local-destination", "browser-recorder-actions", "included-count", "output-chips", "open-output-dialog", "visual-source",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
     "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "dialog-output-status", "save-metric-output", "toast-region",
@@ -148,7 +150,7 @@
     "metric-family-toggle", "metric-family-context", "metric-family-note",
     "adjust-visual", "visual-window-label", "visual-scale-label", "module-dialog", "module-dialog-title",
     "module-dialog-intro", "module-settings", "module-dialog-status", "save-module-settings",
-    "pipeline-title", "pipeline-detail", "browser-record-button", "browser-export-button",
+    "pipeline-title", "pipeline-detail", "browser-export-button",
     "browser-discard-button", "browser-recorder-count", "browser-recorder-status",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
@@ -300,7 +302,7 @@
 
   async function initialize() {
     let bootstrap = {
-      config: { streamName: "Polar-H10", lslEnabled: false, oscEnabled: false, outputs: ["raw_ecg", "raw_acc"], metricOptions: {} },
+      config: { streamName: "Polar-H10", lslEnabled: false, oscEnabled: false, csvEnabled: false, audioEnabled: false, outputs: ["raw_ecg", "raw_acc"], metricOptions: {} },
       platform: "browser preview",
       metricCatalog: fallbackCatalog,
     };
@@ -348,6 +350,10 @@
     elements["stream-name"].value = app.streamName;
     elements["lsl-toggle"].checked = Boolean(initialConfig.lslEnabled);
     elements["osc-toggle"].checked = Boolean(initialConfig.oscEnabled);
+    elements["csv-toggle"].checked = runtime.isBrowser ? false : Boolean(initialConfig.csvEnabled);
+    // Web Audio must be resumed from an explicit user gesture. Never restore
+    // an emitting audio modem silently after launch or reload.
+    elements["audio-toggle"].checked = false;
     if (runtime.isBrowser) {
       elements["lsl-toggle"].checked = false;
       elements["osc-toggle"].checked = false;
@@ -356,6 +362,7 @@
       elements["lsl-destination-row"].hidden = true;
       elements["osc-destination-row"].hidden = true;
       elements["browser-local-destination"].hidden = false;
+      elements["browser-recorder-actions"].hidden = false;
       elements["stream-name-label"].textContent = "Signal base name";
     }
     document.body.dataset.runtime = runtime.mode;
@@ -380,6 +387,7 @@
     installInteractions();
     await configureOutputs({ quiet: true });
     if (runtime.isBrowser && browserSession) browserSession.subscribe(renderBrowserRecorder);
+    if (audioDataLink) audioDataLink.subscribe(renderAudioOutput);
     resizeCanvas();
     if (!isInterfaceRenderer) requestRender();
     if (app.preferences.lastDevice
@@ -394,29 +402,54 @@
     elements["disconnect-button"].addEventListener("click", disconnectDevice);
     elements["lsl-toggle"].addEventListener("change", configureOutputs);
     elements["osc-toggle"].addEventListener("change", configureOutputs);
-    if (runtime.isBrowser && browserSession) {
-      elements["browser-record-button"].addEventListener("click", () => {
-        const status = browserSession.status();
+    elements["csv-toggle"].addEventListener("change", async () => {
+      if (runtime.isBrowser && browserSession) {
         try {
-          if (status.state === "recording") {
-            browserSession.stop("user");
-            addActivity("Browser recording stopped");
-            toast("Recording stopped · download the CSV before closing this tab");
-          } else {
+          if (elements["csv-toggle"].checked) {
             browserSession.start({
               deviceName: elements["device-name"].textContent,
               inputKind: app.currentInputKind || "browser",
             });
-            addActivity("Browser recording started");
-            toast("Recording selected outputs in this tab");
+            addActivity("Browser CSV recording started");
+            toast("Recording all incoming browser data in this tab");
+          } else if (browserSession.status().state === "recording") {
+            browserSession.stop("user");
+            const filename = browserSession.download();
+            browserSession.discard();
+            addActivity(`Downloaded ${filename}`);
+            toast(`Saved ${filename}`);
           }
         } catch (error) {
+          elements["csv-toggle"].checked = false;
           toast(error.message || String(error), true);
         }
-      });
+      }
+      await configureOutputs();
+    });
+    elements["audio-toggle"].addEventListener("change", async () => {
+      if (!audioDataLink) return;
+      try {
+        if (elements["audio-toggle"].checked) {
+          await audioDataLink.enable({ streamName: app.streamName });
+          addActivity("Experimental audio data output started");
+          toast("Stereo PCM data modem active · use a cable or digital recorder");
+        } else {
+          audioDataLink.disable();
+          addActivity("Audio data output stopped");
+        }
+        await configureOutputs();
+      } catch (error) {
+        elements["audio-toggle"].checked = false;
+        audioDataLink.disable();
+        toast(error.message || String(error), true);
+        await configureOutputs({ quiet: true });
+      }
+    });
+    if (runtime.isBrowser && browserSession) {
       elements["browser-export-button"].addEventListener("click", () => {
         try {
           const filename = browserSession.download();
+          browserSession.discard();
           addActivity(`Downloaded ${filename}`);
           toast(`Saved ${filename}`);
         } catch (error) {
@@ -426,14 +459,20 @@
       elements["browser-discard-button"].addEventListener("click", () => {
         if (!window.confirm("Discard the browser recording? It cannot be recovered after this tab closes.")) return;
         browserSession.discard();
+        elements["csv-toggle"].checked = false;
         addActivity("Browser recording discarded");
       });
       window.addEventListener("beforeunload", (event) => {
-        if (browserSession.status().state !== "recording") return;
+        if (!browserSession.status().hasData) return;
         event.preventDefault();
         event.returnValue = "";
       });
     }
+    window.addEventListener("polar-stream-audio-error", (event) => {
+      elements["audio-toggle"].checked = false;
+      toast(event.detail || "Audio data output stopped.", true);
+      void configureOutputs({ quiet: true });
+    });
 
     let nameTimer;
     elements["stream-name"].addEventListener("input", () => {
@@ -520,8 +559,19 @@
       elements["metric-library-summary"].textContent = `${libraryCatalog().length} metrics`;
     });
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) cancelScheduledRender();
-      else requestRender();
+      if (document.hidden) {
+        cancelScheduledRender();
+        if (runtime.isBrowser && app.currentInputKind === "web-bluetooth") {
+          browserLifecycleWarningPending = true;
+          addActivity("Tab hidden · Android may suspend browser Bluetooth capture");
+        }
+      } else {
+        requestRender();
+        if (browserLifecycleWarningPending) {
+          browserLifecycleWarningPending = false;
+          toast("Chrome may have paused or discarded data while this tab was hidden. Check sensor timestamps for gaps.", true);
+        }
+      }
     });
 
     const observer = new ResizeObserver(() => {
@@ -712,7 +762,7 @@
     app.connectionGeneration += 1;
     try {
       const result = await runtime.disconnectDevice();
-      if (!result?.emitted) {
+      if (!result?.emitted || app.connected) {
         handleNativeEvent({
           kind: "connection", connected: false, streaming: false,
           deviceName: elements["device-name"].textContent, batteryPercent: null, message: "Disconnected",
@@ -725,6 +775,7 @@
   }
 
   function handleNativeEvent(event, device = null) {
+    audioDataLink?.capture(event);
     switch (event.kind) {
       case "status":
         setTopStatus(event.message, "working");
@@ -744,6 +795,12 @@
         ingestMetrics(event);
         break;
       case "error":
+        if (event.code === "CSV_RECORDING_STOPPED") {
+          elements["csv-toggle"].checked = false;
+          elements["csv-detail"].textContent = event.message;
+          elements["csv-detail"].classList.add("warning");
+          void configureOutputs({ quiet: true });
+        }
         addActivity(event.message);
         toast(event.message, true);
         break;
@@ -808,9 +865,7 @@
     if (!runtime.isBrowser || !status) return;
     const recording = status.state === "recording";
     const stopped = status.state === "stopped";
-    elements["browser-record-button"].disabled = !app.connected && !recording;
-    elements["browser-record-button"].textContent = recording ? "Stop recording" : "Start recording";
-    if (stopped && status.hasData) elements["browser-record-button"].disabled = true;
+    elements["csv-toggle"].checked = recording;
     elements["browser-export-button"].disabled = !stopped || !status.hasData;
     elements["browser-discard-button"].hidden = !stopped || !status.hasData;
     elements["browser-recorder-status"].textContent = recording
@@ -825,12 +880,28 @@
         : stopped
           ? `${status.rowCount.toLocaleString()} rows ready to download`
           : `Ready · up to ${status.maxRows.toLocaleString()} rows per file`;
+    elements["csv-detail"].textContent = recording
+      ? `Recording every incoming browser row · ${status.rowCount.toLocaleString()} captured`
+      : stopped && status.hasData
+        ? `${status.rowCount.toLocaleString()} rows waiting for download`
+        : "All received raw data and produced metrics · 300,000-row limit";
     if (status.stopReason === "capacity" && !browserRecorderCapacityNotified) {
       browserRecorderCapacityNotified = true;
       toast("Browser recording reached its safe file limit. Download it before starting another.", true);
     } else if (status.stopReason !== "capacity") {
       browserRecorderCapacityNotified = false;
     }
+  }
+
+  function renderAudioOutput(status) {
+    if (!status) return;
+    const bitRate = status.bitRate ? `${(status.bitRate / 1000).toFixed(2)} kbit/s` : "22.05 kbit/s";
+    elements["audio-detail"].textContent = status.error
+      ? status.error
+      : status.enabled
+        ? `Sending ${bitRate} stereo PCM · ${status.frameCount.toLocaleString()} frames`
+        : "CRC-checked stereo data modem · cable or digital recording";
+    elements["audio-detail"].classList.toggle("warning", Boolean(status.error));
   }
 
   function ingestEcg(values) {
@@ -1219,10 +1290,15 @@
     const streamName = document.createElement("code");
     streamName.textContent = streamOutputName(metric, elements["stream-name"].value);
     const streamMeta = document.createElement("p");
-    const transports = [elements["lsl-toggle"].checked ? "LSL" : null, elements["osc-toggle"].checked ? "OSC" : null].filter(Boolean);
+    const transports = [
+      elements["lsl-toggle"].checked ? "LSL" : null,
+      elements["osc-toggle"].checked ? "OSC" : null,
+      elements["csv-toggle"].checked ? "CSV" : null,
+      elements["audio-toggle"].checked ? "audio data" : null,
+    ].filter(Boolean);
     const normalizedMagnitude = metric.id === "acc_breathing_magnitude"
       && app.libraryMetricDraft?.normalization !== "none";
-    streamMeta.textContent = `${metric.channels} channel${metric.channels === 1 ? "" : "s"} · ${normalizedMagnitude ? "0–1 normalized from g" : metric.unit} · ${transports.length ? transports.join(" + ") : "enable LSL or OSC in Output"}`;
+    streamMeta.textContent = `${metric.channels} channel${metric.channels === 1 ? "" : "s"} · ${normalizedMagnitude ? "0–1 normalized from g" : metric.unit} · ${transports.length ? transports.join(" + ") : "enable an Output destination"}`;
     stream.append(streamTitle, streamName, streamMeta);
 
     const breathingSettings = breathingOutputIds.has(metric.id)
@@ -1803,6 +1879,8 @@
       streamName,
       lslEnabled: runtime.isBrowser ? false : elements["lsl-toggle"].checked,
       oscEnabled: runtime.isBrowser ? false : elements["osc-toggle"].checked,
+      csvEnabled: elements["csv-toggle"].checked,
+      audioEnabled: elements["audio-toggle"].checked,
       outputs: [...app.outputs],
       metricOptions: Object.fromEntries([...app.outputs].map((id) => [id, metricOptionFor(id)])),
     };
@@ -1816,6 +1894,7 @@
           metricUnits: Object.fromEntries(app.catalog.map((metric) => [metric.id, metric.unit])),
         });
       }
+      audioDataLink?.configure(config);
       app.streamName = health.streamName || streamName;
       elements["stream-name"].value = app.streamName;
       config.streamName = app.streamName;
@@ -1839,10 +1918,19 @@
     const oscText = runtime.isBrowser
       ? health.osc
       : elements["osc-toggle"].checked ? health.osc : "UDP · localhost:9000";
+    const csvText = runtime.isBrowser
+      ? elements["csv-detail"].textContent
+      : elements["csv-toggle"].checked ? health.csv : "All received raw data and produced metrics · bounded writer";
+    const audioText = elements["audio-toggle"].checked
+      ? health.audio || audioDataLink?.supportStatus().reason
+      : "CRC-checked stereo data modem · cable or digital recording";
     elements["lsl-detail"].textContent = lslText;
     elements["osc-detail"].textContent = oscText;
+    if (!runtime.isBrowser) elements["csv-detail"].textContent = csvText;
+    if (!audioDataLink?.status().enabled) elements["audio-detail"].textContent = audioText;
     elements["lsl-detail"].classList.toggle("warning", elements["lsl-toggle"].checked && /not found|failed|could not|unavailable/i.test(lslText));
     elements["osc-detail"].classList.toggle("warning", elements["osc-toggle"].checked && /failed|could not|unavailable/i.test(oscText));
+    elements["csv-detail"].classList.toggle("warning", elements["csv-toggle"].checked && /stopped|failed|could not|unavailable/i.test(csvText));
   }
 
   function resizeCanvas() {

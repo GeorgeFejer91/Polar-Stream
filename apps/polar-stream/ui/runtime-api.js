@@ -314,6 +314,8 @@
           streamName: config.streamName,
           lsl: "Not part of browser-only mode",
           osc: "Not part of browser-only mode",
+          csv: config.csvEnabled ? "Recording in this browser tab" : "Off",
+          audio: config.audioEnabled ? "Experimental PCM data modem" : "Off",
         };
       }
       if (activeInput === "mock") {
@@ -321,6 +323,8 @@
           streamName: config.streamName,
           lsl: config.lslEnabled ? "Synthetic input does not enter native LSL" : "Off",
           osc: config.oscEnabled ? "Synthetic input does not enter native OSC" : "Off",
+          csv: config.csvEnabled ? "Synthetic input does not enter the native CSV writer" : "Off",
+          audio: config.audioEnabled ? "Experimental PCM data modem" : "Off",
         };
       }
       return invoke("update_output_config", { config });

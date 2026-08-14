@@ -4,8 +4,8 @@ Polar Stream is the condensed successor UI for this fork. It has exactly three
 working areas:
 
 1. **Input** — scan, connect, connection state, and battery.
-2. **Output** — raw ECG/ACC readings, stream base name, LSL/OSC switches, and an
-   extensible output list.
+2. **Output** — raw ECG/ACC readings, stream base name, LSL/OSC/CSV/experimental
+   audio switches, and an extensible output list.
 3. **Visualization** — one live canvas whose source is selected from the active
    outputs.
 
@@ -44,8 +44,15 @@ The Pages workflow is entirely in-browser and never connects to a localhost
 companion; native destinations are hidden instead of presented as unavailable
 switches.
 
-The Pages output panel instead contains a browser-native session recorder. It
-captures the selected ECG, ACC, and browser-computed metric events before UI
+Chrome on Android can use this foreground path. The adapter requests a screen
+wake lock while visible, but neither Pages nor an installed PWA can guarantee
+capture after Android hides/freezes/discards the page or locks the screen; Web
+Bluetooth is unavailable to service workers. Physical Android/H10 testing and
+a separate native foreground-service design remain required boundaries.
+
+The Pages output panel instead contains a browser-native session recorder. Its
+**Save local CSV** toggle captures every incoming raw ECG/ACC row and every
+browser-produced metric event before UI
 decimation, retains raw units, reconstructs per-sample PMD timestamps from the
 frame timestamp when available, and downloads a tidy CSV. Its 300,000-row cap
 stops the recording visibly and requires export or discard before reuse. The
@@ -53,6 +60,12 @@ same incoming batches are exposed to same-tab code through the
 `polar-stream-data` event and to other same-origin tabs through the
 `polar-stream-live-v1` `BroadcastChannel`. Neither interface is described as
 LSL and neither is discoverable by native LabRecorder.
+
+The native version of the same toggle uses a bounded non-blocking Rust writer
+under `Downloads/Polar Stream`. The experimental audio-data toggle emits a
+CRC-checked 22.05 kbit/s stereo PCM modem waveform; see
+[`docs/audio-data-output.md`](../../docs/audio-data-output.md) for its packet
+format, AUX/digital recording constraints, and WAV-to-CSV decoder.
 
 ```bash
 npm run build:browser-demo
@@ -108,6 +121,12 @@ characters in the user-entered base are collapsed to underscores.
   discoverable name with a leading slash, such as
   `/participant_07_rawECG`. Every message starts with the sensor timestamp as an
   OSC `int64`, followed by float samples.
+- **CSV:** all received raw ECG/ACC, HR/RR, and produced selected metrics are
+  written by a bounded dedicated thread. Queue or disk failure stops CSV rather
+  than slowing sensor/LSL/OSC work.
+- **Audio data:** shared Web Audio emits an experimental stereo Manchester/CRC32
+  link. In Tauri it is fed by the display channel and is therefore not an
+  authoritative replacement for LSL, OSC, or native CSV.
 
 The fixed OSC destination is deliberate: changing it is an integration concern,
 not a lever needed in the primary UI. It can later be injected through app

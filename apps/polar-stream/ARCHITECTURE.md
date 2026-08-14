@@ -38,6 +38,7 @@ apps/polar-stream (thin coordinator)
    │                    ▼
    ├────────► polar-h10-output ─────► LSL outlets
    │                    └───────────► OSC/UDP
+   │                    └───────────► bounded CSV writer thread
    │
    └────────► bounded display queue ─► Tauri channel ─► typed JS ring buffers
                                                         │ data-triggered frame
@@ -95,8 +96,9 @@ Physical-H10 browser validation remains an explicit release boundary.
 runtime publishes each un-decimated browser input event to it before the chart
 callback. It then exposes the typed batch on the same-tab `polar-stream-data`
 event and same-origin `polar-stream-live-v1` `BroadcastChannel`. Recording is
-demand-driven, includes only selected outputs, preserves raw ECG microvolts and
-ACC milligravity, and reconstructs timestamps backwards from a PMD frame's final
+demand-driven, includes every received raw ECG/ACC row plus every metric event
+the browser produces, preserves raw ECG microvolts and ACC milligravity, and
+reconstructs timestamps backwards from a PMD frame's final
 sensor timestamp. CSV rows and their in-memory chunks have a hard 300,000-row
 limit; the recorder stops and reports `FULL` at the boundary rather than
 discarding data or growing indefinitely. A disconnect also stops an active
@@ -111,6 +113,24 @@ tabs cannot open their native sockets. Browser acquisition, processing, and
 visualization are self-contained and do not call a localhost companion, native
 wrapper, or remote relay. Native Tauri acquisition remains isolated in Rust and
 unchanged by this browser adapter.
+
+The browser adapter makes a best-effort screen wake-lock request while an H10 is
+connected and reacquires it when a visible document resumes. This improves an
+Android Chrome foreground session but is not background execution. Web
+Bluetooth is unavailable in workers/service workers, and the browser may freeze
+or discard a hidden mobile page. The UI warns after a hidden browser-BLE session;
+timestamps remain the evidence for detecting gaps. Guaranteed phone capture
+with another app foregrounded or the screen locked requires native Android
+platform work and a foreground service.
+
+`ui/audio-data-link.js` is a shared, experimental Web Audio destination. It
+encodes 125 ms batches as bounded 22.05 kbit/s stereo Manchester PCM frames with
+a preamble, sequence number, compact raw values, and CRC32. The checked-in
+`scripts/decode_audio_data.py` reference decoder reconstructs CSV from a clean
+stereo PCM WAV, and browser validation exercises the production encoder through
+that decoder. In Tauri this still consumes the bounded WebView display channel,
+so it can miss display events and is not an authoritative native output. The
+native CSV writer, LSL, and OSC remain the research-data paths.
 
 An ordinary GitHub Pages tab still cannot implement native LSL discovery and
 transport: it has no general UDP multicast or raw TCP/UDP socket API. The live
@@ -166,16 +186,19 @@ catalog for saved-config migration but are not offered as new library choices.
 
 1. Decode each BLE notification once in Rust.
 2. Publish LSL/OSC directly from the native coordinator.
-3. Forward each already-arrived BLE notification immediately. LSL uses one
+3. If CSV is enabled, copy the decoded notification into a bounded 128-batch
+   non-blocking queue. Formatting and file I/O happen on a dedicated thread;
+   overflow or writer failure stops CSV visibly without delaying acquisition.
+4. Forward each already-arrived BLE notification immediately. LSL uses one
    immediate chunk call for that notification (`pushthrough = true`), while OSC
    uses one immediate UDP packet; there is no timer or additional accumulation.
-4. Cross the WebView boundary through a small bounded display-only queue. If the
+5. Cross the WebView boundary through a small bounded display-only queue. If the
    renderer stalls, it may skip visual frames instead of applying backpressure
    to acquisition or publication.
-5. Store chart values in fixed-size typed ring buffers.
-6. Request a frame only when data, layout, or controls change, capped at 30 Hz;
+6. Store chart values in fixed-size typed ring buffers.
+7. Request a frame only when data, layout, or controls change, capped at 30 Hz;
    stop requesting frames when idle or hidden.
-7. Never block input on an animation frame.
+8. Never block input on an animation frame.
 
 Output reconfiguration is separately serialized so overlapping UI changes
 cannot let an older asynchronous OSC setup overwrite a newer configuration.
@@ -241,4 +264,4 @@ outputs without pretending to be a native LSL/OSC source. See the
 [ACC-derived breathing handoff](../../docs/acc-breathing-handoff.md) for exact
 formulas and known differences from the upstream PolarH10 tracker.
 
-Raw input and output destinations remain unchanged.
+Raw input units and canonical LSL/OSC names remain unchanged.

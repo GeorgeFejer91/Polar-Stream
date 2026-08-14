@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="styles.css" />
     <script src="polar-web-bluetooth.js" defer></script>
     <script src="browser-session.js" defer></script>
+    <script src="audio-data-link.js" defer></script>
     <script src="runtime-api.js" defer></script>
     <script src="preferences.js" defer></script>
     <script src="app.js" defer></script>
@@ -126,16 +127,10 @@
           <div class="destination-row browser-local-destination" id="browser-local-destination" hidden>
             <span class="protocol-mark browser-mark">WEB</span>
             <span class="browser-destination-copy">
-              <strong>Browser session + live channel</strong>
-              <small>Bluetooth, processing and recording stay in this site; download CSV before closing the tab.</small>
-              <span class="browser-recorder-controls">
-                <button class="recorder-button" id="browser-record-button" type="button" disabled>Start recording</button>
-                <button class="recorder-button" id="browser-export-button" type="button" disabled>Download CSV</button>
-                <button class="recorder-link" id="browser-discard-button" type="button" hidden>Discard</button>
-              </span>
-              <small class="browser-recorder-count" id="browser-recorder-count">Ready · up to 300,000 rows per file</small>
+              <strong>Browser live channel</strong>
+              <small>Exact batches are available to same-tab and same-origin browser code; this is not LSL.</small>
             </span>
-            <strong class="local-only-mark" id="browser-recorder-status">READY</strong>
+            <strong class="local-only-mark">TAB</strong>
           </div>
           <label class="destination-row" id="lsl-destination-row">
             <span class="protocol-mark lsl-mark">LSL</span>
@@ -147,6 +142,34 @@
             <span class="protocol-mark osc-mark">OSC</span>
             <span><strong>Open Sound Control</strong><small id="osc-detail">UDP · localhost:9000</small></span>
             <input id="osc-toggle" class="switch-input" type="checkbox" />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+          <label class="destination-row" id="csv-destination-row">
+            <span class="protocol-mark csv-mark">CSV</span>
+            <span>
+              <strong>Save local CSV</strong>
+              <small id="csv-detail">All received raw data and produced metrics · bounded writer</small>
+            </span>
+            <input id="csv-toggle" class="switch-input" type="checkbox" />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+          <div class="browser-recorder-actions" id="browser-recorder-actions" hidden>
+            <span>
+              <strong class="local-only-mark" id="browser-recorder-status">READY</strong>
+              <small class="browser-recorder-count" id="browser-recorder-count">Ready · up to 300,000 rows per file</small>
+            </span>
+            <span class="browser-recorder-controls">
+              <button class="recorder-button" id="browser-export-button" type="button" disabled>Download CSV</button>
+              <button class="recorder-link" id="browser-discard-button" type="button" hidden>Discard</button>
+            </span>
+          </div>
+          <label class="destination-row" id="audio-destination-row">
+            <span class="protocol-mark audio-mark">PCM</span>
+            <span>
+              <strong>Audio data output <em>EXPERIMENTAL</em></strong>
+              <small id="audio-detail">CRC-checked stereo data modem · cable or digital recording</small>
+            </span>
+            <input id="audio-toggle" class="switch-input" type="checkbox" />
             <span class="switch" aria-hidden="true"></span>
           </label>
         </div>

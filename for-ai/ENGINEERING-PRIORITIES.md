@@ -22,8 +22,9 @@ platform support.
   operating-system workarounds behind narrow adapters or `cfg` boundaries.
 - `polar-h10-metrics` owns opt-in transformations, windows, formulas, quality
   gates, evidence metadata, and formula tests.
-- `polar-h10-output` owns canonical discovery names and fail-soft LSL/OSC
-  transport behavior. Transport code must not know about the WebView.
+- `polar-h10-output` owns canonical discovery names, fail-soft LSL/OSC
+  transport behavior, and bounded native CSV persistence. Transport code must
+  not know about the WebView.
 - `apps/polar-stream` coordinates lifecycle and IPC. It must not become a second
   protocol decoder, metric engine, catalog, or transport implementation.
 - JavaScript consumes bounded display data. It may decimate or skip visual
@@ -139,9 +140,14 @@ copies, synchronization, serialization, or higher render cadence.
   WebSocket/HTTP protocol to make Pages appear to publish LSL. A genuine native
   LSL requirement belongs to the separately installed app.
 - Browser-native capture may expose exact input batches through same-tab or
-  same-origin browser APIs and may export selected outputs locally, but its
+  same-origin browser APIs and may export all received raw data plus produced
+  metric events locally, but its
   memory/storage queue must be bounded, overflow must stop or surface visibly,
   and neither mechanism may be named or documented as native LSL.
+- A visible-document wake lock is foreground protection only. Never claim that
+  Pages or an installed PWA provides guaranteed background/screen-off Web
+  Bluetooth, CSV, or audio capture; that requires a native mobile lifecycle and
+  foreground-service design.
 
 ## Review and definition of done
 

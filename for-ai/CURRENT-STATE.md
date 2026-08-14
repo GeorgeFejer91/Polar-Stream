@@ -1,6 +1,6 @@
 # Current state
 
-Last verified: 2026-08-13
+Last verified: 2026-08-14
 
 ## Implemented
 
@@ -14,6 +14,10 @@ Last verified: 2026-08-13
   uncached characteristic discovery, and three bounded retries. This improves
   AccessDenied/Unreachable reliability but still does not force ATT MTU.
 - Immediate raw LSL/OSC publication with canonical names.
+- A native **Save local CSV** destination records every received raw ECG/ACC
+  sample, HR/RR, and every produced selected metric under `Downloads/Polar
+  Stream` (app-data fallback). Its 128-notification writer queue is non-blocking
+  and fail-stop so disk I/O cannot delay LSL/OSC or acquisition.
 - Demand-driven ECG, HRV, coherence, breathing, breathing-dynamics, quality,
   and explicitly experimental metric modules.
 - Three-panel Tauri UI with remembered native preferences.
@@ -52,9 +56,18 @@ Last verified: 2026-08-13
   mode and remain available only in the separately installed desktop app.
 - Pages has a browser-native live/recording destination. Every un-decimated
   input batch is available through a same-tab event and same-origin
-  `BroadcastChannel`; selected outputs can be captured to a timestamped CSV.
+  `BroadcastChannel`; every received raw row and produced metric event can be
+  captured to a timestamped CSV through the shared output toggle.
   The recorder stops visibly at 300,000 rows or input disconnect, never grows
   without a bound, and is automated against mock input and CSV download.
+- Both runtimes expose an experimental 22.05 kbit/s stereo Manchester PCM data
+  modem toggle for clean cable/digital-loopback recording. Frames use compact
+  ECG/ACC/metric sections, sequence numbers, and CRC32. Browser validation sends
+  the production waveform through `scripts/decode_audio_data.py` and checks the
+  recovered CSV rows.
+- Browser H10 sessions request a best-effort screen wake lock while the page is
+  visible, and emulated Android-touch coverage exercises the permission/GATT
+  and wake-lock contract.
 - The ACC breathing add/adjust workflows expose axes, smoothing, sensitivity,
   direction, calibration window/range, stale timeout, adaptive bounds/window,
   and robust quantiles. `docs/acc-breathing-handoff.md` documents provenance,
@@ -89,12 +102,21 @@ Last verified: 2026-08-13
 - The Web Bluetooth adapter has not yet been exercised against a physical H10.
   Browser/OS support remains non-portable, and BLE throughput, reconnect,
   compressed-frame behavior, and timing must be recorded on real hardware.
+- Web Bluetooth is unavailable to workers/service workers, and mobile Chrome
+  may freeze or discard a hidden page. The screen wake lock is released when
+  the document becomes inactive. Pages therefore cannot guarantee Bluetooth,
+  CSV, or audio continuity while another app/tab is foreground or the screen is
+  locked; a native Android foreground service is still required for that claim.
 - Ordinary browser tabs do not publish LSL or OSC because they cannot open the
   raw UDP discovery/multicast and TCP/UDP sockets those protocols require. The
   browser workflow deliberately does not emulate them through another transport.
 - Browser CSV and the same-origin live channel are not discoverable by native
   LabRecorder and do not provide cross-device clock synchronization. Use the
   installed app when native LSL is a requirement.
+- The audio modem has CRC-based error detection but no forward error correction,
+  encryption, or physical AUX/device validation. It requires clean stereo PCM;
+  mono phone microphone inputs, lossy codecs, speaker/microphone paths, and
+  native WebView event loss remain unsupported/unvalidated boundaries.
 - Breathing phase sensitivity is currently applied to normalized change per ACC
   notification batch, not change per second. BLE batch cadence can therefore
   affect classification and must be corrected/versioned before cross-platform

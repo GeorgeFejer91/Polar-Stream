@@ -457,12 +457,20 @@
       this.onEvent = null;
       this.disconnecting = false;
       this.connected = false;
+      this.wakeLock = null;
+      this.wakeLockWanted = false;
       this.outputs = new Set(["raw_ecg", "raw_acc"]);
       this.breathing = new BreathingProcessor();
       this.boundPmd = (event) => this.handlePmd(event);
       this.boundHeartRate = (event) => this.handleHeartRate(event);
       this.boundControl = (event) => this.handleControl(event);
       this.boundDisconnected = () => this.handleDisconnected();
+      this.boundVisibility = () => {
+        if (this.wakeLockWanted && document.visibilityState === "visible") {
+          void this.requestWakeLock();
+        }
+      };
+      document.addEventListener("visibilitychange", this.boundVisibility);
     }
 
     updateConfig(config = {}) {
@@ -524,6 +532,8 @@
           batteryPercent = null;
         }
         this.connected = true;
+        this.wakeLockWanted = true;
+        const screenAwake = await this.requestWakeLock();
         this.emit({
           kind: "connection",
           connected: true,
@@ -532,7 +542,9 @@
           transport: "web-bluetooth",
           deviceName: this.device.name || "Polar H10",
           batteryPercent,
-          message: "Experimental browser BLE · ECG and ACC stream directly in this tab",
+          message: screenAwake
+            ? "Experimental browser BLE · foreground screen wake lock active"
+            : "Experimental browser BLE · keep this tab visible and the screen awake",
         });
       } catch (error) {
         await this.disconnect({ emit: false });
@@ -547,6 +559,32 @@
         await this.control.writeValueWithResponse(value);
       } else {
         await this.control.writeValue(value);
+      }
+    }
+
+    async requestWakeLock() {
+      if (!this.wakeLockWanted || document.visibilityState !== "visible"
+        || typeof navigator.wakeLock?.request !== "function") return false;
+      if (this.wakeLock && !this.wakeLock.released) return true;
+      try {
+        const sentinel = await navigator.wakeLock.request("screen");
+        this.wakeLock = sentinel;
+        sentinel.addEventListener("release", () => {
+          if (this.wakeLock === sentinel) this.wakeLock = null;
+        }, { once: true });
+        return true;
+      } catch {
+        this.wakeLock = null;
+        return false;
+      }
+    }
+
+    async releaseWakeLock() {
+      this.wakeLockWanted = false;
+      const sentinel = this.wakeLock;
+      this.wakeLock = null;
+      if (sentinel && !sentinel.released) {
+        try { await sentinel.release(); } catch { /* best effort */ }
       }
     }
 
@@ -597,6 +635,7 @@
         if (this.device) this.device.removeEventListener("gattserverdisconnected", this.boundDisconnected);
         if (this.server?.connected) this.server.disconnect();
       } finally {
+        await this.releaseWakeLock();
         this.connected = false;
         this.server = null;
         this.control = null;
@@ -631,6 +670,7 @@
       if (this.disconnecting) return;
       const deviceName = this.device?.name || "Polar H10";
       this.connected = false;
+      void this.releaseWakeLock();
       this.server = null;
       this.control = null;
       this.pmdData = null;

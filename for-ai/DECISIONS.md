@@ -1,5 +1,58 @@
 # Decision log
 
+## 2026-08-14 — Local CSV is bounded and independent of native publication
+
+The shared Output panel exposes one **Save local CSV** toggle in Tauri and
+Pages. Native H10 recording belongs to `polar-h10-output`: immediate selected
+LSL/OSC publication happens first, then a decoded notification is copied with a
+non-blocking `try_send` into a dedicated 128-batch CSV writer. Formatting and
+filesystem I/O never enter the sensor path. A full/disconnected queue or writer
+error stops CSV and reports a best-effort UI warning; it may not grow, block, or
+silently discard accepted rows. Native files include all received raw ECG/ACC,
+HR/RR, and every derived metric produced by active processors.
+
+This supersedes the selected-output CSV scope recorded in the 2026-08-13 Pages
+decision below; the row and memory bounds remain in force.
+
+Pages retains a separate 300,000-row in-tab recorder because a hosted page does
+not have Rust filesystem authority. It now records every received raw row and
+every metric event the browser produces, independent of which outputs are
+selected for visualization. Turning the toggle off uses the initiating gesture
+to download the file. Browser capture remains vulnerable to tab lifecycle and
+must be downloaded before the page is lost.
+
+## 2026-08-14 — Audio data is an experimental cable modem, not encryption
+
+The shared frontend may emit compact raw/metric batches as 22.05 kbit/s stereo
+Manchester PCM with a preamble, sequence number, and CRC32. This rate is chosen
+to fit nominal 130 Hz signed-24-bit ECG plus 200 Hz three-axis signed-16-bit ACC
+and framing over clean stereo AUX/digital loopback. CRC detects corruption; the
+format has no forward error correction, confidentiality, authentication, or
+tamper protection and must never be described as encryption.
+
+The implementation remains in the shared Web Audio layer and is bounded to a
+1.25-second scheduled horizon. It is not authoritative in Tauri because the
+bounded display channel may omit events. Native CSV/LSL/OSC remain the reliable
+paths. `scripts/decode_audio_data.py` is the public stereo-PCM-WAV reference
+decoder and browser validation must round-trip the production encoder through
+it. Speaker/microphone and mono/lossy paths remain outside the claim.
+
+## 2026-08-14 — Browser H10 is foreground-only despite wake-lock protection
+
+Chrome on Android can grant a visible secure page direct BLE GATT access, so
+Pages requests a best-effort screen wake lock after H10 connection and
+reacquires it when the document becomes visible again. This does not authorize
+or technically provide background capture. Web Bluetooth is unavailable in Web
+Workers/service workers, active screen locks are released for inactive/hidden
+documents, and mobile Chrome may freeze or discard a page without a final
+callback. Switching apps/tabs or locking the screen can therefore interrupt
+Bluetooth, CSV, and audio.
+
+The UI warns after returning from a hidden browser-BLE session and sensor
+timestamps remain the gap evidence. A guaranteed smartphone locked-screen or
+other-app-foreground workflow is a separate native Android foreground-service
+feature, not something GitHub Pages or PWA installation can promise.
+
 ## 2026-08-13 — Pages records and shares browser events without claiming LSL
 
 The self-contained Pages path exposes every exact browser input batch through a

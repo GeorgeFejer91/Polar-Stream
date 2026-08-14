@@ -2,6 +2,7 @@
   "use strict";
 
   const SCHEMA_VERSION = 1;
+  const RECORDING_SCHEMA_VERSION = 2;
   const DEFAULT_MAX_ROWS = 300_000;
   const CHANNEL_NAME = "polar-stream-live-v1";
   const CSV_COLUMNS = [
@@ -174,9 +175,8 @@
 
     capture(event, hostTimestampMs = this.now()) {
       if (this.state !== "recording" || !event || typeof event !== "object") return;
-      const outputs = new Set(this.config.outputs);
       const elapsed = Math.max(0, (hostTimestampMs - this.startedAtMs) / 1000);
-      if (event.kind === "ecg" && outputs.has("raw_ecg")) {
+      if (event.kind === "ecg") {
         const values = Array.isArray(event.microvolts) ? event.microvolts : [];
         for (let index = 0; index < values.length; index += 1) {
           const sampleHost = hostTimestampMs - ((values.length - 1 - index) * 1000) / 130;
@@ -199,13 +199,9 @@
           const sampleHost = hostTimestampMs - ((samples.length - 1 - index) * 1000) / 200;
           const relative = Math.max(0, elapsed - (samples.length - 1 - index) / 200).toFixed(6);
           const deviceTime = sensorTimestamp(event.sensorTimestampNs, index, samples.length, 200);
-          if (outputs.has("raw_acc") && !this.append([
+          if (!this.append([
             sampleHost.toFixed(3), relative, deviceTime, "raw_acc", index,
             x, y, z, "", units.raw_acc,
-          ])) break;
-          if (outputs.has("acc_magnitude") && x != null && y != null && z != null && !this.append([
-            sampleHost.toFixed(3), relative, deviceTime, "acc_magnitude", index,
-            "", "", "", Math.hypot(x, y, z) / 1000, units.acc_magnitude,
           ])) break;
         }
         return;
@@ -213,7 +209,7 @@
       if (event.kind === "metrics" && Array.isArray(event.values)) {
         for (let index = 0; index < event.values.length; index += 1) {
           const metric = event.values[index];
-          if (!metric || !outputs.has(metric.id)) continue;
+          if (!metric) continue;
           if (!this.append([
             hostTimestampMs.toFixed(3), elapsed.toFixed(6), "", metric.id, index,
             "", "", "", finite(metric.value), this.config.metricUnits[metric.id] || units[metric.id] || "",
@@ -227,13 +223,14 @@
       const stopped = this.stoppedAtMs ? new Date(this.stoppedAtMs).toISOString() : "";
       return [
         "# Polar Stream browser recording\n",
-        `# schema_version,${SCHEMA_VERSION}\n`,
+        `# schema_version,${RECORDING_SCHEMA_VERSION}\n`,
         `# started_at_utc,${csvCell(started)}\n`,
         `# stopped_at_utc,${csvCell(stopped)}\n`,
         `# source,${csvCell(this.source?.deviceName || "Browser input")}\n`,
         `# input_kind,${csvCell(this.source?.inputKind || "browser")}\n`,
-        `# selected_outputs,${csvCell(this.config.outputs.join("|"))}\n`,
+        `# configured_outputs,${csvCell(this.config.outputs.join("|"))}\n`,
         `# stop_reason,${csvCell(this.stopReason || "export")}\n`,
+        "# scope,All received raw ECG and ACC plus every metric event produced in this browser session.\n",
         "# timing,Sensor timestamps are reconstructed backwards from the final PMD frame timestamp when available.\n",
         csvRow(CSV_COLUMNS),
       ];
@@ -269,7 +266,7 @@
   function publish(event) {
     const hostTimestampMs = Date.now();
     recorder.capture(event, hostTimestampMs);
-    if (event?.kind === "connection" && event.connected === false && recorder.status().state === "recording") {
+    if (event?.kind === "connection" && event.connected === false && recorder.snapshot().state === "recording") {
       recorder.stop("input-disconnected");
     }
     const detail = { schemaVersion: SCHEMA_VERSION, hostTimestampMs, event };

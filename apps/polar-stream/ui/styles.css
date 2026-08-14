@@ -192,8 +192,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .protocol-mark { width: 33px; height: 27px; display: grid; place-items: center; border-radius: 5px; font: 800 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .lsl-mark { background: var(--green-pale); color: var(--green-dark); }
 .osc-mark { background: var(--blue-pale); color: var(--blue); }
+.csv-mark { background: #eee8d6; color: #75601d; }
+.audio-mark { background: #eee5f6; color: #6b4386; }
 .destination-row > span:nth-child(2) { display: grid; gap: 3px; }
 .destination-row strong { font-size: 10px; }
+.destination-row strong em { margin-left: 4px; color: #8a5a28; font: 800 7px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
 .destination-row small { color: var(--muted); font-size: 8px; line-height: 1.35; }
 .destination-row small.warning { color: #a44535; }
 .browser-local-destination { align-items: start; cursor: default; border-color: #a9c7dc; background: #f2f8fc; }
@@ -203,6 +206,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .local-only-mark.recording { color: #b13f3f; }
 .local-only-mark.full { color: #a66d19; }
 .browser-destination-copy { min-width: 0; }
+.browser-recorder-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px 8px 54px; border: 1px solid #d8d1ba; border-top: 0; border-radius: 0 0 7px 7px; background: #fcfaf4; }
+.browser-recorder-actions > span:first-child { display: grid; gap: 3px; min-width: 0; }
 .browser-recorder-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
 .recorder-button, .recorder-link { min-height: 29px; border-radius: 5px; padding: 0 9px; font-size: 8px; font-weight: 750; }
 .recorder-button { border: 1px solid #86abc5; background: white; color: #176a96; }
@@ -215,6 +220,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgb(0 0 0 / 20%); transition: transform .15s ease; }
 .switch-input:checked + .switch { background: var(--green); }
 .switch-input:checked + .switch::after { transform: translateX(13px); }
+#audio-toggle:checked + .switch { background: #7a4c96; }
+#csv-toggle:checked + .switch { background: #8d7424; }
 
 .output-cards { display: grid; gap: 7px; }
 .output-card { min-width: 0; padding: 9px 10px; border: 1px solid #c7d8ce; border-radius: 7px; background: var(--surface); box-shadow: 0 2px 7px rgb(20 35 29 / 3%); }
@@ -407,6 +414,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
   .workspace { grid-template-columns: minmax(275px, .78fr) minmax(315px, .9fr) minmax(350px, 1.15fr); }
   .workspace-panel { padding: 18px; }
   .raw-grid { grid-template-columns: 1fr; }
+  .browser-recorder-actions { align-items: stretch; flex-direction: column; padding-left: 10px; }
+  .browser-recorder-controls { margin-top: 0; }
+  .recorder-button { min-height: 40px; }
   .raw-card { min-height: 112px; }
 }
 

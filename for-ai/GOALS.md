@@ -17,8 +17,9 @@ items into the dated history instead of silently deleting them.
    - Keep direct browser H10 support feature-detected and permission-gated;
      preserve mock fallback everywhere.
    - Keep the browser live channel and CSV recorder self-contained, bounded,
-     visibly stopped on capacity/disconnect, and explicit that they are not
-     discoverable native LSL outlets.
+     visibly stopped on capacity/disconnect, record all incoming raw rows plus
+     produced metrics, and remain explicit that they are not discoverable
+     native LSL outlets.
    - Deploy after successful changes to `main`, and fail CI if the staged Pages
      artifact or browser runtime drifts from the desktop UI.
    - Cover desktop Chromium and smartphone layouts down to 320 CSS pixels,
@@ -26,6 +27,12 @@ items into the dated history instead of silently deleting them.
      overflow.
    - Implementation and automated coverage are present; retain these as ongoing
      parity requirements for every future interface change.
+   - Retain the shared CSV and experimental PCM-audio destination controls in
+     desktop and Pages layouts. Keep native CSV off the hot path, keep browser
+     storage/audio bounded, and preserve the reference WAV decoder contract.
+   - Treat Android Chrome Web Bluetooth as foreground-only until physical-device
+     evidence says more. Never turn a screen wake lock into a background-capture
+     claim; a guaranteed locked-screen workflow requires native Android work.
 2. Keep repository context agent-ready.
    - Root `AGENTS.md` routes agents to `for-ai/`.
    - Context validation passes in local work and CI when adopted.
@@ -59,6 +66,10 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-14: added shared local-CSV and experimental audio-data toggles, a
+  bounded native CSV writer, all-input browser CSV capture, a 22.05 kbit/s
+  stereo Manchester/CRC32 format with a WAV-to-CSV decoder, Android-touch GATT
+  coverage, and explicit browser-background lifecycle limits.
 - 2026-08-13: established one canonical Tauri/Pages interface, a selectable
   offline NeuroKit mock input, automatic Pages staging/deployment, asset-parity
   checks, and desktop plus 390px/320px responsive browser coverage.

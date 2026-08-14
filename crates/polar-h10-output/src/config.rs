@@ -10,6 +10,10 @@ pub struct OutputConfig {
     pub stream_name: String,
     pub lsl_enabled: bool,
     pub osc_enabled: bool,
+    #[serde(default)]
+    pub csv_enabled: bool,
+    #[serde(default)]
+    pub audio_enabled: bool,
     pub outputs: Vec<String>,
     #[serde(default)]
     pub metric_options: HashMap<String, MetricOutputOptions>,
@@ -21,6 +25,8 @@ impl Default for OutputConfig {
             stream_name: "Polar-H10".into(),
             lsl_enabled: false,
             osc_enabled: false,
+            csv_enabled: false,
+            audio_enabled: false,
             outputs: vec!["raw_ecg".into(), "raw_acc".into()],
             metric_options: HashMap::new(),
         }
@@ -168,6 +174,8 @@ pub struct OutputHealth {
     pub stream_name: String,
     pub lsl: String,
     pub osc: String,
+    pub csv: String,
+    pub audio: String,
 }
 
 /// Produces a protocol-safe base shared by LSL stream names and OSC paths.
