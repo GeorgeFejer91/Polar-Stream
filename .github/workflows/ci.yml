@@ -62,6 +62,7 @@ jobs:
       - run: node --check apps/polar-stream/ui/demo-data.js
       - run: node --check apps/polar-stream/ui/app.js
       - run: node --check download/downloads.js
+      - run: npm run test:browser-acceptance
       - run: npm run validate:interface
       - run: npm run validate:browser-demo
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

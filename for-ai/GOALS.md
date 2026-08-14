@@ -44,7 +44,9 @@ items into the dated history instead of silently deleting them.
   diagnostics and sample/drop counts so low-interval behavior is evidence-based.
 - Validate the Pages Web Bluetooth adapter with a physical H10 on supported
   desktop and Android Chromium, including PMD frame variants, MTU/batch cadence,
-  disconnect/reconnect behavior, and long-run sample counts.
+  disconnect/reconnect behavior, and long-run sample counts. Use the checked-in
+  live Pages provenance verifier and strict offline CSV analyzer for the initial
+  Motorola Brave foreground run; do not substitute localhost or mock evidence.
 - Record measured renderer, queue, and output latency under representative MTUs.
 - Measure the p99 runtime of each selected derived processor set against the BLE
   notification interval; isolate derived work if it can delay the next raw batch.
@@ -66,6 +68,10 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-14: added a public-Pages-only Motorola Brave hardware acceptance
+  procedure, complete deployed-asset/header provenance capture, and strict
+  offline H10 CSV analysis for source, sensor time, rates, loss, gaps, raw
+  values, HR/RR, and recorder termination. Physical evidence remains pending.
 - 2026-08-14: added shared local-CSV and experimental audio-data toggles, a
   bounded native CSV writer, all-input browser CSV capture, a 22.05 kbit/s
   stereo Manchester/CRC32 format with a WAV-to-CSV decoder, Android-touch GATT

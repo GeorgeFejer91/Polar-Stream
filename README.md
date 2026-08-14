@@ -110,6 +110,10 @@ WebSocket or HTTP transport as LSL.
 
 GitHub Pages is rebuilt from the canonical UI after changes land on `main`, and
 CI checks byte-for-byte asset parity plus desktop, 390px, and 320px layouts.
+The release-blocking physical procedure is documented in the
+[GitHub Pages H10 acceptance guide](docs/browser-hardware-acceptance.md). It
+verifies the public deployment and analyzes the resulting CSV without allowing
+localhost, Tauri, a relay, or synthetic data to count as hardware evidence.
 
 ## Download
 
@@ -203,6 +207,8 @@ npm ci
 npx playwright install chromium
 npm run validate:interface
 npm run validate:browser-demo
+npm run test:browser-acceptance
+npm run verify:live-pages
 ```
 
 NeuroKit is a development-only fixture generator and is not shipped in the app

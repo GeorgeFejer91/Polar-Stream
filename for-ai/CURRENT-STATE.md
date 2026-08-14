@@ -68,6 +68,12 @@ Last verified: 2026-08-14
 - Browser H10 sessions request a best-effort screen wake lock while the page is
   visible, and emulated Android-touch coverage exercises the permission/GATT
   and wake-lock contract.
+- The public Pages hardware run now has a strict evidence path: a live verifier
+  records GitHub response headers and validates every manifest SHA-256 against
+  the served asset and canonical checkout, while an offline CSV analyzer checks
+  Web Bluetooth provenance, positive monotonic H10 time, raw streams, rates,
+  loss, gaps, values, HR/RR, and recorder stop state. These tools prepare and
+  evaluate a physical run; they do not replace one.
 - The ACC breathing add/adjust workflows expose axes, smoothing, sensitivity,
   direction, calibration window/range, stale timeout, adaptive bounds/window,
   and robust quantiles. `docs/acc-breathing-handoff.md` documents provenance,
@@ -102,6 +108,8 @@ Last verified: 2026-08-14
 - The Web Bluetooth adapter has not yet been exercised against a physical H10.
   Browser/OS support remains non-portable, and BLE throughput, reconnect,
   compressed-frame behavior, and timing must be recorded on real hardware.
+  Follow `docs/browser-hardware-acceptance.md`; only the public Pages site in an
+  ordinary browser tab can satisfy that browser acceptance run.
 - Web Bluetooth is unavailable to workers/service workers, and mobile Chrome
   may freeze or discard a hidden page. The screen wake lock is released when
   the document becomes inactive. Pages therefore cannot guarantee Bluetooth,
