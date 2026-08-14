@@ -209,6 +209,35 @@ async fn connect_device(
             }
         });
 
+        #[cfg(feature = "rusty-lsl-backend")]
+        let (lsl_poll_stop, mut lsl_poll_stop_rx) = tokio::sync::watch::channel(false);
+        #[cfg(feature = "rusty-lsl-backend")]
+        let lsl_poll_task = {
+            let output = output.clone();
+            let ui_tx = ui_tx.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_millis(5));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            if let Some(message) = output.poll_lsl() {
+                                let _ = ui_tx.try_send(AppEvent::Error {
+                                    code: "LSL_TRANSPORT_WARNING",
+                                    message,
+                                });
+                            }
+                        }
+                        changed = lsl_poll_stop_rx.changed() => {
+                            if changed.is_err() || *lsl_poll_stop_rx.borrow() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+        };
+
         let settings = *processing_settings.borrow_and_update();
         let mut metrics_engine = MetricEngine::with_selection(settings.metrics);
         metrics_engine.apply_breathing_settings(settings.breathing);
@@ -356,6 +385,11 @@ async fn connect_device(
             if !continue_streaming {
                 break;
             }
+        }
+        #[cfg(feature = "rusty-lsl-backend")]
+        {
+            let _ = lsl_poll_stop.send(true);
+            let _ = lsl_poll_task.await;
         }
         drop(ui_tx);
         let _ = ui_task.await;

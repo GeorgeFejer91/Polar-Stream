@@ -2779,6 +2779,7 @@ dependencies = [
  "libloading 0.8.9",
  "polar-h10-core",
  "polar-h10-metrics",
+ "rusty-lsl",
  "serde",
  "tokio",
 ]
@@ -3084,6 +3085,11 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rusty-lsl"
+version = "0.0.0"
+source = "git+https://github.com/MesmerPrism/rusty-lsl?rev=74f7d0ea2cce9b3d049ea24602527a5f52360554#74f7d0ea2cce9b3d049ea24602527a5f52360554"
 
 [[package]]
 name = "same-file"
