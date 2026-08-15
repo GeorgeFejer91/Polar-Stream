@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUSTY_LSL_REVISION = "74f7d0ea2cce9b3d049ea24602527a5f52360554"
+POLAR_STREAM_BASE = "a0731ee9e323efa264adf599f9deeb66f3731e74"
 
 
 @dataclass(frozen=True)
@@ -177,7 +178,7 @@ def main() -> int:
             raise RuntimeError("Rusty backend exited unsuccessfully")
         result = {
             "schema": "polar.stream.rusty_lsl_backend_official_consumer.v2",
-            "polar_stream_base": "9d18dd9a41791af94afb621de447aeffafc340f9",
+            "polar_stream_base": POLAR_STREAM_BASE,
             "rusty_lsl_revision": RUSTY_LSL_REVISION,
             "scope": {
                 "official_consumer": f"pylsl {pylsl.__version__}",
