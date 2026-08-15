@@ -28,6 +28,9 @@ NETWORK_PRIMITIVES = {
     "WebTransport": re.compile(r"\bWebTransport\s*\("),
     "sendBeacon": re.compile(r"\bsendBeacon\s*\("),
 }
+LOCAL_PREVIEW_FETCH = re.compile(
+    r"\bfetch\s*\(\s*([\"'])data/preview-recording\.json\1\s*,\s*\{\s*cache\s*:\s*([\"'])no-cache\2\s*\}\s*\)"
+)
 URL_LITERAL = re.compile(r"\b(?:https?|wss?)://[^\s\"'`<>]+", re.IGNORECASE)
 
 
@@ -172,19 +175,31 @@ def verify(base_url: str) -> dict[str, object]:
     javascript = "\n".join(
         data.decode("utf-8") for name, data in asset_bytes.items() if name.endswith(".js")
     )
-    forbidden = [name for name, pattern in NETWORK_PRIMITIVES.items() if pattern.search(javascript)]
+    # Hardware-free preview playback reads one manifest-hashed, same-origin
+    # fixture. Remove only that exact expression before rejecting every other
+    # browser network primitive; a URL variable or any different fetch remains
+    # forbidden and therefore cannot smuggle in a relay/acquisition backend.
+    acquisition_javascript = LOCAL_PREVIEW_FETCH.sub("loadLocalPreviewFixture()", javascript)
+    forbidden = [
+        name for name, pattern in NETWORK_PRIMITIVES.items()
+        if pattern.search(acquisition_javascript)
+    ]
     if forbidden:
         raise ValueError("Deployed JavaScript contains a remote acquisition primitive: " + ", ".join(forbidden))
     private_literals = sorted({value for value in URL_LITERAL.findall(javascript) if is_private_url_literal(value)})
     if private_literals:
         raise ValueError("Deployed JavaScript contains a loopback/private URL: " + ", ".join(private_literals))
-    checks.append("deployed JavaScript has no HTTP, WebSocket, SSE, or private-network acquisition path")
+    checks.append(
+        "deployed JavaScript has no remote HTTP, WebSocket, SSE, or private-network acquisition path"
+    )
 
     required_contracts = {
         "direct Web Bluetooth chooser": "navigator.bluetooth.requestDevice",
         "Web Bluetooth source provenance": 'transport: "web-bluetooth"',
         "browser CSV provenance": "# input_kind",
-        "native-only output suppression": "Not part of browser-only mode",
+        "native-only output suppression": (
+            "LSL and OSC outputs are available only in the installed Polar Stream app."
+        ),
     }
     missing_contracts = [label for label, marker in required_contracts.items() if marker not in javascript]
     if missing_contracts:
