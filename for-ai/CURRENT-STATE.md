@@ -5,8 +5,8 @@ Last verified: 2026-08-15
 ## Implemented
 
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
-- Windows uses `btleplug` only for scanning and selection, then owns one direct
-  persistent WinRT GATT session. It requests PMD service access, discovers
+- Windows uses `btleplug` only for deadline-bounded scanning and selection,
+  then owns one direct persistent WinRT GATT session. It requests PMD service access, discovers
   uncached with bounded retry/cached fallback, installs direct notification
   handlers, and does not report success until both ECG and three-axis ACC have
   decoded. Setup stages, cancellation, internal queues, and cleanup are bounded.

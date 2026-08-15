@@ -17,7 +17,6 @@ use btleplug::{
     api::{Central, Manager as _, Peripheral as _, ScanFilter},
     platform::{Manager, Peripheral},
 };
-#[cfg(not(target_os = "windows"))]
 use futures_util::StreamExt;
 use polar_h10_core::AccSample;
 #[cfg(not(target_os = "windows"))]
@@ -35,6 +34,10 @@ const BATTERY_LEVEL: Uuid = Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34
 const PMD_SERVICE: Uuid = Uuid::from_u128(0xfb005c80_02e7_f387_1cad_8acd2d8df0c8);
 const PMD_CONTROL_POINT: Uuid = Uuid::from_u128(0xfb005c81_02e7_f387_1cad_8acd2d8df0c8);
 const PMD_DATA: Uuid = Uuid::from_u128(0xfb005c82_02e7_f387_1cad_8acd2d8df0c8);
+const BLE_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
+const SCAN_DURATION: Duration = Duration::from_secs(4);
+const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(4);
+const PROPERTY_READ_CONCURRENCY: usize = 16;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,12 +112,13 @@ impl InputManager {
     }
 
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
-        let manager = Manager::new()
+        let manager = tokio::time::timeout(BLE_OPERATION_TIMEOUT, Manager::new())
             .await
+            .map_err(|_| "Bluetooth initialization timed out.".to_string())?
             .map_err(|error| format!("Could not initialize Bluetooth: {error}"))?;
-        let adapters = manager
-            .adapters()
+        let adapters = tokio::time::timeout(BLE_OPERATION_TIMEOUT, manager.adapters())
             .await
+            .map_err(|_| "Bluetooth adapter enumeration timed out.".to_string())?
             .map_err(|error| format!("Could not enumerate Bluetooth adapters: {error}"))?;
         let adapter = adapters
             .into_iter()
@@ -122,21 +126,41 @@ impl InputManager {
             .ok_or_else(|| "No Bluetooth Low Energy adapter was found.".to_string())?;
 
         // BlueZ combines service filters between applications, so filter locally.
-        adapter
-            .start_scan(ScanFilter::default())
+        tokio::time::timeout(
+            BLE_OPERATION_TIMEOUT,
+            adapter.start_scan(ScanFilter::default()),
+        )
+        .await
+        .map_err(|_| "Bluetooth scan startup timed out.".to_string())?
+        .map_err(|error| format!("Could not start Bluetooth scan: {error}"))?;
+        tokio::time::sleep(SCAN_DURATION).await;
+        let peripherals = tokio::time::timeout(BLE_OPERATION_TIMEOUT, adapter.peripherals())
             .await
-            .map_err(|error| format!("Could not start Bluetooth scan: {error}"))?;
-        tokio::time::sleep(Duration::from_secs(4)).await;
-        let peripherals = adapter
-            .peripherals()
+            .map_err(|_| "Bluetooth scan result enumeration timed out.".to_string())?
+            .map_err(|error| format!("Could not read scan results: {error}"));
+        let stop_result = tokio::time::timeout(BLE_OPERATION_TIMEOUT, adapter.stop_scan())
             .await
-            .map_err(|error| format!("Could not read scan results: {error}"))?;
-        let _ = adapter.stop_scan().await;
+            .map_err(|_| "Bluetooth scan cleanup timed out.".to_string())?
+            .map_err(|error| format!("Could not stop Bluetooth scan: {error}"));
+        let peripherals = peripherals?;
+        stop_result?;
 
         let mut found = Vec::new();
         let mut next_devices = HashMap::new();
-        for peripheral in peripherals {
-            let Ok(Some(properties)) = peripheral.properties().await else {
+        let reads = futures_util::stream::iter(peripherals)
+            .map(|peripheral| async move {
+                peripheral
+                    .properties()
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|properties| (peripheral, properties))
+            })
+            .buffer_unordered(PROPERTY_READ_CONCURRENCY);
+        tokio::pin!(reads);
+        let property_deadline = tokio::time::Instant::now() + PROPERTY_SWEEP_TIMEOUT;
+        while let Ok(Some(read)) = tokio::time::timeout_at(property_deadline, reads.next()).await {
+            let Some((peripheral, properties)) = read else {
                 continue;
             };
             let name = properties

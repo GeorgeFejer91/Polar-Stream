@@ -171,7 +171,7 @@ and licensing/release holds.
 
 ## Windows BLE link policy
 
-Windows uses `btleplug` for advertisement scanning and exact device selection,
+Windows uses `btleplug` for a bounded advertisement scan and exact device selection,
 then bypasses its GATT connection layer. `polar-h10-input` opens the selected
 Bluetooth address directly with WinRT and owns one persistent `GattSession`,
 uncached PMD service discovery, `RequestAccessAsync`, bounded uncached/cached
@@ -185,7 +185,9 @@ cancellation is checked at every stage boundary, the raw-notification and
 first-frame queues have fixed capacities, and overflow stops acquisition rather
 than hiding loss. Shutdown has one global deadline before synchronous handler
 removal and WinRT handle closure; `GattSession.MaintainConnection` is always
-cleared.
+cleared. Scan start/result/stop operations are time-bounded, and peripheral
+property reads use a bounded concurrent sweep so one stale advertisement cannot
+stall the session before selection.
 
 [WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
 read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).

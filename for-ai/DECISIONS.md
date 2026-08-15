@@ -3,7 +3,9 @@
 ## 2026-08-15 — Windows owns one direct WinRT GATT session
 
 Windows continues to use `btleplug` only for bounded advertisement scanning and
-device selection. After selection, `polar-h10-input` opens the Bluetooth address
+device selection. Scan operations and cleanup have deadlines, and a bounded
+concurrent property sweep prevents one stale peripheral from blocking all
+results. After selection, `polar-h10-input` opens the Bluetooth address
 directly with WinRT and owns one persistent `GattSession`, uncached PMD service
 discovery, access requests, characteristic discovery, notification handlers,
 start commands, and teardown. Linux, macOS, iOS, and Android retain the existing
