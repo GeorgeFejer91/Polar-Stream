@@ -20,8 +20,10 @@ platform support.
   primitives. It must not depend on BLE, Tauri, transports, or the UI.
 - `polar-h10-input` owns BLE adapters and emits typed notifications. Keep
   operating-system workarounds behind narrow adapters or `cfg` boundaries.
-- `polar-h10-metrics` owns opt-in transformations, windows, formulas, quality
+- `polar-h10-metrics` owns opt-in transformations, windows, scientific
   gates, evidence metadata, and formula tests.
+- `polar-h10-math` owns parsing, validation, stateful scalar DSP/HRV functions,
+  resource bounds, and independent formula fault behavior.
 - `polar-h10-output` owns canonical discovery names, fail-soft LSL/OSC
   transport behavior, and bounded native CSV persistence. Transport code must
   not know about the WebView.
@@ -82,9 +84,14 @@ explicit coalescing/drop policy; never fix it by delaying or batching raw output
 - Calibration, reconnect, source change, and measurement reset boundaries must
   be explicit and consistently reset all state that depends on them.
 - Experimental outputs remain labeled experimental until validated against an
-  appropriate reference. Synthetic previews demonstrate shape, not accuracy.
-- Visualization scaling is presentation-only. It must not mutate native output
-  values or create a competing metric calculation.
+  appropriate reference. Recorded previews demonstrate behavior, not accuracy.
+- App previews use only the canonical anonymized real H10 recording. NeuroKit
+  may document or perform offline method-provenance cleaning, but a generated
+  or simulated signal must never be an app fallback.
+- Canvas autoscaling is presentation-only. An explicit selected-output
+  normalization may transform a derived published value only when its units,
+  window, configuration, and recorded pre-save preview make that behavior clear;
+  raw protocol values remain untouched.
 
 ## Latency and reliability contract
 
@@ -126,16 +133,17 @@ copies, synchronization, serialization, or higher render cadence.
 - Treat the hosted browser demo as another presentation target: it must remain
   usable at 320 CSS pixels, with touch-sized controls, safe-area-aware chrome,
   no horizontal page overflow, and dialogs that fit the visual viewport.
-- Browser fixtures must be deterministic, synthetic, generated from the pinned
-  development NeuroKit workflow, and labeled as such. They demonstrate UI
-  behavior only. The same mock module may run offline in Tauri, but must stay
+- Browser previews must be deterministic and derived from the canonical
+  anonymized real H10 fixture. They demonstrate UI behavior only. The same
+  recorded module may run offline in Tauri, but must stay
   isolated from real native acquisition and publication code.
 - Web Bluetooth is not a portability assumption. The browser H10 path is an
   explicit experimental adapter with secure-context, permission,
   browser-support, PMD protocol, and physical-device validation boundaries.
   It must stay feature-detected and self-contained. Browser LSL/OSC stay
-  unavailable and hidden; neither browser input may weaken or enter the native
-  authoritative data path.
+  unavailable, but their shared controls remain visible and fail closed with an
+  installed-app error and release download link; neither browser input may
+  weaken or enter the native authoritative data path.
 - Do not add a localhost companion, installed helper, remote relay, or renamed
   WebSocket/HTTP protocol to make Pages appear to publish LSL. A genuine native
   LSL requirement belongs to the separately installed app.

@@ -1,6 +1,6 @@
 [package]
-name = "polar-h10-metrics"
-description = "Modular real-time physiological metric processors for Polar Stream"
+name = "polar-h10-math"
+description = "Sandboxed custom formula and bounded DSP runtime for Polar H10 signals"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 polar-h10-core = { path = "../polar-h10-core" }
+polar-h10-metrics = { path = "../polar-h10-metrics" }
 serde.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

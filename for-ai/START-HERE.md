@@ -26,12 +26,19 @@ If the skill is not installed or cannot be loaded:
 5. Preserve uncommitted work. Never assume an unfamiliar change is disposable.
 6. State the intended scope before making broad or externally visible changes.
 
+This is the standalone canonical repository at
+`/home/George/Documents/GitHub/Polar-Stream`. Do not redirect implementation to
+the legacy `PolarH10`/Mesmerism fork; that checkout is quarantined at
+`/home/George/Documents/GitHub/_quarantine/PolarH10-mesmerism-fork` and is not a
+development target for Polar Stream.
+
 ## Repository map
 
 - `apps/polar-stream/`: thin Tauri coordinator and HTML/CSS/JavaScript UI.
 - `crates/polar-h10-core/`: Polar PMD/HR decoding and protocol primitives.
 - `crates/polar-h10-input/`: Bluetooth discovery, connection, and input events.
 - `crates/polar-h10-metrics/`: derived metric processors and evidence catalog.
+- `crates/polar-h10-math/`: bounded custom formulas and stateful scalar DSP/HRV.
 - `crates/polar-h10-output/`: canonical names, LSL/OSC publication, and bounded
   native CSV persistence.
 - `scripts/`: build, release, preview, and interface-validation tooling.
@@ -42,4 +49,7 @@ If the skill is not installed or cannot be loaded:
 
 Work is not complete until behavior is implemented, proportionate checks pass,
 the diff is reviewed for accidental scope, and this directory is updated when
-one of the triggers in `SELF-UPDATE.md` applies.
+one of the triggers in `SELF-UPDATE.md` applies. For every completed edit, the
+source checkout, installed per-user desktop app, and public GitHub Pages app
+must also be synchronized and verified under `GLOBAL-INSTRUCTIONS.md`; the final
+handoff must include the verified live Pages URL.

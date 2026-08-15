@@ -31,8 +31,3 @@ Makowski, D., Pham, T., Lau, Z. J., Brammer, J. C., Lespinasse, F., Pham, H.,
 Schölzel, C., & Chen, S. A. (2021). NeuroKit2: A Python toolbox for
 neurophysiological signal processing. Behavior Research Methods, 53(4),
 1689–1696. https://doi.org/10.3758/s13428-020-01516-y
-
-The ECGSYN model is described by McSharry, P. E., Clifford, G. D., Tarassenko,
-L., & Smith, L. A. (2003). A dynamical model for generating synthetic
-electrocardiogram signals. IEEE Transactions on Biomedical Engineering, 50(3),
-289–294. https://doi.org/10.1109/TBME.2003.808805

@@ -81,7 +81,7 @@ async function connectMock(page) {
   const source = page.locator('.device-row[data-input-kind="mock"], .device-row.mock').first();
   await source.waitFor({ state: "visible" });
   await source.click();
-  await page.locator("#input-state").filter({ hasText: "Demo live" }).waitFor();
+  await page.locator("#input-state").filter({ hasText: "Recorded preview live" }).waitFor();
   await page.waitForFunction(() => document.querySelector("#sample-counter")?.textContent !== "0 samples");
   assert.equal(await page.locator("#chart-empty").isHidden(), true, "mock input did not activate the live chart");
   assert.notEqual(await page.locator("#raw-ecg-value").textContent(), "—", "mock ECG did not update");
@@ -249,13 +249,45 @@ try {
   assert.equal(await desktop.locator("body").getAttribute("data-runtime"), "browser-demo");
   assert.equal(await desktop.locator("#platform-label").textContent(), "BROWSER DEMO");
   assert.equal(await desktop.locator("#runtime-path-label").textContent(), "Browser-local inputs");
-  assert.match(await desktop.locator(".device-row.mock").textContent(), /SYNTHETIC/);
-  assert.match(await desktop.locator(".device-row.mock").textContent(), /no Polar H10 required/);
+  assert.match(await desktop.locator(".device-row.mock").textContent(), /RECORDED/);
+  assert.match(await desktop.locator(".device-row.mock").textContent(), /Anonymized 60-second ECG \+ ACC recording/);
   assert.equal(await desktop.locator("#browser-local-destination").isVisible(), true, "browser-local destination is missing");
   assert.equal(await desktop.locator("#csv-destination-row").isVisible(), true, "local CSV toggle is missing");
   assert.equal(await desktop.locator("#audio-destination-row").isVisible(), true, "audio-data toggle is missing");
-  assert.equal(await desktop.locator("#lsl-destination-row").isHidden(), true, "browser mode must not offer native LSL");
-  assert.equal(await desktop.locator("#osc-destination-row").isHidden(), true, "browser mode must not offer native OSC");
+  assert.equal(await desktop.locator("#lsl-destination-row").isVisible(), true, "shared LSL control is missing in browser mode");
+  assert.equal(await desktop.locator("#osc-destination-row").isVisible(), true, "shared OSC control is missing in browser mode");
+  assert.equal(await desktop.locator("#lsl-toggle").isEnabled(), true, "browser LSL control must remain interactive so it can explain the limitation");
+  assert.equal(await desktop.locator("#osc-toggle").isEnabled(), true, "browser OSC control must remain interactive so it can explain the limitation");
+  await desktop.locator("#lsl-destination-row").click();
+  assert.equal(await desktop.locator("#lsl-toggle").isChecked(), false, "browser LSL must fail closed");
+  assert.equal(await desktop.locator("#native-output-browser-error").isVisible(), true, "browser LSL refusal did not surface an inline error");
+  assert.match(await desktop.locator("#native-output-browser-error").textContent(), /LSL output.*installed Polar Stream app/i);
+  assert.equal(
+    await desktop.locator("#native-output-browser-error a").getAttribute("href"),
+    "https://github.com/GeorgeFejer91/Polar-Stream/releases/latest",
+    "installed-app error does not link to the latest release",
+  );
+  await desktop.locator("#osc-destination-row").click();
+  assert.equal(await desktop.locator("#osc-toggle").isChecked(), false, "browser OSC must fail closed");
+  assert.match(await desktop.locator("#native-output-browser-error").textContent(), /OSC output.*installed Polar Stream app/i);
+  const nativeOutputRejection = await desktop.evaluate(async () => {
+    try {
+      await window.PolarRuntimeApi.updateOutputConfig({
+        streamName: "Browser rejection test",
+        lslEnabled: true,
+        oscEnabled: false,
+        csvEnabled: false,
+        audioEnabled: false,
+        outputs: ["raw_ecg", "raw_acc"],
+        metricOptions: {},
+      });
+      return null;
+    } catch (error) {
+      return { code: error.code, message: error.message };
+    }
+  });
+  assert.equal(nativeOutputRejection.code, "NATIVE_OUTPUT_REQUIRES_APP");
+  assert.match(nativeOutputRejection.message, /installed Polar Stream app/i);
   assert.equal(await desktop.evaluate(() => "PolarBrowserLslBridge" in window), false, "browser build still exposes the native bridge adapter");
   await desktop.evaluate(() => {
     window.__polarBrowserEvents = 0;
@@ -330,15 +362,39 @@ try {
   assert.match(decodedAudio, /7,.*raw_ecg,0,,,,1,uV/);
   assert.match(decodedAudio, /7,.*raw_acc,0,4,-5,6,,mg/);
   assert.match(decodedAudio, /7,,heart_rate,0,,,,61(?:\.0)?,bpm/);
-  const fixture = await desktop.evaluate(() => ({
-    source: window.PolarDemoData?.source,
-    ecgSamples: window.PolarDemoData?.ecg?.microvolts?.length,
-    accSamples: window.PolarDemoData?.accelerometer?.milligravity?.[0]?.length,
-  }));
-  assert.equal(fixture.source.library, "NeuroKit2");
-  assert.deepEqual(fixture.source.models, ["ECGSYN", "RSP"]);
-  assert.equal(fixture.ecgSamples, 3900);
-  assert.equal(fixture.accSamples, 6000);
+  const fixture = await desktop.evaluate(async () => {
+    const recording = await fetch("data/preview-recording.json").then((response) => response.json());
+    return {
+      source: recording.source,
+      durationMs: recording.durationMs,
+      ecgSamples: recording.ecg.microvolts.length,
+      accSamples: recording.accelerometer.samples.length,
+    };
+  });
+  assert.equal(fixture.source, "real-polar-h10-recording");
+  assert.equal(fixture.durationMs, 60_000);
+  assert.equal(fixture.ecgSamples, 7_800);
+  assert.equal(fixture.accSamples, 12_000);
+  await desktop.locator("#open-output-dialog").click();
+  await desktop.locator('.metric-option[data-metric-id="rmssd"]').click();
+  assert.match(await desktop.locator(".metric-preview-provenance").textContent(), /Recorded Polar H10/);
+  assert.match(await desktop.locator(".metric-formula-context").textContent(), /RMSSD =/);
+  assert.match(await desktop.locator("#metric-detail").textContent(), /Current scientific view/);
+  assert.match(await desktop.locator(".metric-source a").getAttribute("href"), /^https:\/\//);
+  const originalPath = await desktop.locator(".metric-preview-large .metric-preview-line").first().getAttribute("d");
+  await desktop.getByLabel("Published scale").selectOption("slidingWindow");
+  await desktop.getByLabel("Normalization window").fill("10");
+  await desktop.waitForFunction((before) => document.querySelector(".metric-preview-large .metric-preview-line")?.getAttribute("d") !== before, originalPath);
+  const transformedPath = await desktop.locator(".metric-preview-large .metric-preview-line").first().getAttribute("d");
+  assert.notEqual(transformedPath, originalPath, "metric settings did not update the recorded outcome preview");
+  await desktop.getByRole("button", { name: "Open editable formula + preview" }).click();
+  assert.equal(await desktop.locator("#formula-dialog").isVisible(), true);
+  assert.match(await desktop.locator(".formula-variable-map").textContent(), /Time is retained automatically|time is retained automatically/i);
+  assert.equal(await desktop.locator('#formula-keyboard button[title]').count() > 10, true, "formula calculator keys lack hover help");
+  await desktop.locator("#formula-validation-status").filter({ hasText: "Valid" }).waitFor();
+  assert.notEqual(await desktop.locator("#formula-preview-current").textContent(), "—");
+  await desktop.locator("#save-custom-formula").click();
+  await desktop.locator(".formula-output-card").filter({ hasText: "rmssd_custom" }).waitFor();
   await desktop.locator("#open-output-dialog").click();
   await desktop.getByRole("button", { name: /ACC metrics/ }).click();
   await desktop.locator('.metric-option[data-metric-id="breathing_phase"]').click();
@@ -473,6 +529,14 @@ try {
   await installFakeWebBluetooth(phone);
   await phone.goto(baseUrl, { waitUntil: "networkidle" });
   await assertNoHorizontalOverflow(phone, "phone browser demo before connection");
+  assert.equal(await phone.locator("#lsl-destination-row").isVisible(), true, "phone browser UI hid the shared LSL control");
+  assert.equal(await phone.locator("#osc-destination-row").isVisible(), true, "phone browser UI hid the shared OSC control");
+  await phone.locator("#lsl-destination-row").click();
+  assert.equal(await phone.locator("#lsl-toggle").isChecked(), false, "phone browser LSL must fail closed");
+  assert.equal(await phone.locator("#native-output-browser-error").isVisible(), true, "phone browser LSL refusal is not visible");
+  const downloadLinkBox = await phone.locator("#native-output-browser-error a").boundingBox();
+  assert.ok(downloadLinkBox.height >= 44, `phone installed-app download link is too short: ${downloadLinkBox.height}`);
+  await phone.locator(".toast").evaluateAll((toasts) => toasts.forEach((toast) => toast.remove()));
   const panelTops = await phone.locator(".workspace-panel").evaluateAll((panels) => panels.map((panel) => panel.getBoundingClientRect().top));
   assert.ok(panelTops[0] < panelTops[1] && panelTops[1] < panelTops[2], `phone panels are not stacked: ${panelTops}`);
   const scanBox = await phone.locator("#scan-button").boundingBox();
@@ -491,8 +555,32 @@ try {
 
   await phone.locator("#open-output-dialog").scrollIntoViewIfNeeded();
   await phone.locator("#open-output-dialog").click();
+  assert.equal(await phone.locator("#output-dialog").getAttribute("data-mobile-view"), "browse");
+  assert.equal(await phone.locator("#metric-detail").isHidden(), true, "phone browse view must prioritize the signal list");
+  const familyButtons = await phone.locator(".family-choice").evaluateAll((buttons) => buttons.map((button) => ({
+    width: button.getBoundingClientRect().width,
+    height: button.getBoundingClientRect().height,
+    top: button.getBoundingClientRect().top,
+  })));
+  assert.equal(familyButtons.length, 2);
+  assert.ok(familyButtons.every(({ width, height }) => width >= 150 && height >= 44), `phone family controls are not touch friendly: ${JSON.stringify(familyButtons)}`);
+  assert.ok(Math.abs(familyButtons[0].top - familyButtons[1].top) < 1, `phone family controls are not side by side: ${JSON.stringify(familyButtons)}`);
   await phone.getByRole("button", { name: /ACC metrics/ }).click();
+  const searchBox = await phone.locator("#metric-search").boundingBox();
+  assert.ok(searchBox.height >= 44, `phone metric search is too short: ${searchBox.height}`);
+  const optionBoxes = await phone.locator(".metric-option").evaluateAll((options) => options.map((option) => ({
+    width: option.getBoundingClientRect().width,
+    height: option.getBoundingClientRect().height,
+  })));
+  assert.ok(optionBoxes.every(({ width, height }) => width >= 290 && height >= 72), `phone metric choices are not touch friendly: ${JSON.stringify(optionBoxes)}`);
+  const phoneBrowseScreenshot = join(output, "browser-demo-phone-library-browse.png");
+  await phone.screenshot({ path: phoneBrowseScreenshot, fullPage: false });
+  assert.ok((await stat(phoneBrowseScreenshot)).size > 20_000, "phone browser-demo browse screenshot is unexpectedly empty");
   await phone.locator('.metric-option[data-metric-id="breathing_phase"]').click();
+  assert.equal(await phone.locator("#output-dialog").getAttribute("data-mobile-view"), "detail");
+  assert.equal(await phone.locator("#metric-options").isHidden(), true, "phone detail view must hide the browse list");
+  assert.equal(await phone.locator("#metric-detail").isVisible(), true, "phone detail view did not open");
+  assert.equal(await phone.getByRole("button", { name: "Back to all signals" }).isVisible(), true);
   assert.equal(await phone.getByLabel("X · recommended").isChecked(), true);
   assert.equal(await phone.getByLabel("Y · rotational").isChecked(), false);
   assert.equal(await phone.getByLabel("Z · recommended").isChecked(), true);
@@ -503,6 +591,10 @@ try {
   assert.equal(await phone.getByLabel("Adaptive bounds").isChecked(), true);
   assert.equal(await phone.getByLabel("Lower quantile").inputValue(), "0.05");
   assert.equal(await phone.getByLabel("Upper quantile").inputValue(), "0.95");
+  await phone.getByRole("button", { name: "Back to all signals" }).click();
+  assert.equal(await phone.locator("#output-dialog").getAttribute("data-mobile-view"), "browse");
+  assert.equal(await phone.locator('.metric-option[data-metric-id="breathing_phase"]').getAttribute("aria-pressed"), "true");
+  await phone.locator('.metric-option[data-metric-id="breathing_phase"]').click();
   const dialogBox = await phone.locator("#output-dialog").boundingBox();
   assert.ok(dialogBox.width >= 389 && dialogBox.height >= 843, `phone dialog is not visual-viewport sized: ${JSON.stringify(dialogBox)}`);
   await assertNoHorizontalOverflow(phone, "phone output library");
@@ -517,7 +609,7 @@ try {
   assert.ok(await narrow.locator(".device-row.mock").isVisible(), "mock input is not visible at 320px");
   await narrow.close();
 
-  process.stdout.write(`Validated canonical Pages parity, browser-only runtime isolation, NeuroKit replay, Web Bluetooth PMD, and responsive layouts in ${output}\n`);
+  process.stdout.write(`Validated canonical Pages parity, recorded H10 replay, Formula Lab, Web Bluetooth PMD, and responsive layouts in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

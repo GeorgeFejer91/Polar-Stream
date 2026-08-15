@@ -26,6 +26,11 @@ Update the relevant files in the same change whenever any of these occur:
 5. Run `for-ai/scripts/check-context.sh`.
 6. Review the context diff for secrets, participant data, stale branch claims,
    contradictory instructions, and unsupported scientific statements.
+7. Complete the three-surface sync: production-build and install the desktop
+   app with rollback, publish the accepted change to `main`, wait for Pages,
+   and verify public manifest/hash parity.
+8. Include `https://georgefejer91.github.io/Polar-Stream/` and the live
+   verification result in the final handoff after every completed edit.
 
 ## Rules for self-modification
 

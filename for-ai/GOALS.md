@@ -8,14 +8,16 @@ items into the dated history instead of silently deleting them.
 1. Publish a continuously synchronized browser demo on GitHub Pages.
    - Build Pages from the exact canonical `apps/polar-stream/ui/` assets used by
      Tauri; do not maintain a second interface copy.
-   - Offer an explicit selectable NeuroKit mock input in both Pages and the
-     offline Tauri app, replaying deterministic ECG, ACC, respiration, and
-     derived demo values through the shared runtime event contract.
-   - Label synthetic input separately from the experimental Web Bluetooth H10
-     adapter. Keep the Pages runtime entirely in-browser: hide native LSL/OSC
-     destinations and do not depend on a companion, wrapper, or relay.
+   - Offer the canonical anonymized 60-second H10 recording as an explicit
+     selectable preview input in both Pages and the offline Tauri app; never use
+     generated signals as an app fallback.
+   - Label recorded preview input separately from the experimental Web Bluetooth H10
+     adapter. Keep the Pages runtime entirely in-browser: retain the shared
+     native LSL/OSC controls, reject browser attempts with an installed-app
+     error and release link, and do not depend on a companion, wrapper, or
+     relay.
    - Keep direct browser H10 support feature-detected and permission-gated;
-     preserve mock fallback everywhere.
+     preserve recorded hardware-free preview input everywhere.
    - Keep the browser live channel and CSV recorder self-contained, bounded,
      visibly stopped on capacity/disconnect, record all incoming raw rows plus
      produced metrics, and remain explicit that they are not discoverable
@@ -33,7 +35,21 @@ items into the dated history instead of silently deleting them.
    - Treat Android Chrome Web Bluetooth as foreground-only until physical-device
      evidence says more. Never turn a screen wake lock into a background-capture
      claim; a guaranteed locked-screen workflow requires native Android work.
-2. Keep repository context agent-ready.
+   - After every completed edit, production-build/install the desktop app,
+     publish the accepted canonical UI to `main`, verify the live Pages manifest
+     against the checkout, and return the live Pages URL in the handoff.
+2. Keep the metric picker and Formula Lab evidence-first and approachable.
+   - Preserve one-at-a-time output addition and the responsive ECG/ACC filter
+     layout.
+   - Keep recorded previews for every catalog metric and update them live for
+     settings that affect display or published values.
+   - Keep concise scientific context, citations, and mathematical definitions
+     on every metric; retain the Excite-O-Meter source link and distinguish it
+     from Polar Stream's experimental activation composite.
+   - Keep Formula Lab source-clock constraints, automatic time axis, templates,
+     explained insert keyboard, recorded before/after preview, native resource
+     bounds, and per-formula fault isolation.
+3. Keep repository context agent-ready.
    - Root `AGENTS.md` routes agents to `for-ai/`.
    - Context validation passes in local work and CI when adopted.
 
@@ -94,8 +110,9 @@ items into the dated history instead of silently deleting them.
   explicitly paired Pages sessions and ported MesmerPrism's bounded WinRT PMD
   access/retry pattern without misrepresenting read-only Windows MTU.
 - 2026-08-13: superseded and removed the browser-to-LSL companion so the Pages
-  workflow is fully self-contained; native LSL/OSC are hidden in browser mode
-  and remain installed-app features.
+  workflow is fully self-contained; native LSL/OSC were hidden in browser mode
+  and remained installed-app features. The 2026-08-14 frontend-parity decision
+  later restored the visible controls without restoring browser publication.
 - 2026-08-13: added a from-scratch browser session outlet: exact incoming event
   batches are available within the browser, while selected ECG/ACC/metric rows
   can be recorded and downloaded as bounded timestamped CSV without a server,
@@ -107,3 +124,8 @@ items into the dated history instead of silently deleting them.
   exposed their shared experimental classifier controls before selection.
 - 2026-08-13: established the dedicated agent control plane and prioritized the
   single stacked X/Y/Z accelerometer visualization.
+- 2026-08-15: replaced synthetic app previews with the canonical anonymized
+  H10 recording, expanded recorded preview coverage to all 47 metrics, added
+  live pre-save setting previews and a bounded native Formula Lab, and made
+  local/install/live-Pages synchronization plus URL verification mandatory for
+  every completed edit.

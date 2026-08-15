@@ -13,10 +13,10 @@
     "verify:live-pages": "python3 scripts/verify_live_browser_demo.py",
     "test:browser-acceptance": "python3 -m unittest discover -s scripts -p 'test_analyze_browser_recording.py'",
     "analyze:browser-recording": "python3 scripts/analyze_browser_recording.py",
+    "generate:catalog": "cargo run --quiet -p polar-h10-metrics --example export_catalog -- apps/polar-stream/ui/metric-catalog.js",
+    "check:catalog": "cargo run --quiet -p polar-h10-metrics --example export_catalog -- /tmp/polar-stream-metric-catalog.js && cmp apps/polar-stream/ui/metric-catalog.js /tmp/polar-stream-metric-catalog.js",
     "generate:previews": "python3 scripts/generate_metric_previews.py",
-    "check:previews": "python3 scripts/generate_metric_previews.py --check && python3 scripts/generate_demo_data.py --check",
-    "generate:demo": "python3 scripts/generate_demo_data.py",
-    "check:demo": "python3 scripts/generate_demo_data.py --check"
+    "check:previews": "python3 scripts/generate_metric_previews.py --check && node --test apps/polar-stream/ui/tests/recorded-preview.test.cjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",

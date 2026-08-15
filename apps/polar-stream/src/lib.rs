@@ -10,7 +10,10 @@ use polar_h10_core::AccSample;
 use polar_h10_input::{DeviceSummary, InputEvent, InputManager};
 use polar_h10_metrics::{
     BreathingSettings, METRIC_CATALOG, MetricDefinition, MetricEngine, MetricSample,
-    MetricSelection,
+    MetricSelection, metric_formula_definition,
+};
+use polar_h10_output::{
+    CustomFormulaConfig, FormulaError, FormulaPublishBatch, FormulaValidation, validate_formula,
 };
 use polar_h10_output::{MetricValue, OutputConfig, OutputHealth, OutputRouter};
 use serde::{Deserialize, Serialize};
@@ -97,13 +100,16 @@ enum AppEvent {
     Ecg {
         sensor_timestamp_ns: u64,
         microvolts: Vec<i32>,
+        formulas: FormulaPublishBatch,
     },
     Accelerometer {
         sensor_timestamp_ns: u64,
         samples: Vec<AccSample>,
+        formulas: FormulaPublishBatch,
     },
     Metrics {
         values: Vec<MetricSample>,
+        formulas: FormulaPublishBatch,
     },
     Error {
         code: &'static str,
@@ -118,7 +124,17 @@ struct Bootstrap {
     preferences: PreferencesSnapshot,
     has_saved_preferences: bool,
     platform: &'static str,
-    metric_catalog: Vec<MetricDefinition>,
+    metric_catalog: Vec<MetricDescriptor>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MetricDescriptor {
+    #[serde(flatten)]
+    metric: MetricDefinition,
+    formula: &'static str,
+    formula_template: Option<&'static str>,
+    formula_source: &'static str,
 }
 
 #[tauri::command]
@@ -129,7 +145,19 @@ fn get_bootstrap(state: State<'_, AppState>) -> Bootstrap {
         preferences,
         has_saved_preferences: state.preferences.has_saved_preferences(),
         platform: std::env::consts::OS,
-        metric_catalog: METRIC_CATALOG.to_vec(),
+        metric_catalog: METRIC_CATALOG
+            .iter()
+            .copied()
+            .map(|metric| {
+                let formula = metric_formula_definition(metric.id);
+                MetricDescriptor {
+                    metric,
+                    formula: formula.formula,
+                    formula_template: formula.formula_template,
+                    formula_source: formula.formula_source,
+                }
+            })
+            .collect(),
     }
 }
 
@@ -268,6 +296,7 @@ async fn connect_device(
                         &ui_tx,
                         output.publish_ecg(sensor_timestamp_ns, &microvolts),
                     );
+                    let formulas = output.process_ecg_formulas(sensor_timestamp_ns, &microvolts);
                     let derived = metrics_engine.process_ecg(&microvolts);
                     if !output_open
                         || !forward_display_event(
@@ -275,12 +304,13 @@ async fn connect_device(
                             AppEvent::Ecg {
                                 sensor_timestamp_ns,
                                 microvolts,
+                                formulas,
                             },
                         )
                     {
                         false
                     } else {
-                        publish_metrics(&output, &ui_tx, derived)
+                        publish_metrics(&output, &ui_tx, derived, FormulaPublishBatch::default())
                     }
                 }
                 InputEvent::Accelerometer {
@@ -291,6 +321,8 @@ async fn connect_device(
                         &ui_tx,
                         output.publish_accelerometer(sensor_timestamp_ns, &samples),
                     );
+                    let formulas =
+                        output.process_accelerometer_formulas(sensor_timestamp_ns, &samples);
                     let derived = metrics_engine.process_accelerometer(&samples);
                     if !output_open
                         || !forward_display_event(
@@ -298,12 +330,13 @@ async fn connect_device(
                             AppEvent::Accelerometer {
                                 sensor_timestamp_ns,
                                 samples,
+                                formulas,
                             },
                         )
                     {
                         false
                     } else {
-                        publish_metrics(&output, &ui_tx, derived)
+                        publish_metrics(&output, &ui_tx, derived, FormulaPublishBatch::default())
                     }
                 }
                 InputEvent::HeartRate {
@@ -314,11 +347,14 @@ async fn connect_device(
                         &ui_tx,
                         output.publish_heart_rate(beats_per_minute, &rr_intervals_ms),
                     );
+                    let formulas =
+                        output.process_heart_rate_formulas(beats_per_minute, &rr_intervals_ms);
                     output_open
                         && publish_metrics(
                             &output,
                             &ui_tx,
                             metrics_engine.process_heart_rate(beats_per_minute, &rr_intervals_ms),
+                            formulas,
                         )
                 }
                 InputEvent::Error(message) => forward_display_event(
@@ -339,6 +375,7 @@ async fn connect_device(
                             id: "breathing_phase",
                             value: 0.0,
                         }],
+                        FormulaPublishBatch::default(),
                     );
                     phase_sent
                         && ui_tx
@@ -367,8 +404,13 @@ fn publish_metrics(
     output: &OutputRouter,
     ui_tx: &tokio::sync::mpsc::Sender<AppEvent>,
     values: Vec<MetricSample>,
+    formulas: FormulaPublishBatch,
 ) -> bool {
-    if values.is_empty() {
+    if values.is_empty()
+        && formulas.series.is_empty()
+        && formulas.faults.is_empty()
+        && formulas.warnings.is_empty()
+    {
         return true;
     }
     let routed = values
@@ -379,7 +421,7 @@ fn publish_metrics(
         })
         .collect::<Vec<_>>();
     let output_open = forward_output_warning(ui_tx, output.publish_metrics(&routed));
-    output_open && forward_display_event(ui_tx, AppEvent::Metrics { values })
+    output_open && forward_display_event(ui_tx, AppEvent::Metrics { values, formulas })
 }
 
 fn forward_output_warning(
@@ -410,7 +452,16 @@ async fn disconnect_device(state: State<'_, AppState>) -> CommandResult<()> {
         .input
         .disconnect()
         .await
-        .map_err(|message| CommandError::new("POLAR_DISCONNECT_FAILED", message, true))
+        .map_err(|message| CommandError::new("POLAR_DISCONNECT_FAILED", message, true))?;
+    state.output.reset_measurement();
+    Ok(())
+}
+
+#[tauri::command]
+fn validate_custom_formula(
+    formula: CustomFormulaConfig,
+) -> Result<FormulaValidation, FormulaError> {
+    validate_formula(formula)
 }
 
 #[tauri::command]
@@ -517,6 +568,7 @@ pub fn run() {
             connect_device,
             disconnect_device,
             update_output_config,
+            validate_custom_formula,
             open_metric_citation,
         ])
         .run(tauri::generate_context!())
