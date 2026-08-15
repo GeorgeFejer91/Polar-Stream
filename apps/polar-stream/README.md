@@ -13,10 +13,17 @@ The frontend is plain HTML, CSS, and JavaScript. It has no framework runtime.
 The native code is a Rust workspace split into protocol, input, output, and app
 crates; see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-The output library also shows a looped SVG preview for every catalog metric.
-Those paths are produced at development time from a fixed NeuroKit2 ECGSYN and
-respiration simulation; the generated asset is offline, deterministic, and adds
-no Python or scientific-computing dependency to the installed application.
+The one-at-a-time output library shows a recorded preview, concise scientific
+context, citation and mathematical definition for every catalog metric. The
+preview asset is derived from `ui/data/preview-recording.json`, an anonymized
+60-second real Polar H10 ECG/ACC recording; output settings recompute or
+transform that recording in the dialog before the output is saved.
+
+Formula Lab turns formula-compatible metric definitions into editable native
+custom outputs. It maps `ecg`, `x/y/z`, `hr`, and `rr`, retains sensor time as
+the automatic x-axis, provides template and calculator keys with explanations,
+and renders recorded before/after traces. The native runtime bounds expression,
+AST, operation and retained-state costs and faults formulas independently.
 
 ## Validate the reusable crates
 
@@ -24,12 +31,12 @@ no Python or scientific-computing dependency to the installed application.
 cargo test -p polar-h10-core -p polar-h10-input -p polar-h10-output
 ```
 
-## Browser input and offline mock input
+## Browser input and recorded preview input
 
-The shared input adapter offers a clearly labeled **NeuroKit simulated input**
-in both the installed Tauri app and browser demo. It replays the generated,
-checked-in `ui/demo-data.js` fixture entirely offline, so the complete workflow
-can be explored without BLE hardware. It never enters the native BLE or LSL/OSC
+The shared input adapter offers a clearly labeled **Recorded Polar H10 preview**
+in both the installed Tauri app and browser demo. It replays the checked-in
+`ui/data/preview-recording.json` entirely offline, so the complete workflow can
+be explored without BLE hardware. It never enters the native BLE or LSL/OSC
 path and is not device or algorithm validation.
 
 The same canonical UI also exposes **Polar H10 via browser** on GitHub Pages.
@@ -37,12 +44,21 @@ Supported Chromium browsers use Web Bluetooth to request an H10, subscribe to
 the PMD control/data characteristics, start ECG and 200 Hz ACC, and subscribe to
 standard HR/RR notifications. This experimental frontend adapter mirrors the
 native packet decoder and the two ACC breathing outputs, but it is not the
-authoritative acquisition/publication path and still needs physical-H10
-validation. Browser LSL and OSC destinations are unavailable because a normal
-tab does not provide the native socket behavior required by those protocols.
-The Pages workflow is entirely in-browser and never connects to a localhost
-companion; native destinations are hidden instead of presented as unavailable
-switches.
+authoritative acquisition/publication path. A physical Motorola/Chrome smoke
+test connected the public Pages site to an H10 on 2026-08-14; the full timed CSV
+and reconnect acceptance run remains pending. Browser LSL and OSC destinations
+are unavailable because a normal tab does not provide the native socket behavior
+required by those protocols. The Pages workflow is entirely in-browser and never
+connects to a localhost companion. Their shared toggles remain visible; attempts
+stay off and surface an installed-app-only error with a latest-release download
+link.
+
+The browser adapter uses capability detection, preserves the initiating click
+for the chooser, diagnoses Bluetooth Permissions Policy rejection, retries one
+transient GATT connection failure before subscription, and falls back to the legacy
+characteristic-write method. Upstream reports Web Bluetooth support in Chrome,
+Edge, Samsung Internet, and Android Opera/Vivaldi, but those other browser/H10
+combinations have not yet been physically validated here.
 
 Brave disables Web Bluetooth on the currently tested Linux desktop and Android
 installations. It may make `navigator.bluetooth` visible while still rejecting
@@ -53,8 +69,9 @@ desktop hardware testing.
 Chrome on Android can use this foreground path. The adapter requests a screen
 wake lock while visible, but neither Pages nor an installed PWA can guarantee
 capture after Android hides/freezes/discards the page or locks the screen; Web
-Bluetooth is unavailable to service workers. Physical Android/H10 testing and
-a separate native foreground-service design remain required boundaries.
+Bluetooth is unavailable to service workers. The full Android CSV/rate/reconnect
+acceptance run and a separate native foreground-service design remain required
+boundaries.
 
 The Pages output panel instead contains a browser-native session recorder. Its
 **Save local CSV** toggle captures every incoming raw ECG/ACC row and every
@@ -78,7 +95,7 @@ npm run build:browser-demo
 python3 -m http.server 8000 --directory artifacts/browser-demo
 ```
 
-Open `http://127.0.0.1:8000` and select the NeuroKit mock module. The deployed
+Open `http://127.0.0.1:8000` and select the recorded H10 preview. The deployed
 version is at `https://georgefejer91.github.io/Polar-Stream/`.
 
 See [`docs/acc-breathing-handoff.md`](../../docs/acc-breathing-handoff.md) for
@@ -87,9 +104,9 @@ validation plan.
 
 To rebuild or verify the metric-library previews, install the repository's
 `requirements-previews.txt` in a Python 3.13 virtual environment and run
-`scripts/generate_metric_previews.py` and `scripts/generate_demo_data.py` (or
-pass `--check`). These traces explain output shape and UI behavior only; they
-are not recordings or validation evidence.
+`scripts/generate_metric_previews.py` (or pass `--check`). NeuroKit is used only
+to clean the real ECG during offline generation; there is no simulated-signal
+fallback. These traces explain output shape and UI behavior, not validation.
 
 ## Run the native desktop app
 
@@ -153,7 +170,7 @@ automatically for that sensor. It prefers an exact device-ID match, falls back
 to a single unambiguous name match, and otherwise leaves all scan results
 available for manual selection. A failed connection never replaces the
 remembered sensor. The browser demo uses local storage and never writes the
-native file; the synthetic input is not remembered as a physical sensor. On the
+native file; the recorded preview input is not remembered as a physical sensor. On the
 first upgraded launch only, the native app accepts
 the previous version's local preferences through a bounded Rust migration
 command, then uses the native file exclusively.

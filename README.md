@@ -4,20 +4,31 @@ Polar Stream is a compact, low-latency desktop bridge for Polar H10 raw ECG and
 accelerometer data. Its interface has three focused areas: sensor input, stream
 output, and live visualization. The output library starts with a prominent
 red ECG / blue accelerometer selector. ECG mode contains the H10's core ECG,
-heart-rate, HRV and related outputs; ACC mode intentionally stays small, with
-raw ACC, 3D motion magnitude, and only two experimental breathing outputs.
+heart-rate, HRV, coherence, Excite-O-Meter and experimental activation outputs;
+ACC mode contains raw motion plus the complete experimental breathing and
+breathing-dynamics catalog.
 Selecting a metric opens
 its scientific definition, interpretation limits, evidence level, cited source,
 and exact stream-name preview; an explicit **Save output** action then adds that
 single module to the enabled destinations.
 
-When the output library is open, every row contains an SVG thumbnail of its
-expected output shape. Preview data and SVG nodes are kept out of normal startup
-and unloaded from the document when the library closes.
-Selecting the row opens a larger, smoothly looped preview generated at development
-time from deterministic NeuroKit2 ECGSYN ECG and respiratory signals. These are
-illustrative synthetic traces, not example participant norms, algorithm validation,
-or diagnostic data; the app labels that limitation beside every expanded preview.
+When the output library is open, every row contains a thumbnail derived from the
+canonical anonymized 60-second real Polar H10 ECG/ACC recording. Selecting one
+row opens a larger outcome preview. Both sizes run as seamless circular traces;
+Formula Lab uses the same continuously scrolling presentation. Display window, normalization, breathing
+axes, smoothing, sensitivity and calibration controls update that preview before
+the user saves the single output. The recording illustrates output form and
+setting effects—it is not a participant norm, validation result, or diagnostic
+example.
+
+Every metric card includes a concise scientific summary, its most relevant
+citation, and a mathematical definition. Formula-compatible metrics can be
+opened directly in **Formula Lab**, which explains the signal variables, keeps
+time as the automatic x-axis, provides a calculator-style insert keyboard with
+hover help, and compares recorded input with formula output. Custom formulas
+are parsed into a bounded native scalar runtime and can publish their own LSL,
+OSC, and CSV streams; specialized multi-stage metrics remain documented without
+pretending that a misleading one-line scalar template is equivalent.
 
 Every output module has a saved visualizer window and, where meaningful,
 normalization controls. Before either ACC breathing output is added, the user
@@ -74,15 +85,14 @@ available to a service worker. The desktop app avoids this tab lifecycle; a
 reliable smartphone background/screen-off workflow requires a future native
 Android build with a foreground service, not the GitHub Pages site.
 
-Choose **NeuroKit simulated input** to replay deterministic ECGSYN ECG and
-respiration-derived accelerometer data without Bluetooth hardware. The same
-synthetic input is available offline in the installed desktop app for interface
-exploration without a Polar strap.
-
-Synthetic input is labeled throughout the interface. It demonstrates layout,
-configuration, and visualization behavior only; it is not recorded Polar data,
-device or algorithm validation. By itself it does not open BLE, LSL, or OSC
-connections.
+Choose **Recorded Polar H10 preview** to replay the checked-in, anonymized
+60-second real ECG/ACC recording without Bluetooth hardware. Its last 1.2 seconds
+receive a smooth endpoint correction so the presentation and browser-local
+preview outputs repeat without a false gap or sudden end-to-start jump; the
+checked-in recording itself is unchanged. The same input is
+available offline in the installed desktop app for interface exploration. It is
+labeled recorded throughout, is not algorithm validation, and by itself does
+not open BLE, LSL, or OSC connections.
 
 The browser demo is deliberately self-contained: Bluetooth acquisition, mock
 replay, selected browser-supported metrics, and visualization all run in the
@@ -120,11 +130,12 @@ event and on the same-origin `polar-stream-live-v1` `BroadcastChannel`. This is
 a browser-native integration surface for another page or script in the same
 browser profile. It is deliberately called a live channel, not LSL.
 
-LSL and OSC are not shown as browser destinations because ordinary web pages
-cannot open the raw UDP discovery/multicast and TCP/UDP sockets those native
-protocols require. Native LSL/OSC remain features of the separately installed
-desktop app; the website does not relay data to it and does not label a
-WebSocket or HTTP transport as LSL.
+LSL and OSC remain visible in the shared browser interface, but ordinary web
+pages cannot open the raw UDP discovery/multicast and TCP/UDP sockets those
+native protocols require. Trying either toggle in Pages leaves it off and shows
+an installed-app-only error with a link to the latest release. Native LSL/OSC
+remain features of the separately installed desktop app; the website does not
+relay data to it and does not label a WebSocket or HTTP transport as LSL.
 
 GitHub Pages is rebuilt from the canonical UI after changes land on `main`, and
 CI checks byte-for-byte asset parity plus desktop, 390px, and 320px layouts.
@@ -189,6 +200,8 @@ Acquisition and publication stay native in Rust:
 - `polar-h10-input`: BLE discovery, connection, and typed sensor events.
 - `polar-h10-metrics`: independent ECG, HRV, coherence, breathing, complexity,
   and experimental processors plus the evidence-backed metric catalog.
+- `polar-h10-math`: bounded custom scalar formulas, stateful DSP/HRV functions,
+  source-clock validation, and per-formula fault isolation.
 - `polar-h10-output`: LSL/OSC naming and publication plus bounded native CSV.
 - `apps/polar-stream`: thin Tauri coordinator and shared three-panel UI.
 
@@ -226,7 +239,7 @@ Visual validation uses deterministic Playwright renderers, never a connected
 sensor or the running desktop app. They render every breath-class target, the
 settings workflow, all metric-library SVGs, the staged Pages application, and
 touch layouts. Checks cover canvas geometry, color, labels, saved controls,
-preview coverage, Pages parity, NeuroKit replay, bounded browser recording and
+preview coverage, Pages parity, recorded H10 replay, Formula Lab behavior, bounded browser recording and
 CSV download, audio packet/WAV decode, the tab-local live event contract,
 emulated Android-style Web Bluetooth, and responsive overflow:
 
@@ -239,16 +252,19 @@ npm run test:browser-acceptance
 npm run verify:live-pages
 ```
 
-NeuroKit is a development-only fixture generator and is not shipped in the app
-or website. Regenerate and reproducibly verify the checked-in, dependency-free
-SVG previews and mock input with:
+The canonical recording is checked in at
+`apps/polar-stream/ui/data/preview-recording.json`. NeuroKit is used only for
+offline cleaning/method provenance while deriving the checked-in preview asset;
+it never generates or replaces the app preview signal. Regenerate and verify
+the recorded previews and Rust-exported browser catalog with:
 
 ```bash
 python3 -m venv .venv-previews
 .venv-previews/bin/python -m pip install -r requirements-previews.txt
 .venv-previews/bin/python scripts/generate_metric_previews.py
-.venv-previews/bin/python scripts/generate_demo_data.py
 PATH="$PWD/.venv-previews/bin:$PATH" npm run check:previews
+npm run generate:catalog
+npm run check:catalog
 ```
 
 Stage the exact GitHub Pages artifact locally with:

@@ -21,6 +21,21 @@ pub struct MetricDefinition {
     pub stream_type: &'static str,
 }
 
+/// Mathematical context kept alongside the scientific metric catalog. This is
+/// resolved at runtime because stable Rust cannot match string IDs in a const
+/// initializer.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricFormulaDefinition {
+    /// Human-readable definition shown in the metric library.
+    pub formula: &'static str,
+    /// Executable Formula Lab expression when the bounded scalar runtime can
+    /// reproduce the metric directly.
+    pub formula_template: Option<&'static str>,
+    /// Sensor channel used by the executable template.
+    pub formula_source: &'static str,
+}
+
 impl MetricDefinition {
     pub fn for_id(id: &str) -> Option<Self> {
         metric_definition(id)
@@ -84,6 +99,165 @@ macro_rules! metric {
             stream_type: $stream,
         }
     };
+}
+
+fn formula_for(id: &str) -> &'static str {
+    match id {
+        "raw_ecg" => "y(t) = ECG(t) [µV]; x-axis = sensor time t",
+        "raw_acc" => "a(t) = [x(t), y(t), z(t)] [mg]",
+        "acc_magnitude" => "|a(t)| = √(x(t)² + y(t)² + z(t)²) / 1000",
+        "ecg_mean" => "μECG(t) = (1/N) Σ ECGᵢ over the preceding 5 s",
+        "ecg_rms" => "RMS(t) = √[(1/N) Σ ECGᵢ²] over the preceding 5 s",
+        "ecg_peak_to_peak" => "P2P(t) = max(ECGᵢ) − min(ECGᵢ) over the preceding 5 s",
+        "ecg_sd" => "sECG(t) = √[Σ(ECGᵢ − μECG)² / (N − 1)] over 5 s",
+        "heart_rate" => "HR(t) = device-reported beats per minute",
+        "rr_interval" => "RRᵢ = t(Rᵢ) − t(Rᵢ₋₁)",
+        "mean_nn" => "meanNN = (1/N) Σ NNᵢ over the accepted 5 min window",
+        "mean_heart_rate" => "meanHR = 60,000 / meanNN",
+        "rmssd" => "RMSSD = √[(1/(N−1)) Σ(NNᵢ₊₁ − NNᵢ)²]",
+        "ln_rmssd" => "lnRMSSD = ln(RMSSD)",
+        "sdnn" => "SDNN = √[Σ(NNᵢ − meanNN)² / (N−1)]",
+        "pnn50" => "pNN50 = 100 · count(|NNᵢ₊₁ − NNᵢ| > 50 ms) / (N−1)",
+        "sd1" => "SD1 = RMSSD / √2",
+        "coherence" => "coherence = peak-band RR power / total RR power",
+        "coherence_confidence" => "confidence = 0.55·sample readiness + 0.45·window coverage",
+        "heartmath_coherence" => {
+            "HeartMath ratio = [peak-band power / (total power − peak-band power)]²"
+        }
+        "coherence_peak_frequency" => "fpeak = argmax P(f), 0.04 ≤ f ≤ 0.26 Hz",
+        "coherence_peak_power" => "Ppeak = ∫ P(f)df from fpeak−0.015 to fpeak+0.015 Hz",
+        "coherence_total_power" => "Ptotal = ∫ P(f)df from 0.0033 to 0.4 Hz",
+        "acc_breathing_magnitude" => {
+            "b(t) = smoothed projection of selected ACC axes onto the calibrated principal axis"
+        }
+        "breathing_volume" => "volume(t) = clamp[(b(t)−q₀.₀₅)/(q₀.₉₅−q₀.₀₅), 0, 1]",
+        "breathing_phase" => "phase(t) = signΔ(volume(t)) with sensitivity threshold; {−1,0,+1}",
+        "breathing_calibration" => "progress(t) = collected calibration samples / required samples",
+        "breathing_axis_range" => "axisRange = q₀.₉₅(b) − q₀.₀₅(b)",
+        "breathing_rate" => "rate = 60 / mean(same-polarity extremum intervals)",
+        "breathing_dynamics_confidence" => {
+            "confidence = clamp(max(Ninterval,Namplitude) / 200, 0, 1)"
+        }
+        "breath_interval_mean" => "μI = (1/N) Σ intervalᵢ",
+        "breath_interval_sd" => "sI = √[Σ(intervalᵢ−μI)²/(N−1)]",
+        "breath_interval_cv" => "CVI = sI / |μI|",
+        "breath_interval_acw50" => "ACW50 = first lag k where autocorr(interval,k) < 0.5",
+        "breath_interval_psd_slope" => {
+            "slope = OLS slope of log power on log frequency in the low-frequency interval spectrum"
+        }
+        "breath_interval_lzc" => {
+            "LZC = normalized Lempel–Ziv phrase count of mean-binarized intervals"
+        }
+        "breath_interval_sampen" => "SampEn = −ln(A/B), m=2, r=0.2·SD, delay=1",
+        "breath_interval_mse" => {
+            "MSE = trapezoidal AUC of SampEn across coarse-graining scales 1…5"
+        }
+        "breath_amplitude_mean" => "μA = (1/N) Σ |peakᵢ − troughᵢ|",
+        "breath_amplitude_sd" => "sA = √[Σ(amplitudeᵢ−μA)²/(N−1)]",
+        "breath_amplitude_cv" => "CVA = sA / |μA|",
+        "breath_amplitude_acw50" => "ACW50 = first lag k where autocorr(amplitude,k) < 0.5",
+        "breath_amplitude_psd_slope" => {
+            "slope = OLS slope of log power on log frequency in the low-frequency amplitude spectrum"
+        }
+        "breath_amplitude_lzc" => {
+            "LZC = normalized Lempel–Ziv phrase count of mean-binarized amplitudes"
+        }
+        "breath_amplitude_sampen" => "SampEn = −ln(A/B), m=2, r=0.2·SD, delay=1",
+        "breath_amplitude_mse" => {
+            "MSE = trapezoidal AUC of SampEn across coarse-graining scales 1…5"
+        }
+        "excitement_score" => "score = 1 − [Φ(zRR) + Φ(zRMSSD₁₀)] / 2",
+        "excitometer" => "activation = logistic[0.65·z(HR) − 0.35·z(lnRMSSD)]",
+        _ => "See the implementation and evidence catalog.",
+    }
+}
+
+fn formula_template_for(id: &str) -> Option<&'static str> {
+    match id {
+        "raw_ecg" => Some("ecg"),
+        "acc_magnitude" => Some("sqrt(x*x + y*y + z*z) / 1000"),
+        "ecg_mean" => Some("moving_mean(ecg, 5)"),
+        "ecg_rms" => Some("moving_rms(ecg, 5)"),
+        "ecg_peak_to_peak" => Some("moving_max(ecg, 5) - moving_min(ecg, 5)"),
+        "ecg_sd" => Some("moving_std(ecg, 5)"),
+        "heart_rate" => Some("hr"),
+        "rr_interval" => Some("rr"),
+        "mean_nn" => Some("rr_mean(rr, 300)"),
+        "mean_heart_rate" => Some("rr_mean_hr(rr, 300)"),
+        "rmssd" => Some("rr_rmssd(rr, 300)"),
+        "ln_rmssd" => Some("rr_ln_rmssd(rr, 300)"),
+        "sdnn" => Some("rr_sdnn(rr, 300)"),
+        "pnn50" => Some("rr_pnn50(rr, 300)"),
+        "sd1" => Some("rr_sd1(rr, 300)"),
+        "acc_breathing_magnitude" => {
+            Some("breathing_magnitude(x, y, z, true, false, true, 0.75, false, false)")
+        }
+        "breathing_volume" => {
+            Some("breathing_magnitude(x, y, z, true, false, true, 0.75, true, false)")
+        }
+        "breathing_phase" => Some("breathing_phase(x, y, z, true, false, true, 0.75, 0.60, false)"),
+        "excitement_score" => Some("excitement(rr, 300)"),
+        "excitometer" => {
+            Some("sigmoid(0.65*zscore_n(60000/rr, 20) - 0.35*zscore_n(rr_ln_rmssd(rr, 300), 20))")
+        }
+        _ => None,
+    }
+}
+
+fn formula_source_for(id: &str) -> &'static str {
+    match id {
+        "raw_acc"
+        | "acc_magnitude"
+        | "acc_breathing_magnitude"
+        | "breathing_volume"
+        | "breathing_phase"
+        | "breathing_calibration"
+        | "breathing_axis_range"
+        | "breathing_rate"
+        | "breathing_dynamics_confidence"
+        | "breath_interval_mean"
+        | "breath_interval_sd"
+        | "breath_interval_cv"
+        | "breath_interval_acw50"
+        | "breath_interval_psd_slope"
+        | "breath_interval_lzc"
+        | "breath_interval_sampen"
+        | "breath_interval_mse"
+        | "breath_amplitude_mean"
+        | "breath_amplitude_sd"
+        | "breath_amplitude_cv"
+        | "breath_amplitude_acw50"
+        | "breath_amplitude_psd_slope"
+        | "breath_amplitude_lzc"
+        | "breath_amplitude_sampen"
+        | "breath_amplitude_mse" => "accelerometer",
+        "heart_rate" => "heartRate",
+        "rr_interval"
+        | "mean_nn"
+        | "mean_heart_rate"
+        | "rmssd"
+        | "ln_rmssd"
+        | "sdnn"
+        | "pnn50"
+        | "sd1"
+        | "coherence"
+        | "coherence_confidence"
+        | "heartmath_coherence"
+        | "coherence_peak_frequency"
+        | "coherence_peak_power"
+        | "coherence_total_power"
+        | "excitement_score"
+        | "excitometer" => "rrInterval",
+        _ => "ecg",
+    }
+}
+
+pub fn metric_formula_definition(id: &str) -> MetricFormulaDefinition {
+    MetricFormulaDefinition {
+        formula: formula_for(id),
+        formula_template: formula_template_for(id),
+        formula_source: formula_source_for(id),
+    }
 }
 
 pub const METRIC_CATALOG: &[MetricDefinition] = &[

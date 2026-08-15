@@ -39,6 +39,8 @@ apps/polar-stream (thin coordinator)
    ├────────► polar-h10-output ─────► LSL outlets
    │                    └───────────► OSC/UDP
    │                    └───────────► bounded CSV writer thread
+   │                    ▲
+   ├────────► polar-h10-math ───────┘ bounded custom scalar formulas
    │
    └────────► bounded display queue ─► Tauri channel ─► typed JS ring buffers
                                                         │ data-triggered frame
@@ -57,8 +59,12 @@ Rules enforced by the crate graph:
 - In the native acquisition path, the HTML layer never republishes scientific
   data. The browser-input path remains entirely inside its tab and never enters
   or delays native H10 acquisition or native output publication.
-- Adding a custom metric means registering one `MetricDefinition` and feeding a
-  `MetricSample`; it does not change BLE acquisition or output transports.
+- Adding a built-in metric means registering one `MetricDefinition` and feeding
+  a `MetricSample`; it does not change BLE acquisition or output transports.
+- User formulas run only in `polar-h10-math`. The parser has no statements,
+  assignment, loops, strings, or user-defined functions, and compilation,
+  operation, depth, state, and formula-count budgets are enforced before a
+  formula can join the native output path.
 - Native preferences have one typed, schema-versioned Rust owner in
   `apps/polar-stream/src/preferences.rs`; `ui/preferences.js` is used only by
   the browser renderer. Bluetooth and output crates remain storage-agnostic.
@@ -76,10 +82,13 @@ checks the staged hashes against the canonical files before exercising the site
 at desktop, 390px touch, and 320px touch viewports.
 
 `ui/runtime-api.js` selects the runtime adapter once. Real H10 devices use the
-typed Tauri IPC/channel path. A selectable `neurokit-mock` module is available
-in both Tauri and Pages and replays `ui/demo-data.js` through the same connection,
-ECG, accelerometer, and metric event shapes. Mock data never crosses into the
-Rust acquisition path and is visibly labeled synthetic.
+typed Tauri IPC/channel path. A selectable `recorded-h10-preview` module is
+available in both Tauri and Pages and loops the anonymized 60-second real H10
+fixture in `ui/data/preview-recording.json` through the same connection, ECG,
+accelerometer, HR/RR, and derived-output event shapes. Recorded preview data
+uses a bounded 1.2-second endpoint correction to form a continuous circular
+presentation, never crosses into the Rust acquisition path, and is visibly
+labeled recorded. Live H10 input and native raw publication are never seam-conditioned.
 
 On GitHub Pages only, `ui/polar-web-bluetooth.js` adds a second real-input
 adapter. A user gesture opens the browser chooser filtered to `Polar H10`, then
@@ -196,13 +205,14 @@ produces `participant_07_rawECG`, `participant_07_rawACC`, and one equivalent
 name per optional metric. LSL uses that full string as its outlet name; OSC uses
 the same string as its address with a leading slash.
 
-The UI receives each suffix through the bootstrap catalog so its previews are
-descriptions of the native contract, not an independent naming scheme. Its
-library presentation groups outputs by sensor family: ECG-derived outputs use
-the red ECG view, while the blue ACC view intentionally exposes only raw ACC,
-3D motion magnitude, the continuous experimental breathing projection and the
-three-state experimental phase classifier. Legacy breathing IDs remain in the
-catalog for saved-config migration but are not offered as new library choices.
+The UI receives each suffix through the bootstrap catalog and the Pages build
+uses the browser catalog generated from that same Rust source, so previews are
+descriptions of the native contract rather than an independent naming scheme.
+Its library presentation groups every catalog output by sensor family: the ECG
+view contains raw ECG, ECG features, HR/HRV, coherence, and excitation metrics;
+the ACC view contains raw/magnitude, breathing, phase, and breathing-dynamics
+metrics. Validated custom formulas use the same base plus their normalized
+formula name and therefore remain separately discoverable on LSL, OSC, and CSV.
 
 ## Latency policy
 
@@ -239,46 +249,70 @@ SVG paths are checked without
 opening the installed desktop app, scanning Bluetooth, or enabling LSL/OSC. CI
 uploads all rendered classifier targets and the metric library as review artifacts.
 
-## Synthetic metric previews
+## Recorded metric previews
 
-`scripts/generate_metric_previews.py` uses pinned NeuroKit2 development tooling
-to create deterministic ECGSYN ECG and respiratory signals, processes their
-peaks and rates, derives illustrative metric series, and converts each series to
-a compact SVG path. `ui/metric-previews.js` is the generated, checked-in bundle;
-the shipped app has no Python, NumPy, or NeuroKit runtime dependency. The static
-preview bundle is lazy-loaded only when the output library opens; closing the
-dialog removes all preview SVG nodes. The UI draws static thumbnails for rows
-and animates only the selected detail preview.
+`ui/data/preview-recording.json` is the sole hardware-free app-preview source:
+an anonymized 60-second real Polar H10 recording containing 130 Hz ECG, 200 Hz
+three-axis ACC, and HR/RR events. `scripts/generate_metric_previews.py` reads
+that fixture, derives every catalog metric, and writes the checked-in numeric
+series and compact SVG paths in `ui/metric-previews.js`. NeuroKit remains an
+offline ECG-cleaning/method-provenance dependency; it does not generate or
+replace the preview signal, and the packaged app has no Python, NumPy, or
+NeuroKit runtime dependency.
 
 The preview generator parses the native Rust catalog and fails on missing or
-extra IDs. CI regenerates it with the pinned dependency and compares bytes before
-the headless renderer checks all paths and representative animated previews.
-Synthetic previews explain output shape only and are not evidence of accuracy,
-real-world signal quality, expected ranges, or clinical validity.
+extra IDs. CI checks fixture privacy fields and hash, regenerates the preview
+asset with pinned tooling, evaluates every executable metric template on the
+fixture, and verifies that pre-save window/normalization controls visibly alter
+the selected preview. These previews explain output shape and settings behavior;
+one recording is not evidence of accuracy, expected population ranges, or
+clinical validity.
 
-`scripts/generate_demo_data.py` separately creates a 30-second deterministic
-offline input fixture from NeuroKit2 ECGSYN ECG and RSP signals. The fixture
-contains 130 Hz ECG, respiration-derived 200 Hz three-axis motion, and selected
-20 Hz illustrative metric values. Python and NeuroKit are generation-time only;
-the app and Pages site replay the checked-in JavaScript arrays. This fixture
-demonstrates the shared runtime event contract and UI behavior, not Polar H10
-fidelity or breathing-classifier validity.
+The recorded runtime adapter loops the same raw fixture and replays its checked-in
+derived series. The runtime conditions only the recorded loop boundary, while
+metric and Formula Lab charts tile closed paths; discrete classes remain stepped.
+This demonstrates the shared runtime event contract and lets
+users inspect the app without hardware while keeping recorded input visibly
+distinct from a currently connected physical sensor.
+
+## Formula Lab
+
+The Rust metric catalog owns both a human-readable mathematical definition for
+every built-in metric and, where the bounded scalar model can express it without
+distortion, an executable formula template. The generated `ui/metric-catalog.js`
+keeps Pages synchronized with this source. Specialized multi-stage processors
+remain fully documented but are not mislabeled as one-line executable formulas.
+
+Formula Lab presents one editable output at a time. Sensor/event time is always
+the x-axis; the selected expression is the y value. The source clock determines
+the only available variables (`ecg`, `x/y/z`, `hr`, or `rr`), while the keypad,
+variable map, metric templates, and recorded before/after plot make the system
+usable without requiring users to memorize the grammar. JavaScript evaluates
+only the preview; Tauri validates and compiles the same submission in
+`polar-h10-math` before it can publish.
+
+Each enabled formula has independent DSP state and health. It evaluates after
+raw publication on its selected source clock, publishes one scalar LSL outlet
+and OSC path, and writes its values to native CSV. Invalid or repeatedly
+non-finite formulas fail locally and visibly without stopping raw or built-in
+output publication.
 
 ## Adding outputs
 
 1. Add one evidence-backed `MetricDefinition` in
    `crates/polar-h10-metrics/src/catalog.rs`.
 2. Produce a `MetricSample` in an appropriate processor module.
-3. Add or update formula tests in that module and the evidence inventory.
-4. Regenerate `ui/metric-previews.js`; the generator enforces catalog coverage.
+3. Add the mathematical definition, executable scalar template when honest, and
+   source citation in the catalog; update formula tests and the evidence inventory.
+4. Regenerate `ui/metric-catalog.js` and `ui/metric-previews.js`; both generators
+   enforce catalog coverage.
 
 The UI and output router consume the same bootstrap catalog, so registered
-metrics share native definitions, stream names, output cards, and visualizer
-metadata. A small presentation allowlist keeps retired ACC breathing telemetry
-out of new selections without breaking saved configurations. The library is a
-one-output transaction: selecting a row reveals the scientific interpretation,
-citation, and any pre-save processing controls before **Save output** adds it to
-the router. The two public ACC breathing outputs share one
+metrics share native definitions, stream names, output cards, formula metadata,
+and visualizer metadata. The library is a one-output transaction: selecting a
+row reveals its recorded preview, mathematical definition, concise scientific
+interpretation, citation, and any live pre-save processing controls before
+**Save output** adds it to the router. The two public ACC breathing outputs share one
 axis/smoothing/calibration configuration. Their independent scalar streams
 remain native in Tauri; the Pages-only Web Bluetooth adapter mirrors that
 processor locally so the live browser input can demonstrate the same two

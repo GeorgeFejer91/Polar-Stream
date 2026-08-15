@@ -177,9 +177,10 @@ try {
   assert.equal(library.dialogOpen, true, "metric library did not open in the renderer");
   assert.equal(library.previewCount, library.catalogCount, "generated preview count differs from catalog count");
   assert.deepEqual(library.missingPreviewIds, [], "one or more catalog metrics lack a generated preview");
-  assert.equal(library.source.library, "NeuroKit2");
-  assert.equal(library.source.version, "0.2.13");
-  assert.equal(library.source.model, "ECGSYN");
+  assert.equal(library.source.library, "Recorded Polar H10");
+  assert.equal(library.source.version, "60-second anonymized fixture");
+  assert.equal(library.source.model, "real-polar-h10-recording");
+  assert.match(library.source.fixtureSha256, /^[a-f0-9]{64}$/);
   assert.equal(await page.locator(".metric-option .metric-preview-svg").count(), library.visibleCount);
   assert.equal(await page.locator(".metric-preview-missing").count(), 0);
   assert.ok(!library.visibleIds.includes("raw_acc"), "ACC outputs leaked into ECG mode");
@@ -187,6 +188,7 @@ try {
   const coverage = await page.locator(".metric-preview-compact").evaluateAll((figures) => figures.map((figure) => ({
     id: figure.dataset.metricId,
     paths: figure.querySelectorAll("path.metric-preview-line").length,
+    animations: figure.querySelectorAll("animateTransform").length,
     pathLength: [...figure.querySelectorAll("path.metric-preview-line")]
       .reduce((sum, path) => sum + (path.getAttribute("d")?.length || 0), 0),
     minimum: Number(figure.dataset.minimum),
@@ -195,6 +197,7 @@ try {
   assert.equal(new Set(coverage.map((preview) => preview.id)).size, library.visibleCount);
   for (const preview of coverage) {
     assert.ok(preview.paths >= 1, `${preview.id} has no generated SVG path`);
+    assert.equal(preview.animations, 1, `${preview.id} compact preview is not continuously looped`);
     assert.ok(preview.pathLength > 120, `${preview.id} SVG path was unexpectedly small`);
     assert.ok(Number.isFinite(preview.minimum) && Number.isFinite(preview.maximum), `${preview.id} has no finite range`);
     assert.ok(preview.maximum >= preview.minimum, `${preview.id} has an inverted range`);
@@ -210,8 +213,9 @@ try {
   await page.getByRole("button", { name: /ACC metrics/ }).click();
   assert.equal(await page.locator("#output-dialog").getAttribute("data-family"), "acc");
   const accIds = await page.locator(".metric-option").evaluateAll((options) => options.map((option) => option.dataset.metricId));
-  assert.deepEqual(accIds, ["raw_acc", "acc_magnitude", "acc_breathing_magnitude", "breathing_phase"]);
-  assert.match(await page.locator("#metric-library-summary").textContent(), /^4 of 4 ACC metrics$/);
+  assert.ok(accIds.length > 20, `complete ACC and breathing catalog was not exposed: ${JSON.stringify(accIds)}`);
+  assert.ok(accIds.includes("raw_acc") && accIds.includes("breathing_phase") && accIds.includes("breath_interval_sampen"));
+  assert.match(await page.locator("#metric-library-summary").textContent(), new RegExp(`^${accIds.length} of ${accIds.length} ACC metrics$`));
 
   await page.locator('.metric-option[data-metric-id="acc_breathing_magnitude"]').click();
   assert.equal(await page.locator(".experimental-badge").textContent(), "Not validated");
@@ -225,13 +229,13 @@ try {
   assert.equal(await selectionSettings.getByLabel("Sensitivity").inputValue(), "0.6");
   assert.equal(await selectionSettings.getByLabel("Invert inhale / exhale").isChecked(), false);
   assert.match(await page.locator("#metric-detail").textContent(), /inhale \(\+1\), pause\/not ready \(0\), and exhale \(−1\)/);
-  assert.match(await page.locator(".metric-preview-provenance").textContent(), /NeuroKit2 0\.2\.13 · ECGSYN/);
-  assert.match(await page.locator(".metric-preview-note").textContent(), /not expected personal values or validation accuracy/);
+  assert.match(await page.locator(".metric-preview-provenance").textContent(), /Recorded Polar H10 · 60-second anonymized fixture/);
+  assert.match(await page.locator(".metric-preview-note").textContent(), /anonymized 60-second ECG\/ACC recording/);
   const previewScreenshot = join(output, "metric-library-previews.png");
   await page.screenshot({ path: previewScreenshot, fullPage: true });
   assert.ok((await stat(previewScreenshot)).size > 20_000, "metric library screenshot was unexpectedly empty");
 
-  process.stdout.write(`Validated stacked raw ACC, ${targets.length} classifier renders, saved controls, and ${library.catalogCount} NeuroKit previews in ${output}\n`);
+  process.stdout.write(`Validated stacked raw ACC, ${targets.length} classifier renders, saved controls, and ${library.catalogCount} recorded previews in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

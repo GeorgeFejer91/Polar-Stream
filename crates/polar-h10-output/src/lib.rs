@@ -21,21 +21,49 @@ use std::{
 };
 
 pub use config::{
-    MetricOutputOptions, MetricProcessingOptions, MetricSpec, NormalizationMode, OutputConfig,
-    OutputHealth, normalize_stream_base, output_stream_name,
+    CustomFormulaConfig, FormulaHealth, FormulaSource, MetricOutputOptions,
+    MetricProcessingOptions, MetricSpec, NormalizationMode, OutputConfig, OutputHealth,
+    custom_output_stream_name, normalize_stream_base, output_stream_name,
 };
 use csv::CsvPublisher;
 #[cfg(feature = "liblsl-backend")]
 use lsl::LslPublisher;
 use osc::{OSC_TARGET, OscPublisher};
 use polar_h10_core::AccSample;
+use polar_h10_math::{CompiledFormula, FormulaFrame, MAX_TOTAL_STATE_SAMPLES};
+pub use polar_h10_math::{FormulaError, FormulaRuntimeState, FormulaValidation, validate_formula};
 #[cfg(feature = "rusty-lsl-backend")]
 use rusty_lsl::RustyLslPublisher as LslPublisher;
+use serde::Serialize;
 
 #[derive(Clone, Copy, Debug)]
 pub struct MetricValue<'a> {
     pub id: &'a str,
     pub value: f32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormulaSeries {
+    pub formula_id: String,
+    pub values: Vec<f32>,
+    pub state: FormulaRuntimeState,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormulaPublishBatch {
+    pub series: Vec<FormulaSeries>,
+    pub faults: Vec<FormulaError>,
+    pub warnings: Vec<String>,
+}
+
+impl FormulaPublishBatch {
+    fn append(&mut self, mut other: Self) {
+        self.series.append(&mut other.series);
+        self.faults.append(&mut other.faults);
+        self.warnings.append(&mut other.warnings);
+    }
 }
 
 pub struct OutputRouter {
@@ -50,6 +78,14 @@ struct RouterInner {
     csv_directory: PathBuf,
     normalizers: HashMap<String, Normalizer>,
     selected: HashSet<String>,
+    formulas: HashMap<String, FormulaRuntime>,
+}
+
+struct FormulaRuntime {
+    config: CustomFormulaConfig,
+    compiled: CompiledFormula,
+    state: FormulaRuntimeState,
+    message: Option<String>,
 }
 
 impl Default for OutputRouter {
@@ -83,12 +119,30 @@ impl OutputRouter {
                 csv_directory,
                 normalizers: HashMap::new(),
                 selected: OutputConfig::default().outputs.into_iter().collect(),
+                formulas: HashMap::new(),
             }),
         }
     }
 
     pub async fn configure(&self, config: OutputConfig) -> Result<OutputHealth, String> {
         let config = config.validated()?;
+        let mut compiled = HashMap::new();
+        let mut total_state_samples = 0usize;
+        for formula in config
+            .custom_formulas
+            .iter()
+            .filter(|formula| formula.enabled)
+        {
+            let runtime =
+                CompiledFormula::compile(formula.clone()).map_err(|error| error.to_string())?;
+            total_state_samples = total_state_samples
+                .checked_add(runtime.state_samples())
+                .ok_or("Custom formula state budget overflow")?;
+            if total_state_samples > MAX_TOTAL_STATE_SAMPLES {
+                return Err("Custom formulas exceed the aggregate DSP state budget.".into());
+            }
+            compiled.insert(formula.id.clone(), runtime);
+        }
         let mut osc = if config.osc_enabled {
             Some(OscPublisher::connect(OSC_TARGET).await?)
         } else {
@@ -96,6 +150,7 @@ impl OutputRouter {
         };
         if let Some(publisher) = &mut osc {
             publisher.configure(&config.stream_name, &config.outputs);
+            publisher.configure_custom(&config.stream_name, &config.custom_formulas);
         }
 
         let csv_to_install = if config.csv_enabled {
@@ -127,6 +182,34 @@ impl OutputRouter {
             inner.csv = csv_to_install;
         }
         inner.reconcile_normalizers(&config);
+        let mut previous = std::mem::take(&mut inner.formulas);
+        let mut formulas = HashMap::new();
+        for formula in config
+            .custom_formulas
+            .iter()
+            .filter(|formula| formula.enabled)
+        {
+            let candidate = compiled
+                .remove(&formula.id)
+                .ok_or("Compiled custom formula is unavailable")?;
+            let runtime = if let Some(mut existing) =
+                previous.remove(&formula.id).filter(|existing| {
+                    existing.config.source == formula.source
+                        && existing.config.expression == formula.expression
+                }) {
+                existing.config = formula.clone();
+                existing
+            } else {
+                FormulaRuntime {
+                    config: formula.clone(),
+                    compiled: candidate,
+                    state: FormulaRuntimeState::Ready,
+                    message: None,
+                }
+            };
+            formulas.insert(formula.id.clone(), runtime);
+        }
+        inner.formulas = formulas;
         inner.selected = config.outputs.iter().cloned().collect();
         inner.config = config;
         inner.osc = osc;
@@ -152,6 +235,7 @@ impl OutputRouter {
                 osc: "Output router lock failed".into(),
                 csv: "Output router lock failed".into(),
                 audio: "Output router lock failed".into(),
+                formulas: Vec::new(),
             })
     }
 
@@ -163,6 +247,74 @@ impl OutputRouter {
         inner.normalizers.clear();
         let config = inner.config.clone();
         inner.reconcile_normalizers(&config);
+        for runtime in inner.formulas.values_mut() {
+            if runtime.compiled.reset().is_ok() {
+                runtime.state = FormulaRuntimeState::Ready;
+                runtime.message = None;
+            }
+        }
+    }
+
+    pub fn formula_health(&self) -> Vec<FormulaHealth> {
+        self.inner
+            .lock()
+            .map(|inner| inner.formula_health())
+            .unwrap_or_default()
+    }
+
+    pub fn process_ecg_formulas(
+        &self,
+        sensor_timestamp_ns: u64,
+        samples: &[i32],
+    ) -> FormulaPublishBatch {
+        let Ok(mut inner) = self.inner.lock() else {
+            return FormulaPublishBatch::default();
+        };
+        let frames = samples.iter().copied().map(FormulaFrame::ecg).collect();
+        inner.process_custom(FormulaSource::Ecg, frames, sensor_timestamp_ns)
+    }
+
+    pub fn process_accelerometer_formulas(
+        &self,
+        sensor_timestamp_ns: u64,
+        samples: &[AccSample],
+    ) -> FormulaPublishBatch {
+        let Ok(mut inner) = self.inner.lock() else {
+            return FormulaPublishBatch::default();
+        };
+        let frames = samples
+            .iter()
+            .copied()
+            .map(FormulaFrame::accelerometer)
+            .collect();
+        inner.process_custom(FormulaSource::Accelerometer, frames, sensor_timestamp_ns)
+    }
+
+    pub fn process_heart_rate_formulas(
+        &self,
+        beats_per_minute: u16,
+        rr_intervals_ms: &[f32],
+    ) -> FormulaPublishBatch {
+        let Ok(mut inner) = self.inner.lock() else {
+            return FormulaPublishBatch::default();
+        };
+        let mut batch = inner.process_custom(
+            FormulaSource::HeartRate,
+            vec![FormulaFrame::heart_rate(beats_per_minute)],
+            0,
+        );
+        batch.append(
+            inner.process_custom(
+                FormulaSource::RrInterval,
+                rr_intervals_ms
+                    .iter()
+                    .copied()
+                    .map(FormulaFrame::rr_interval)
+                    .collect(),
+                0,
+            ),
+        );
+        batch
     }
 
     /// Advances caller-owned Rusty LSL discovery, timedata, and consumer work.
@@ -276,6 +428,96 @@ impl OutputRouter {
 }
 
 impl RouterInner {
+    fn process_custom(
+        &mut self,
+        source: FormulaSource,
+        frames: Vec<FormulaFrame>,
+        sensor_timestamp_ns: u64,
+    ) -> FormulaPublishBatch {
+        if frames.is_empty() {
+            return FormulaPublishBatch::default();
+        }
+        let ids = self
+            .config
+            .custom_formulas
+            .iter()
+            .filter(|formula| formula.enabled && formula.source == source)
+            .map(|formula| formula.id.clone())
+            .collect::<Vec<_>>();
+        let mut batch = FormulaPublishBatch::default();
+        let mut publications = Vec::new();
+
+        for id in ids {
+            let Some(runtime) = self.formulas.get_mut(&id) else {
+                continue;
+            };
+            let mut values = Vec::with_capacity(frames.len());
+            let mut final_state = runtime.state;
+            for frame in frames.iter().copied() {
+                let evaluation = runtime.compiled.process(frame);
+                final_state = evaluation.state;
+                if let Some(value) = evaluation.value {
+                    values.push(value);
+                }
+                if let Some(fault) = evaluation.fault {
+                    runtime.message = Some(fault.message.clone());
+                    batch.faults.push(fault);
+                }
+            }
+            runtime.state = final_state;
+            publications.push((runtime.config.clone(), values.clone()));
+            batch.series.push(FormulaSeries {
+                formula_id: id,
+                values,
+                state: final_state,
+            });
+        }
+
+        let mut custom_rows = Vec::new();
+        for (config, values) in publications {
+            if values.is_empty() {
+                continue;
+            }
+            self.lsl
+                .push_scalar_series(&config.id, values.iter().copied());
+            if let Some(osc) = &mut self.osc {
+                osc.send_series(
+                    &config.id,
+                    sensor_timestamp_ns,
+                    values.len(),
+                    values.iter().copied(),
+                );
+            }
+            custom_rows.extend(
+                values
+                    .into_iter()
+                    .map(|value| (config.name.clone(), value, config.unit.clone())),
+            );
+        }
+        if let Some(error) = self
+            .csv
+            .as_ref()
+            .and_then(|csv| csv.publish_custom_metrics(&custom_rows).err())
+        {
+            self.csv = None;
+            batch.warnings.push(error);
+        }
+        batch
+    }
+
+    fn formula_health(&self) -> Vec<FormulaHealth> {
+        self.config
+            .custom_formulas
+            .iter()
+            .filter_map(|formula| self.formulas.get(&formula.id))
+            .map(|runtime| FormulaHealth {
+                formula_id: runtime.config.id.clone(),
+                state: runtime.state,
+                message: runtime.message.clone(),
+            })
+            .collect()
+    }
+
     fn reconcile_normalizers(&mut self, config: &OutputConfig) {
         self.normalizers.retain(|id, _| config.outputs.contains(id));
         for id in &config.outputs {
@@ -306,6 +548,15 @@ impl RouterInner {
             if let Some(spec) = MetricSpec::for_id(id) {
                 self.lsl.add_outlet(&self.config.stream_name, spec);
             }
+        }
+        for formula in self
+            .config
+            .custom_formulas
+            .iter()
+            .filter(|formula| formula.enabled)
+        {
+            self.lsl
+                .add_custom_outlet(&self.config.stream_name, formula);
         }
     }
 
@@ -346,6 +597,7 @@ impl RouterInner {
             } else {
                 "Off".into()
             },
+            formulas: self.formula_health(),
         }
     }
 }
@@ -474,5 +726,26 @@ mod normalization_tests {
         assert_eq!(normalizer.apply(20.0), 1.0);
         assert_eq!(normalizer.apply(15.0), 0.5);
         assert_eq!(normalizer.apply(5.0), 0.0);
+    }
+
+    #[tokio::test]
+    async fn configured_formula_is_evaluated_without_blocking_raw_publication() {
+        let router = OutputRouter::new();
+        let mut config = OutputConfig::default();
+        config.custom_formulas.push(CustomFormulaConfig {
+            id: "beedcafe-0000-4000-8000-000000000001".into(),
+            name: "Half_ECG".into(),
+            source: FormulaSource::Ecg,
+            expression: "ecg / 2".into(),
+            unit: "µV".into(),
+            enabled: true,
+        });
+        let health = router.configure(config).await.unwrap();
+        assert_eq!(health.formulas.len(), 1);
+        let batch = router.process_ecg_formulas(1_000_000, &[10, -6]);
+        assert!(batch.faults.is_empty());
+        assert_eq!(batch.series.len(), 1);
+        assert_eq!(batch.series[0].values, vec![5.0, -3.0]);
+        assert_eq!(router.publish_ecg(1_000_000, &[10, -6]), None);
     }
 }

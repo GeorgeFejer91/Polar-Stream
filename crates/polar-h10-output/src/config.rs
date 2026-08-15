@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+pub use polar_h10_math::{CustomFormulaConfig, FormulaSource};
 pub use polar_h10_metrics::MetricDefinition as MetricSpec;
 use polar_h10_metrics::{BreathingSettings, METRIC_CATALOG};
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,8 @@ pub struct OutputConfig {
     pub outputs: Vec<String>,
     #[serde(default)]
     pub metric_options: HashMap<String, MetricOutputOptions>,
+    #[serde(default)]
+    pub custom_formulas: Vec<CustomFormulaConfig>,
 }
 
 impl Default for OutputConfig {
@@ -29,6 +32,7 @@ impl Default for OutputConfig {
             audio_enabled: false,
             outputs: vec!["raw_ecg".into(), "raw_acc".into()],
             metric_options: HashMap::new(),
+            custom_formulas: Vec::new(),
         }
     }
 }
@@ -68,10 +72,12 @@ impl OutputConfig {
     fn validate_collection_bounds(&self) -> Result<(), String> {
         if self.outputs.len() > METRIC_CATALOG.len()
             || self.metric_options.len() > METRIC_CATALOG.len()
+            || self.custom_formulas.len() > polar_h10_math::MAX_FORMULAS
         {
             return Err(format!(
-                "At most {} output modules can be configured.",
-                METRIC_CATALOG.len()
+                "At most {} built-in outputs and {} custom formulas can be configured.",
+                METRIC_CATALOG.len(),
+                polar_h10_math::MAX_FORMULAS,
             ));
         }
         if self.outputs.iter().any(|id| id.len() > 64)
@@ -114,6 +120,38 @@ impl OutputConfig {
                 if let Some(options) = self.metric_options.get_mut(id) {
                     options.processing.breathing = Some(shared_breathing);
                 }
+            }
+        }
+        let mut formula_ids = std::collections::HashSet::new();
+        let mut formula_names = std::collections::HashSet::new();
+        for formula in &mut self.custom_formulas {
+            if !formula_ids.insert(formula.id.clone()) {
+                return Err("Custom formula IDs must be unique.".into());
+            }
+            if formula.enabled {
+                *formula = formula
+                    .clone()
+                    .normalized()
+                    .map_err(|error| error.to_string())?;
+                let normalized_name = formula.name.to_ascii_lowercase();
+                if !formula_names.insert(normalized_name) {
+                    return Err("Enabled custom formula names must be unique.".into());
+                }
+                if METRIC_CATALOG.iter().any(|metric| {
+                    metric
+                        .stream_suffix
+                        .eq_ignore_ascii_case(formula.name.as_str())
+                }) {
+                    return Err(format!(
+                        "Custom formula name '{}' conflicts with a built-in output.",
+                        formula.name
+                    ));
+                }
+            } else if formula.expression.len() > polar_h10_math::MAX_EXPRESSION_BYTES
+                || formula.name.len() > 256
+                || formula.unit.len() > 128
+            {
+                return Err("Disabled formula draft exceeds storage limits.".into());
             }
         }
         Ok(self)
@@ -176,6 +214,15 @@ pub struct OutputHealth {
     pub osc: String,
     pub csv: String,
     pub audio: String,
+    pub formulas: Vec<FormulaHealth>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormulaHealth {
+    pub formula_id: String,
+    pub state: polar_h10_math::FormulaRuntimeState,
+    pub message: Option<String>,
 }
 
 /// Produces a protocol-safe base shared by LSL stream names and OSC paths.
@@ -211,6 +258,11 @@ pub fn normalize_stream_base(value: &str) -> Result<String, String> {
 /// Returns the exact discoverable LSL name and OSC path component for a metric.
 pub fn output_stream_name(base_name: &str, metric_id: &str) -> Option<String> {
     MetricSpec::for_id(metric_id).map(|spec| format!("{base_name}_{}", spec.suffix()))
+}
+
+/// Returns the canonical discoverable name for a validated custom formula.
+pub fn custom_output_stream_name(base_name: &str, formula: &CustomFormulaConfig) -> String {
+    format!("{base_name}_{}", formula.name)
 }
 
 #[cfg(test)]

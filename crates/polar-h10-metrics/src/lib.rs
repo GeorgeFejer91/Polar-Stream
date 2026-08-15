@@ -15,14 +15,16 @@ mod hrv;
 use polar_h10_core::AccSample;
 use serde::Serialize;
 
-pub use breathing::{BreathingPhase, BreathingSettings, BreathingSnapshot};
+pub use breathing::{BreathingPhase, BreathingProcessor, BreathingSettings, BreathingSnapshot};
 pub use breathing_dynamics::{BreathingDynamicsSnapshot, FeatureSet};
-pub use catalog::{METRIC_CATALOG, MetricDefinition, metric_definition};
+pub use catalog::{
+    METRIC_CATALOG, MetricDefinition, MetricFormulaDefinition, metric_definition,
+    metric_formula_definition,
+};
 pub use coherence::CoherenceSnapshot;
 pub use ecg::EcgSnapshot;
 pub use hrv::HrvSnapshot;
 
-use breathing::BreathingProcessor;
 use breathing_dynamics::BreathingDynamicsProcessor;
 use coherence::CoherenceProcessor;
 use ecg::EcgProcessor;

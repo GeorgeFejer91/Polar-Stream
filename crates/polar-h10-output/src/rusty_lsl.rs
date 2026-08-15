@@ -27,7 +27,7 @@ use rusty_lsl::{
     XmlTextLimit, admit_runtime_activation, persistent_float32_local_clock,
 };
 
-use crate::{MetricSpec, output_stream_name};
+use crate::{CustomFormulaConfig, MetricSpec, custom_output_stream_name, output_stream_name};
 
 const RUSTY_LSL_REVISION: &str = "74f7d0ea2cce9b3d049ea24602527a5f52360554";
 const ACTIVATION_CONSUMER: &str = "polar-stream-rusty-lsl-optional-backend-v1";
@@ -138,15 +138,56 @@ impl RustyLslPublisher {
     }
 
     fn try_add_outlet(&mut self, base_name: &str, spec: MetricSpec) -> Result<(), String> {
-        self.ensure_registry()?;
         let output_name = output_stream_name(base_name, spec.id)
             .ok_or_else(|| format!("Unknown output module: {}", spec.id))?;
         let channels = usize::try_from(spec.channels)
             .ok()
             .filter(|channels| *channels > 0)
             .ok_or_else(|| format!("Invalid channel count for {}", spec.label))?;
-        let nominal_rate = if spec.rate_hz > 0.0 {
-            NominalSampleRate::regular_hz(spec.rate_hz)
+        self.try_add_stream(
+            output_name.clone(),
+            format!("polar-h10-{output_name}"),
+            spec.id.into(),
+            spec.stream_type.into(),
+            spec.rate_hz,
+            channels,
+            || stream_metadata(spec),
+        )
+    }
+
+    pub(crate) fn add_custom_outlet(&mut self, base_name: &str, formula: &CustomFormulaConfig) {
+        let result = self.try_add_stream(
+            custom_output_stream_name(base_name, formula),
+            format!("polar-h10-formula-{}", formula.id),
+            formula.id.clone(),
+            formula.source.stream_type().into(),
+            formula.source.rate_hz(),
+            1,
+            || custom_stream_metadata(formula),
+        );
+        if let Err(message) = result {
+            self.initialization_failed = true;
+            self.status = message;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_add_stream<F>(
+        &mut self,
+        output_name: String,
+        source_id: String,
+        outlet_key: String,
+        stream_type: String,
+        rate_hz: f64,
+        channels: usize,
+        mut metadata: F,
+    ) -> Result<(), String>
+    where
+        F: FnMut() -> Result<MetadataTree, String>,
+    {
+        self.ensure_registry()?;
+        let nominal_rate = if rate_hz > 0.0 {
+            NominalSampleRate::regular_hz(rate_hz)
                 .map_err(|error| format!("Rusty LSL sample rate rejected: {error:?}"))?
         } else {
             NominalSampleRate::irregular()
@@ -160,7 +201,7 @@ impl RustyLslPublisher {
             let identity = StreamHandshakeIdentity::new(
                 next_uid(),
                 "polar-stream".into(),
-                format!("polar-h10-{output_name}"),
+                source_id.clone(),
                 "default".into(),
                 handshake_limits,
             )
@@ -183,9 +224,9 @@ impl RustyLslPublisher {
                 self.advertised_ipv4,
                 PersistentFloat32StreamInfoInput::new(
                     output_name.clone(),
-                    spec.stream_type.into(),
+                    stream_type.clone(),
                     nominal_rate,
-                    stream_metadata(spec)?,
+                    metadata()?,
                 ),
                 stream_info_limits(),
             )
@@ -214,11 +255,11 @@ impl RustyLslPublisher {
         }
         let id = id.ok_or_else(|| "Rusty LSL outlet registration exhausted retries".to_owned())?;
         self.outlets.insert(
-            spec.id.into(),
+            outlet_key,
             OutletEntry {
                 id,
                 channels,
-                rate_hz: spec.rate_hz,
+                rate_hz,
             },
         );
         self.refresh_status();
@@ -668,6 +709,38 @@ fn stream_metadata(spec: MetricSpec) -> Result<MetadataTree, String> {
     .map_err(|error| format!("Rusty LSL metadata rejected: {error:?}"))
 }
 
+fn custom_stream_metadata(formula: &CustomFormulaConfig) -> Result<MetadataTree, String> {
+    let nodes = vec![
+        MetadataNodeInput::new(None, "desc".into(), None),
+        MetadataNodeInput::new(Some(0), "manufacturer".into(), Some("Polar".into())),
+        MetadataNodeInput::new(Some(0), "model".into(), Some("H10".into())),
+        MetadataNodeInput::new(Some(0), "application".into(), Some("Polar Stream".into())),
+        MetadataNodeInput::new(Some(0), "channels".into(), None),
+        MetadataNodeInput::new(Some(4), "channel".into(), None),
+        MetadataNodeInput::new(Some(5), "label".into(), Some(formula.name.clone())),
+        MetadataNodeInput::new(Some(5), "unit".into(), Some(formula.unit.clone())),
+        MetadataNodeInput::new(
+            Some(5),
+            "type".into(),
+            Some(formula.source.stream_type().into()),
+        ),
+        MetadataNodeInput::new(Some(0), "processing".into(), None),
+        MetadataNodeInput::new(Some(9), "formula".into(), Some(formula.expression.clone())),
+        MetadataNodeInput::new(
+            Some(9),
+            "source".into(),
+            Some(format!("{:?}", formula.source)),
+        ),
+        MetadataNodeInput::new(Some(9), "formula_id".into(), Some(formula.id.clone())),
+    ];
+    MetadataTree::new(
+        MetadataTreeLimits::new(96, 8, 64, 64, 4096)
+            .expect("static formula metadata limits must be valid"),
+        nodes,
+    )
+    .map_err(|error| format!("Rusty LSL formula metadata rejected: {error:?}"))
+}
+
 fn channel_labels(spec: MetricSpec) -> Vec<&'static str> {
     if spec.id == "raw_acc" && spec.channels == 3 {
         vec!["X", "Y", "Z"]
@@ -864,6 +937,28 @@ mod tests {
         assert_eq!(acc_health.records_encoded(), 36);
         assert_eq!(acc_health.complete_deliveries(), 0);
         assert!(publisher.status().contains("2 stream(s)"));
+    }
+
+    #[test]
+    fn current_main_custom_formula_enters_one_bounded_scalar_outlet() {
+        let discovery = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut publisher = RustyLslPublisher::new_prebound_for_test(discovery);
+        let formula = CustomFormulaConfig {
+            id: "beedcafe-0000-4000-8000-000000000001".into(),
+            name: "Half_ECG".into(),
+            source: crate::FormulaSource::Ecg,
+            expression: "ecg / 2".into(),
+            unit: "µV".into(),
+            enabled: true,
+        };
+
+        publisher.add_custom_outlet("participant_07", &formula);
+        assert!(publisher.test_endpoint(&formula.id).is_some());
+        publisher.push_scalar(&formula.id, 42.0);
+        let health = publisher.test_outlet_health(&formula.id).unwrap();
+        assert_eq!(health.push_calls(), 1);
+        assert_eq!(health.records_encoded(), 1);
+        assert_eq!(health.complete_deliveries(), 0);
     }
 
     #[test]

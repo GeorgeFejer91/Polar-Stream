@@ -29,27 +29,48 @@ Last verified: 2026-08-15
 - Demand-driven ECG, HRV, coherence, breathing, breathing-dynamics, quality,
   and explicitly experimental metric modules.
 - Three-panel Tauri UI with remembered native preferences.
-- Deterministic metric previews and headless interface validation.
+- Deterministic metric previews derived from the canonical anonymized 60-second
+  real H10 ECG/ACC recording, with its fingerprint checked in the asset. Compact,
+  detail, and Formula Lab traces run as closed continuous loops; categorical
+  outputs remain stepped.
+- A one-at-a-time output picker exposes all 47 catalog metrics across ECG and
+  ACC families. Every metric has recorded preview coverage, a concise scientific
+  explainer, citation, and mathematical definition.
+- Pre-save preview controls update the recorded outcome for display window,
+  normalization, and the full experimental breathing configuration.
+- Formula Lab maps source variables, keeps time as the automatic x-axis, offers
+  metric templates plus explained calculator keys, validates formulas in Rust,
+  and compares recorded input/output before saving.
+- Enabled custom formulas run in the bounded `polar-h10-math` engine and publish
+  independent LSL/OSC/CSV outputs with per-formula warm-up/fault health.
 - Cross-platform release workflows and branded application icons.
 - Low-latency renderer scheduling capped at 30 Hz and paused while hidden.
 - One raw accelerometer visualizer with stacked, independently scaled X/Y/Z
   lanes on the active development branch.
-- Red ECG / blue ACC output-library modes. ACC mode offers only raw ACC, 3D
-  motion magnitude, a continuous experimental breathing projection, and a
-  three-state experimental phase classifier.
+- Red ECG / blue ACC output-library modes. ACC mode includes raw motion and the
+  complete experimental breathing/breathing-dynamics catalog; every choice is
+  still added individually rather than through a checkbox list.
 - Shared pre-save ACC breathing controls for the two public breathing outputs:
   two or three axes (X + Z recommended), smoothing, phase sensitivity and
   direction; the magnitude output can optionally normalize to 0–1.
 - A phase-only breathing circle with asymptotic size limits and pause inertia.
 - Public dedicated GitHub repository at `GeorgeFejer91/Polar-Stream`.
+- The legacy Mesmerism-derived `PolarH10` checkout is locally quarantined under
+  `_quarantine/PolarH10-mesmerism-fork` with its Git history and untracked
+  research PDF preserved; future Polar Stream work is routed here instead.
 - The production-hardening and ECG/ACC output-library work is merged on `main`
   in PR #5.
 - One canonical interface tree now targets Tauri and GitHub Pages. The staged
   Pages artifact records hashes of every shared asset, and browser validation
   covers desktop, 390px touch, and 320px touch layouts.
-- A selectable, deterministic NeuroKit mock input replays synthetic ECGSYN ECG,
-  respiration-derived X/Y/Z motion, and illustrative metrics through the shared
-  runtime event contract in both Pages and the offline Tauri app.
+- On smartphones, the shared output library uses a full-viewport two-step flow:
+  touch-sized family/search/filter/signal controls first, then a focused signal
+  detail view with back navigation and a safe-area-aware save action.
+- A selectable recorded-preview input replays the canonical anonymized ECG/ACC
+  fixture and its derived preview values through the shared runtime event
+  contract in both Pages and the offline Tauri app. Its bounded seam correction
+  prevents an end-to-start jump without changing the source fixture or any live
+  H10/native path. No generated-signal fallback remains in the shipped UI.
 - GitHub Pages offers an experimental Web Bluetooth input in supported secure
   Chromium contexts. It requests a Polar H10, writes the canonical PMD ECG/ACC
   start commands, and decodes ECG, uncompressed/variable-delta ACC, HR/RR, and
@@ -64,14 +85,16 @@ Last verified: 2026-08-15
   an emulated device.
 - The Pages runtime is self-contained: browser H10/mock acquisition, supported
   metrics, and visualization run without a localhost companion, installed
-  helper, or remote relay. Native LSL/OSC destinations are hidden in browser
-  mode and remain available only in the separately installed desktop app.
+  helper, or remote relay. The shared LSL/OSC toggles remain visible in browser
+  mode, but rejected attempts stay off and show an installed-app error with a
+  latest-release download link. Native publication remains available only in
+  the separately installed desktop app.
 - Pages has a browser-native live/recording destination. Every un-decimated
   input batch is available through a same-tab event and same-origin
   `BroadcastChannel`; every received raw row and produced metric event can be
   captured to a timestamped CSV through the shared output toggle.
   The recorder stops visibly at 300,000 rows or input disconnect, never grows
-  without a bound, and is automated against mock input and CSV download.
+  without a bound, and is automated against recorded preview input and CSV download.
 - Both runtimes expose an experimental 22.05 kbit/s stereo Manchester PCM data
   modem toggle for clean cable/digital-loopback recording. Frames use compact
   ECG/ACC/metric sections, sequence numbers, and CRC32. Browser validation sends
@@ -129,7 +152,7 @@ Last verified: 2026-08-15
 - Selected derived processors execute after raw publication in the coordinator
   loop. The input channel is bounded, but physical-device measurements have not
   yet proven every opt-in metric set stays inside the next-notification budget.
-- The mock input demonstrates interface behavior only. It does not validate H10
+- The recorded preview demonstrates interface behavior only. It does not validate H10
   fidelity, timing, ACC respiration, or output transports, and it never opens
   native BLE, LSL, or OSC connections.
 - The Web Bluetooth adapter has a physical public-Pages connection smoke test on

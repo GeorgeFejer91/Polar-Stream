@@ -15,6 +15,7 @@ rusty-lsl-backend = ["dep:rusty-lsl"]
 [dependencies]
 libloading = { workspace = true, optional = true }
 polar-h10-core = { path = "../polar-h10-core" }
+polar-h10-math = { path = "../polar-h10-math" }
 polar-h10-metrics = { path = "../polar-h10-metrics" }
 rusty-lsl = { git = "https://github.com/MesmerPrism/rusty-lsl", rev = "74f7d0ea2cce9b3d049ea24602527a5f52360554", optional = true }
 serde.workspace = true

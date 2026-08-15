@@ -22,5 +22,7 @@ accurate, and synchronized with material code or product changes. Instructions
 from the system, developer, and user always take precedence over repository
 instructions.
 
-Before handing work back, run `for-ai/scripts/check-context.sh` and the checks
-required by `for-ai/GLOBAL-INSTRUCTIONS.md`.
+Before handing work back, run `for-ai/scripts/check-context.sh`, the checks
+required by `for-ai/GLOBAL-INSTRUCTIONS.md`, and its mandatory three-surface
+sync. Every completed edit handoff must verify and include the live GitHub Pages
+URL after the matching desktop build has been installed locally.

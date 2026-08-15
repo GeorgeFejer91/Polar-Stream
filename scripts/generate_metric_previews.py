@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Generate lightweight, loopable SVG paths for every Polar Stream metric.
+"""Derive metric previews from the canonical anonymized Polar H10 recording.
 
-NeuroKit is intentionally a development-only dependency. The packaged application
-loads the generated JavaScript asset and does not ship Python, NumPy, or NeuroKit.
+NeuroKit remains an offline signal-processing dependency. The packaged app
+loads the checked-in real recording and never substitutes a generated signal.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -22,11 +23,11 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "crates/polar-h10-metrics/src/catalog.rs"
 OUTPUT = ROOT / "apps/polar-stream/ui/metric-previews.js"
+FIXTURE = ROOT / "apps/polar-stream/ui/data/preview-recording.json"
 SAMPLE_RATE = 130
-DURATION_SECONDS = 120
+DURATION_SECONDS = 60
 PREVIEW_POINTS = 112
 RAW_ECG_POINTS = 224
-SEED = 271_828
 VIEWBOX_WIDTH = 240
 VIEWBOX_HEIGHT = 72
 # NeuroKit peak detection and FFT reductions vary slightly across otherwise
@@ -279,6 +280,7 @@ def make_preview(series: list[tuple[str, str, np.ndarray]], *, step: bool = Fals
                 "label": label,
                 "color": color,
                 "path": path_for(values, plot_minimum, plot_maximum, step=step),
+                "values": [rounded(value) for value in close_loop(values)],
             }
             for label, color, values in series
         ],
@@ -287,82 +289,99 @@ def make_preview(series: list[tuple[str, str, np.ndarray]], *, step: bool = Fals
 
 def generate() -> dict:
     warnings.filterwarnings("ignore", category=RuntimeWarning)
-    ecg = np.asarray(nk.ecg_simulate(
-        duration=DURATION_SECONDS,
-        sampling_rate=SAMPLE_RATE,
-        heart_rate=69,
-        heart_rate_std=6,
-        noise=0.015,
-        method="ecgsyn",
-        random_state=SEED,
-    ))
-    ecg_signals, ecg_info = nk.ecg_process(ecg, sampling_rate=SAMPLE_RATE)
-    peaks = np.asarray(ecg_info["ECG_R_Peaks"], dtype=int)
+    fixture_bytes = FIXTURE.read_bytes()
+    fixture = json.loads(fixture_bytes)
+    if fixture.get("source") != "real-polar-h10-recording":
+        raise RuntimeError("Preview fixture is not marked as a real Polar H10 recording")
+    if fixture.get("durationMs") != DURATION_SECONDS * 1000:
+        raise RuntimeError("Preview fixture duration does not match the generator")
+    if fixture["ecg"]["sampleRateHz"] != SAMPLE_RATE:
+        raise RuntimeError("Preview fixture ECG sample rate does not match the generator")
 
-    rsp = np.asarray(nk.rsp_simulate(
-        duration=DURATION_SECONDS,
-        sampling_rate=SAMPLE_RATE,
-        respiratory_rate=11,
-        noise=0.01,
-        random_state=SEED + 1,
-    ))
-    rsp_signals, rsp_info = nk.rsp_process(rsp, sampling_rate=SAMPLE_RATE)
+    ecg = np.asarray(fixture["ecg"]["microvolts"], dtype=float)
+    clean_ecg = finite(nk.ecg_clean(ecg, sampling_rate=SAMPLE_RATE, method="neurokit"))
+    rr_intervals: list[float] = []
+    for event in fixture.get("metricEvents", []):
+        rr_intervals.extend(float(value) for value in event.get("rrIntervalsMs", []))
+    peak_seconds = np.cumsum([0.0, *[value / 1000 for value in rr_intervals]])
+    peaks = np.asarray(np.round(peak_seconds * SAMPLE_RATE), dtype=int)
+    peaks = peaks[peaks < len(ecg)]
+
+    acc_rate = int(fixture["accelerometer"]["sampleRateHz"])
+    acc = np.asarray(fixture["accelerometer"]["samples"], dtype=float)
+    acc_time = np.arange(len(acc)) / acc_rate
+    centered_acc = acc - np.median(acc, axis=0)
+    projection = (centered_acc[:, 0] + centered_acc[:, 2]) / 2_000
+    smoothing_count = max(1, round(0.75 * acc_rate))
+    rsp_clean = np.convolve(projection, np.ones(smoothing_count) / smoothing_count, mode="same")
     times = np.linspace(0, DURATION_SECONDS, PREVIEW_POINTS, endpoint=False)
     sample_times = np.arange(len(ecg)) / SAMPLE_RATE
 
     values: dict[str, np.ndarray] = {}
-    beat_start = int((peaks[8] + peaks[9]) / 2)
-    beat_end = int((peaks[15] + peaks[16]) / 2)
-    raw_ecg = resample(ecg[beat_start:beat_end] * 1_000, RAW_ECG_POINTS)
+    beat_start = int((peaks[min(8, len(peaks) - 2)] + peaks[min(9, len(peaks) - 1)]) / 2)
+    beat_end = min(len(ecg), beat_start + SAMPLE_RATE * 6)
+    raw_ecg = resample(ecg[beat_start:beat_end], RAW_ECG_POINTS)
     values["raw_ecg"] = raw_ecg
 
-    rsp_clean = finite(rsp_signals["RSP_Clean"].to_numpy())
-    rsp_preview = np.interp(times, sample_times, rsp_clean)
+    rsp_preview = np.interp(times, acc_time, rsp_clean)
     rsp_preview = (rsp_preview - np.min(rsp_preview)) / max(np.ptp(rsp_preview), 1e-9)
     rsp_centered = rsp_preview - 0.5
-    acc_x = 44 * rsp_centered + 4 * np.sin(2 * np.pi * times / 1.7)
-    acc_y = -29 * rsp_centered + 3 * np.sin(2 * np.pi * times / 2.3 + 0.8)
-    acc_z = 995 + 18 * rsp_centered + 2 * np.sin(2 * np.pi * times / 1.2)
+    acc_x = np.interp(times, acc_time, acc[:, 0])
+    acc_y = np.interp(times, acc_time, acc[:, 1])
+    acc_z = np.interp(times, acc_time, acc[:, 2])
     values["raw_acc"] = np.vstack([acc_x, acc_y, acc_z])
     values["acc_magnitude"] = np.sqrt(acc_x**2 + acc_y**2 + acc_z**2) / 1_000
 
-    clean_ecg = finite(ecg_signals["ECG_Clean"].to_numpy()) * 1_000
     values["ecg_mean"] = rolling_signal_feature(clean_ecg, times, np.mean)
     values["ecg_rms"] = rolling_signal_feature(clean_ecg, times, lambda window: np.sqrt(np.mean(window**2)))
     values["ecg_peak_to_peak"] = rolling_signal_feature(clean_ecg, times, np.ptp)
     values["ecg_sd"] = rolling_signal_feature(clean_ecg, times, np.std)
 
-    heart_rate = finite(ecg_signals["ECG_Rate"].to_numpy(), fallback=69)
-    values["heart_rate"] = np.interp(times, sample_times, heart_rate)
+    heart_events = fixture.get("metricEvents", [])
+    heart_times = np.asarray([event["offsetMs"] / 1000 for event in heart_events])
+    heart_rate = np.asarray([event["heartRateBpm"] for event in heart_events], dtype=float)
+    values["heart_rate"] = np.interp(times, heart_times, heart_rate)
     values.update(rr_windows(peaks, times))
     values.update(coherence_windows(peaks, times))
 
-    values["acc_breathing_magnitude"] = rsp_centered * 0.035
+    values["acc_breathing_magnitude"] = np.interp(times, acc_time, rsp_clean)
     values["breathing_volume"] = rsp_preview
     derivative = np.gradient(rsp_preview)
     threshold = np.quantile(np.abs(derivative), 0.22)
     phase = np.where(derivative > threshold, 1, np.where(derivative < -threshold, -1, 0)).astype(float)
     values["breathing_phase"] = phase
     values["breathing_calibration"] = np.clip(times / 12, 0, 1)
-    values["breathing_axis_range"] = 0.024 + 0.008 * np.abs(rsp_centered) + 0.001 * np.sin(times / 8)
-    rsp_rate = finite(rsp_signals["RSP_Rate"].to_numpy(), fallback=11)
-    values["breathing_rate"] = np.interp(times, sample_times, rsp_rate)
-    quality = finite(ecg_signals["ECG_Quality"].to_numpy(), fallback=0.9)
-    values["breathing_dynamics_confidence"] = np.clip(np.interp(times, sample_times, quality), 0, 1)
+    rolling_range = np.asarray([
+        np.ptp(rsp_clean[max(0, round((second - 20) * acc_rate)):round(second * acc_rate) + 1])
+        for second in times
+    ])
+    values["breathing_axis_range"] = rolling_range
 
-    rsp_peaks = np.asarray(rsp_info["RSP_Peaks"], dtype=int)
-    breath_times = rsp_peaks[1:] / SAMPLE_RATE
-    breath_intervals = np.diff(rsp_peaks) / SAMPLE_RATE
-    amplitude_signal = finite(rsp_signals["RSP_Amplitude"].to_numpy(), fallback=0.5)
-    breath_amplitudes = amplitude_signal[rsp_peaks[1:]]
+    peak_candidates = np.asarray(nk.signal_findpeaks(rsp_clean, relative_height_min=0.05)["Peaks"], dtype=int)
+    minimum_peak_distance = max(1, round(acc_rate * 2.0))
+    retained_peaks: list[int] = []
+    for candidate in peak_candidates:
+        if not retained_peaks or int(candidate) - retained_peaks[-1] >= minimum_peak_distance:
+            retained_peaks.append(int(candidate))
+    if len(retained_peaks) < 3:
+        retained_peaks = [0, len(rsp_clean) // 2, len(rsp_clean) - 1]
+    rsp_peaks = np.asarray(retained_peaks, dtype=int)
+    breath_times = rsp_peaks[1:] / acc_rate
+    breath_intervals = np.diff(rsp_peaks) / acc_rate
+    breath_amplitudes = np.abs(rsp_clean[rsp_peaks[1:]] - rsp_clean[rsp_peaks[:-1]])
+    values["breathing_rate"] = np.interp(times, breath_times, 60 / np.maximum(breath_intervals, 1e-6))
+    event_count = np.searchsorted(breath_times, times, side="right")
+    values["breathing_dynamics_confidence"] = np.clip(event_count / 10, 0, 1)
     values.update(breath_features(breath_intervals, breath_times, times, "interval"))
     values.update(breath_features(breath_amplitudes, breath_times, times, "amplitude"))
 
     z_hr = smooth_standardize(values["heart_rate"])
+    z_rr = smooth_standardize(values["rr_interval"])
     z_rmssd = smooth_standardize(values["rmssd"])
     sigmoid = lambda vector: 1 / (1 + np.exp(-vector))
-    values["excitement_score"] = sigmoid((z_hr - z_rmssd) / 1.5)
-    values["excitometer"] = sigmoid((0.8 * z_hr - 0.65 * z_rmssd + 0.2 * np.sin(times / 5)) / 1.4)
+    normal_cdf = np.vectorize(lambda value: (1 + math.erf(value / math.sqrt(2))) / 2)
+    values["excitement_score"] = np.clip(1 - (normal_cdf(z_rr) + normal_cdf(z_rmssd)) / 2, 0, 1)
+    values["excitometer"] = sigmoid(0.65 * z_hr - 0.35 * z_rmssd)
 
     palette = {
         "ecg": "#c95151", "hr": "#d05a55", "hrv": "#168259", "coherence": "#6c62a8",
@@ -409,12 +428,13 @@ def generate() -> dict:
     return {
         "schemaVersion": 1,
         "source": {
-            "library": "NeuroKit2",
-            "version": nk.__version__,
-            "model": "ECGSYN",
-            "seed": SEED,
+            "library": "Recorded Polar H10",
+            "version": "60-second anonymized fixture",
+            "model": "real-polar-h10-recording",
+            "fixtureSha256": hashlib.sha256(fixture_bytes).hexdigest(),
             "samplingRateHz": SAMPLE_RATE,
-            "note": "Synthetic illustrative preview; not recorded data or algorithm validation.",
+            "methodProvenance": f"NeuroKit2 {nk.__version__} ECG cleaning; Polar Stream formulas",
+            "note": "Derived from the canonical anonymized recording; illustrative, not algorithm validation.",
         },
         "viewBox": [0, 0, VIEWBOX_WIDTH, VIEWBOX_HEIGHT],
         "metrics": previews,
@@ -517,6 +537,14 @@ def check_payload(existing: dict, generated: dict) -> list[str]:
                 )
             if abs(actual_points[0, 1] - actual_points[-1, 1]) > 0.11:
                 errors.append(f"{metric_id}: channel {index} SVG loop is not closed")
+            actual_values = np.asarray(actual_channel.get("values", []), dtype=float)
+            expected_values = np.asarray(expected_channel["values"], dtype=float)
+            if actual_values.shape != expected_values.shape:
+                errors.append(f"{metric_id}: channel {index} numeric preview length differs")
+            elif not np.all(np.isfinite(actual_values)):
+                errors.append(f"{metric_id}: channel {index} numeric preview is not finite")
+            elif not np.allclose(actual_values, expected_values, rtol=0.02, atol=0.001):
+                errors.append(f"{metric_id}: channel {index} numeric recorded preview drifted")
     return errors
 
 
@@ -539,7 +567,7 @@ def main() -> int:
             for error in errors:
                 print(f"- {error}", file=sys.stderr)
             return 1
-        print(f"Validated {len(catalog_ids())} NeuroKit metric previews with cross-platform numeric tolerances")
+        print(f"Validated {len(catalog_ids())} recorded Polar H10 metric previews with cross-platform numeric tolerances")
         return 0
     OUTPUT.write_text(rendered, encoding="utf-8")
     print(f"Generated {len(catalog_ids())} metric previews in {OUTPUT.relative_to(ROOT)}")
