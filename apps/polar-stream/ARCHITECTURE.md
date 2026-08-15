@@ -149,12 +149,16 @@ independent of the WebView.
 
 The Rusty implementation owns a shared bounded discovery registry and
 independent persistent outlets. The native coordinator advances its
-caller-owned discovery/timedata/consumer work on a bounded interval only while
-a sensor session exists. Shutdown joins that polling task before the output
-owner drops its registry and sockets. Official qualification enumerates broadly
-and matches the complete descriptor client-side; server-side property predicate
-conformance is not claimed. See `docs/rusty-lsl-backend.md` for the exact
-revision, shapes, limits, evidence, and licensing/release holds.
+caller-owned discovery/timedata/consumer work on Tokio's blocking pool only
+while a sensor session exists. An explicit stop signal and bounded join keep
+that synchronous loop from occupying an async runtime worker during operation
+or shutdown. Each outlet admits one official consumer; a second concurrent
+connection rejects without disturbing the admitted consumer. This is a Polar
+Stream deployment bound, not general Rusty LSL multi-consumer conformance.
+Official qualification enumerates broadly and matches the complete descriptor
+client-side; server-side property predicate conformance is not claimed. See
+`docs/rusty-lsl-backend.md` for the exact revision, shapes, limits, evidence,
+and licensing/release holds.
 
 ## Windows BLE link policy
 

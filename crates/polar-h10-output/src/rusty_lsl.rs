@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::ErrorKind,
+    io::{self, ErrorKind},
     net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket},
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -34,9 +34,10 @@ const ACTIVATION_CONSUMER: &str = "polar-stream-rusty-lsl-optional-backend-v1";
 const INTERFACE_ENV: &str = "POLAR_STREAM_RUSTY_LSL_IPV4";
 const MAX_OUTLETS: usize = 64;
 const MAX_RECORDS_PER_CHUNK: usize = 256;
-const MAX_CONSUMERS_PER_OUTLET: usize = 4;
+const MAX_CONSUMERS_PER_OUTLET: usize = 1;
 const MAX_STREAM_INFO_BYTES: usize = 32 * 1024;
 const OUTLET_BIND_ATTEMPTS: usize = 4;
+const DUAL_PROTOCOL_BIND_ATTEMPTS: usize = 16;
 
 static NEXT_OUTLET_UID: AtomicU64 = AtomicU64::new(1);
 
@@ -164,8 +165,9 @@ impl RustyLslPublisher {
                 handshake_limits,
             )
             .map_err(|error| format!("Rusty LSL identity rejected: {error:?}"))?;
-            let listener = TcpListener::bind((self.advertised_ipv4, 0))
-                .map_err(|error| format!("Rusty LSL outlet bind failed: {error}"))?;
+            let (listener, timedata_reservation) =
+                bind_dual_protocol_listener(self.advertised_ipv4)
+                    .map_err(|error| format!("Rusty LSL outlet bind failed: {error}"))?;
             let outlet = PersistentFloat32Outlet::new(
                 self.outlet_activation()?,
                 listener,
@@ -188,6 +190,9 @@ impl RustyLslPublisher {
                 stream_info_limits(),
             )
             .map_err(|error| format!("Rusty LSL stream info rejected: {error:?}"))?;
+            // The Rusty registry owns the UDP timedata socket. Release the
+            // same-port probe only immediately before that atomic admission.
+            drop(timedata_reservation);
             let registration = self
                 .registry
                 .as_mut()
@@ -426,6 +431,49 @@ impl RustyLslPublisher {
     }
 }
 
+fn bind_dual_protocol_listener(advertised_ipv4: Ipv4Addr) -> io::Result<(TcpListener, UdpSocket)> {
+    bind_dual_protocol_listener_with(
+        || UdpSocket::bind((advertised_ipv4, 0)),
+        DUAL_PROTOCOL_BIND_ATTEMPTS,
+    )
+}
+
+fn bind_dual_protocol_listener_with<F>(
+    mut reserve_udp: F,
+    attempts: usize,
+) -> io::Result<(TcpListener, UdpSocket)>
+where
+    F: FnMut() -> io::Result<UdpSocket>,
+{
+    let mut last_error = None;
+    for _ in 0..attempts {
+        let reservation = match reserve_udp() {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+        let local = match reservation.local_addr() {
+            Ok(local) => local,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+        match TcpListener::bind(local) {
+            Ok(listener) => return Ok((listener, reservation)),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            ErrorKind::AddrNotAvailable,
+            "no shared TCP/UDP outlet port was available",
+        )
+    }))
+}
+
 impl Drop for RustyLslPublisher {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Release);
@@ -649,6 +697,125 @@ fn short_revision() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusty_lsl::PersistentFloat32AcceptError;
+    use std::{collections::VecDeque, io::Write, net::TcpStream};
+
+    #[test]
+    fn outlet_port_selection_reserves_one_tcp_udp_port_pair() {
+        let (listener, reservation) = bind_dual_protocol_listener(Ipv4Addr::LOCALHOST).unwrap();
+        assert_eq!(
+            listener.local_addr().unwrap().port(),
+            reservation.local_addr().unwrap().port()
+        );
+    }
+
+    #[test]
+    fn outlet_port_selection_retries_tcp_conflict_and_releases_both_protocols() {
+        let tcp_conflict = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let conflict_port = tcp_conflict.local_addr().unwrap().port();
+        let conflict_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, conflict_port)).unwrap();
+        let success_udp = loop {
+            let candidate = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = candidate.local_addr().unwrap().port();
+            if port != conflict_port && TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
+                break candidate;
+            }
+        };
+        let expected_port = success_udp.local_addr().unwrap().port();
+        let mut candidates = VecDeque::from([conflict_udp, success_udp]);
+
+        let (listener, reservation) = bind_dual_protocol_listener_with(
+            || {
+                candidates.pop_front().ok_or_else(|| {
+                    io::Error::new(ErrorKind::AddrNotAvailable, "test candidates exhausted")
+                })
+            },
+            2,
+        )
+        .unwrap();
+
+        assert_eq!(listener.local_addr().unwrap().port(), expected_port);
+        assert_eq!(reservation.local_addr().unwrap().port(), expected_port);
+        assert!(candidates.is_empty());
+        drop(listener);
+        drop(reservation);
+
+        let released_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, expected_port)).unwrap();
+        let released_tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, expected_port)).unwrap();
+        drop(released_tcp);
+        drop(released_udp);
+        drop(tcp_conflict);
+    }
+
+    #[test]
+    fn second_consumer_is_rejected_without_disturbing_the_admitted_consumer() {
+        let discovery = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let publisher = RustyLslPublisher::new_prebound_for_test(discovery);
+        let handshake_limits = handshake_limits();
+        let identity = StreamHandshakeIdentity::new(
+            "11111111-2222-4333-8444-555555555555".into(),
+            "polar-stream-test-host".into(),
+            "polar-stream-test-source".into(),
+            "polar-stream-test-session".into(),
+            handshake_limits,
+        )
+        .unwrap();
+        let request = format!(
+            "LSL:streamfeed/110 {}\r\nNative-Byte-Order: 1234\r\nEndian-Performance: 1.0\r\nHas-IEEE754-Floats: 1\r\nSupports-Subnormals: 1\r\nValue-Size: 4\r\nData-Protocol-Version: 110\r\nMax-Buffer-Length: 100\r\nMax-Chunk-Length: 1\r\nHostname: {}\r\nSource-Id: {}\r\nSession-Id: {}\r\n\r\n",
+            identity.uid(),
+            identity.hostname(),
+            identity.source_id(),
+            identity.session_id(),
+        );
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let mut outlet = PersistentFloat32Outlet::new(
+            publisher.outlet_activation().unwrap(),
+            listener,
+            identity,
+            handshake_limits,
+            sample_limits(),
+            1,
+            PersistentFloat32OutletLimits::new(4, MAX_CONSUMERS_PER_OUTLET).unwrap(),
+        )
+        .unwrap();
+        let cancelled = AtomicBool::new(false);
+
+        let mut admitted = TcpStream::connect(endpoint).unwrap();
+        admitted.write_all(request.as_bytes()).unwrap();
+        let accepted = outlet
+            .poll_accept_consumer(&cancelled)
+            .unwrap()
+            .expect("first pending consumer must be admitted");
+        assert_eq!(accepted.connected_consumers(), 1);
+
+        let mut rejected = TcpStream::connect(endpoint).unwrap();
+        rejected.write_all(request.as_bytes()).unwrap();
+        assert_eq!(
+            outlet.poll_accept_consumer(&cancelled),
+            Err(PersistentFloat32AcceptError::ConsumerCapacityReached {
+                limit: MAX_CONSUMERS_PER_OUTLET,
+            })
+        );
+        drop(rejected);
+
+        let report = outlet
+            .push_chunk(
+                &[42.0],
+                &[RawSourceTimestamp::new(1.0).unwrap()],
+                &cancelled,
+            )
+            .unwrap();
+        assert_eq!(report.consumers_before(), 1);
+        assert_eq!(report.complete_deliveries(), 1);
+        assert_eq!(report.failed_consumers(), 0);
+        assert_eq!(report.consumers_after(), 1);
+        assert_eq!(outlet.health().connected_consumers(), 1);
+        assert_eq!(outlet.health().consumer_high_water(), 1);
+
+        drop(admitted);
+        assert_eq!(outlet.close().closed_consumers(), 1);
+    }
 
     #[test]
     fn polar_shapes_enter_two_bounded_outlets_without_browser_or_device_input() {

@@ -1,5 +1,22 @@
 # Decision log
 
+## 2026-08-15 — Rusty outlets admit one official consumer
+
+Polar Stream bounds every optional Rusty LSL outlet to one official consumer.
+The synchronous caller-polled work runs on Tokio's blocking pool with an
+explicit stop signal and bounded join, and Windows outlet setup reserves one
+numeric port across TCP and UDP before registry admission. Deterministic tests
+require a second concurrent consumer to reject without disturbing the admitted
+consumer and require conflicted port candidates to retry and release cleanly.
+
+This is a bounded Polar Stream deployment workaround, not generic Rusty LSL
+multi-consumer or auxiliary-connection conformance. If the product later needs
+multiple official consumers of one outlet, that is a separate Rusty LSL source
+unit. Two physical straps passed the independent native WinRT doctor, while
+Polar Stream's Windows `btleplug` path stopped at connect, notification setup,
+or first PMD frame. Therefore the draft retains no physical-acceptance claim;
+a native WinRT backend is separately scoped.
+
 ## 2026-08-14 — Rusty LSL is an exact-pinned, default-off native backend
 
 Packaged and default builds retain liblsl. Source developers may select exactly
@@ -16,9 +33,8 @@ conformance is intentionally unsupported and cannot be implied by discovery
 success.
 
 Host interoperability passed for 1-channel/130 Hz ECG and 3-channel/200 Hz ACC.
-The first bounded physical Windows run found no H10 and stopped before
-connection, so the backend remains device-unaccepted. No package may enable it
-until physical and cross-platform gates pass. Rusty LSL is
+The backend remains device-unaccepted. No package may enable it until physical
+and cross-platform gates pass. Rusty LSL is
 AGPL-3.0-or-later while Polar Stream is MIT; enabled distribution additionally
 requires an explicit licensing/compliance decision.
 

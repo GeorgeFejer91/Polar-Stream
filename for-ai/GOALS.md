@@ -42,8 +42,10 @@ items into the dated history instead of silently deleting them.
 - Complete the bounded native H10 acceptance for the optional Rusty LSL backend:
   one exact session, advancing sensor timestamps, ECG 1ch/130 Hz and ACC
   3ch/200 Hz, nonzero bounded axes, two exact official pylsl/liblsl inlets,
-  loss/reorder/rate evidence, and clean process/socket shutdown. The first
-  attempt found no H10 and is not acceptance.
+  loss/reorder/rate evidence, and clean process/socket shutdown. Two straps
+  passed the separate native WinRT doctor, but Polar Stream's Windows `btleplug`
+  path remained blocked at connect, notification setup, or first-frame
+  acquisition; those reference passes are not Polar Stream acceptance.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that
   decision and physical/cross-platform gates close.

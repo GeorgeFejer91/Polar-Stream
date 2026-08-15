@@ -1,7 +1,11 @@
 use std::{
     env,
     io::{self, BufRead, Write},
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -14,6 +18,7 @@ const DEVICE_ID_ENV: &str = "POLAR_STREAM_H10_DEVICE_ID";
 const STREAM_BASE: &str = "polar_stream_h10_acceptance";
 const MAX_CAPTURE: Duration = Duration::from_secs(120);
 const CONSUMER_CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
+const POLL_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 const MIN_ECG_FRAMES: u64 = 8;
 const MIN_ACC_FRAMES: u64 = 16;
 const MIN_CONSUMER_ECG_SAMPLES: u64 = 260;
@@ -193,26 +198,19 @@ async fn main() -> Result<(), String> {
         return Err(format!("Rusty LSL did not initialize: {}", health.lsl));
     }
 
-    let (poll_stop, mut poll_stop_rx) = tokio::sync::watch::channel(false);
+    let poll_stop = Arc::new(AtomicBool::new(false));
     let poll_output = output.clone();
-    let poll_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(2));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if let Some(message) = poll_output.poll_lsl() {
-                        eprintln!("POLAR_H10_LSL_WARNING {message}");
-                    }
+    let poll_task = {
+        let stop = poll_stop.clone();
+        tokio::task::spawn_blocking(move || {
+            while !stop.load(Ordering::Acquire) {
+                if let Some(message) = poll_output.poll_lsl() {
+                    eprintln!("POLAR_H10_LSL_WARNING {message}");
                 }
-                changed = poll_stop_rx.changed() => {
-                    if changed.is_err() || *poll_stop_rx.borrow() {
-                        break;
-                    }
-                }
+                std::thread::sleep(Duration::from_millis(2));
             }
-        }
-    });
+        })
+    };
 
     println!("POLAR_H10_LSL_READY {}", health.lsl);
     flush_stdout();
@@ -345,8 +343,11 @@ async fn main() -> Result<(), String> {
     }
 
     manager.disconnect().await?;
-    let _ = poll_stop.send(true);
-    let _ = poll_task.await;
+    poll_stop.store(true, Ordering::Release);
+    tokio::time::timeout(POLL_JOIN_TIMEOUT, poll_task)
+        .await
+        .map_err(|_| "Rusty LSL blocking poll task did not stop within its deadline".to_owned())?
+        .map_err(|error| format!("Rusty LSL blocking poll task failed: {error}"))?;
     println!("POLAR_H10_STOPPED {}", output.health().lsl);
     flush_stdout();
     Ok(())

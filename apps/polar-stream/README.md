@@ -124,7 +124,9 @@ characters in the user-entered base are collapsed to underscores.
   differing sample rates are not mixed into an invalid fixed-rate stream. A
   mutually exclusive `rusty-lsl-backend` Cargo feature is available for
   source-only evaluation and remains default-off, unreleased, physically
-  unaccepted, and subject to the documented AGPL boundary.
+  unaccepted, and subject to the documented AGPL boundary. Its current
+  deployment contract admits one official consumer per outlet; multiple
+  consumers of one outlet remain a future Rusty LSL qualification requirement.
 - **OSC:** UDP packets go to `127.0.0.1:9000`. The address is the same
   discoverable name with a leading slash, such as
   `/participant_07_rawECG`. Every message starts with the sensor timestamp as an

@@ -26,7 +26,14 @@ already-arrived BLE notification as one bounded chunk:
 - canonical name, type, source ID, channel labels, units, and Polar metadata;
 - source timestamps in the local LSL clock domain, backfilled at the declared
   nominal rate from the notification's newest sample; and
-- up to 256 records per chunk, 64 outlets, and 4 consumers per outlet.
+- up to 256 records per chunk, 64 outlets, and exactly one admitted official
+  consumer per outlet.
+
+The one-consumer bound is an explicit Polar Stream deployment constraint, not
+general multi-consumer conformance. A second concurrent connection is rejected
+without disturbing the already admitted consumer. A product requirement for
+multiple official consumers of the same outlet needs a separately scoped Rusty
+LSL auxiliary-connection and fan-out qualification before this bound can move.
 
 Polar's PMD sensor timestamp is retained separately in the native input event,
 OSC, and physical evidence. It is not substituted directly into LSL because it
@@ -37,9 +44,18 @@ route without sending a probe datagram. Set
 `POLAR_STREAM_RUSTY_LSL_IPV4=<concrete-unicast-IPv4>` to make that choice
 explicit. Unspecified, multicast, broadcast, malformed, or unbindable values
 fail visibly; the backend does not silently advertise an unrelated interface.
-Windows can occasionally assign a TCP ephemeral port that its paired UDP
-timedata socket cannot bind. Setup retries only that exact
-`AddrInUse`/`PermissionDenied` race, at most four times, before failing.
+Windows can assign a TCP ephemeral port that is excluded or unavailable for
+the paired UDP timedata socket. Setup therefore reserves an eligible UDP port
+first, binds TCP to that same numeric port while the reservation remains held,
+and releases the probe immediately before registry admission. Pair selection
+is bounded to 16 attempts, and registry admission retries only the exact
+`AddrInUse`/`PermissionDenied` release-to-bind race, at most four times, before
+failing. Tests cover deterministic conflict, retry, release, and rebind without
+a leaked listener.
+
+The native coordinator advances Rusty LSL's synchronous caller-owned work on
+Tokio's blocking pool. An explicit stop signal and two-second join deadline
+bound shutdown without occupying an async runtime worker.
 
 Discovery qualification deliberately calls official liblsl's broad stream
 enumeration and then matches all of these fields client-side before opening:
@@ -60,10 +76,16 @@ inlets, and count/rate/loss/reorder plus cleanup evidence. Its output may
 contain a device identifier and must remain ignored/private; it records bounded
 aggregates, not physiological samples.
 
-The 2026-08-14 host qualification passed. The first bounded physical run stopped
-before connection because the native scan found no H10; it produced no chooser
-or pairing prompt and makes no device-acceptance claim. A ready change or
-release using this backend still requires a passing physical run.
+The synthetic host qualification passed. During bounded physical Windows
+testing, two available straps each passed the separate native WinRT reference
+doctor through PMD ECG and ACC frames. Polar Stream's existing `btleplug`
+acquisition path did not complete the same acceptance: clean attempts stopped
+at connect, notification-receiver setup, or before the first PMD frame. This is
+a stage-specific Windows backend blocker, not Rusty LSL or device acceptance.
+No identifiers or physiological recordings are committed. A future native
+WinRT backend is a separate source/license/ownership unit; this adapter does not
+copy it. A ready change or release still requires a passing Polar Stream
+physical run.
 
 The browser application is outside this transport. Its same-origin
 `BroadcastChannel`, event API, and CSV recorder are not LSL and remain unable
