@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import queue
 import subprocess
@@ -182,9 +183,9 @@ def main() -> int:
     polar_stream_revision = git_read("rev-parse", "HEAD")
     polar_stream_tree = git_read("rev-parse", "HEAD^{tree}")
 
-    command = [
+    build_command = [
         "cargo",
-        "run",
+        "build",
         "-p",
         "polar-stream",
         "--example",
@@ -192,10 +193,24 @@ def main() -> int:
         "--no-default-features",
         "--features",
         "rusty-lsl-backend",
-        "--quiet",
     ]
+    subprocess.run(build_command, cwd=ROOT, check=True, timeout=180.0)
+    metadata = json.loads(
+        subprocess.check_output(
+            ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+        )
+    )
+    executable = (
+        pathlib.Path(metadata["target_directory"])
+        / "debug"
+        / "examples"
+        / ("verify_rusty_lsl_h10.exe" if os.name == "nt" else "verify_rusty_lsl_h10")
+    )
     process = subprocess.Popen(
-        command,
+        [str(executable)],
         cwd=ROOT,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -246,7 +261,7 @@ def main() -> int:
         while time.monotonic() < collection_deadline:
             for role in ("ecg", "acc"):
                 samples, timestamps = inlets[role].pull_chunk(
-                    timeout=0.05, max_samples=1024
+                    timeout=0.0, max_samples=1024
                 )
                 evidence[role].observe(samples, timestamps)
             while True:
@@ -262,6 +277,7 @@ def main() -> int:
                 break
             if process.poll() is not None:
                 raise RuntimeError("physical source exited before capture completion")
+            time.sleep(0.01)
         if source_result is None:
             raise RuntimeError("physical source did not complete within two minutes")
 
