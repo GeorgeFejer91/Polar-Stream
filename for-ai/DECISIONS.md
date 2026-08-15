@@ -1,5 +1,35 @@
 # Decision log
 
+## 2026-08-16 — H10 advertisement evidence is route-independent and confirmed
+
+The Windows watcher keeps its four-second start/stop/callback lifecycle, but
+local-name and advertised-service evidence are evaluated independently. An
+exact `Polar H10` name is strong evidence even if WinRT cannot enumerate that
+packet's service UUIDs. A PMD/heart-rate service without an exact name is only
+a provisional candidate; a globally bounded, eight-way WinRT device-name
+sweep must resolve the exact H10 model before it is returned. Generic BLE
+presence, manufacturer data, and other Polar model names remain insufficient.
+The later persistent session must still expose PMD and deliver both ECG and
+three-axis ACC before connection success.
+
+This corrects a predicate-order mismatch found by differential observation.
+An identifier-free harness around the exact published `MesmerPrism/PolarH10`
+watcher at `3777ccf6970d2a0457d0a4be99e6c15645818db0` observed one physical H10
+through its exact local-name shape. The reference path did not require service
+UUID evidence. The published reference CLI `scan` command returns immediately
+after starting its asynchronous watcher; its earlier zero result was therefore
+invalid and is not device-state evidence. No reference implementation source,
+identifier, or advertisement payload is incorporated.
+
+`POLAR_STREAM_H10_SCAN_DIAGNOSTICS` reports only aggregate counts for readable
+advertisement fields, exact-name/service admission, missing names, duplicates,
+rejection, overflow, property confirmation, and returned candidates. It never
+reports names, addresses, manufacturer values, payload bytes, or stable device
+identity. Deterministic fixtures cover the accepted shape and damaged,
+ambiguous, duplicate, missing-name, non-H10, and capacity cases. Physical
+selection and the complete Rusty LSL chain remain held for a separately
+authorized attended run.
+
 ## 2026-08-15 — Windows owns one direct WinRT Bluetooth session
 
 Windows uses an active WinRT advertisement watcher for four seconds and

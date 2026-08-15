@@ -7,13 +7,11 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::IntoFuture,
-    sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
+use futures_util::{StreamExt, stream};
 use polar_h10_core::{
     ACC_MEASUREMENT, ECG_MEASUREMENT, PmdFrame, decode_heart_rate, decode_pmd,
     start_accelerometer_command, start_ecg_command, stop_command,
@@ -58,72 +56,229 @@ const CHARACTERISTIC_ATTEMPTS: usize = 3;
 const RAW_NOTIFICATION_CAPACITY: usize = 128;
 const FIRST_FRAME_BUFFER_CAPACITY: usize = 64;
 const SCAN_DIAGNOSTICS_ENV: &str = "POLAR_STREAM_H10_SCAN_DIAGNOSTICS";
+const PROPERTY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
+const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(6);
+const PROPERTY_CONFIRMATION_CONCURRENCY: usize = 8;
 
 #[derive(Clone)]
 struct ScanObservation {
-    name: String,
+    name: Option<String>,
     rssi: i16,
+    advertised_polar_service: bool,
+}
+
+#[derive(Clone)]
+struct ScanCandidate {
+    address: u64,
+    name: Option<String>,
+    rssi: i16,
+    advertised_polar_service: bool,
 }
 
 #[derive(Default)]
+struct ScanDiagnostics {
+    advertisements: usize,
+    malformed_core_fields: usize,
+    advertisement_type_readable: usize,
+    advertisement_type_unavailable: usize,
+    connectable_true: usize,
+    connectable_false: usize,
+    connectable_unavailable: usize,
+    local_name_readable: usize,
+    local_name_unavailable: usize,
+    local_name_present: usize,
+    local_name_missing: usize,
+    exact_h10_name_match: usize,
+    local_name_nonmatch: usize,
+    service_uuids_readable: usize,
+    service_uuids_unavailable: usize,
+    polar_service_match: usize,
+    polar_service_nonmatch: usize,
+    manufacturer_sections_present: usize,
+    manufacturer_sections_absent: usize,
+    manufacturer_sections_unavailable: usize,
+    admitted_by_name: usize,
+    admitted_by_service: usize,
+    admitted_known_duplicate: usize,
+    rejected_no_strong_evidence: usize,
+    overflow_rejections: usize,
+    property_confirmation_attempts: usize,
+    property_confirmation_passes: usize,
+    property_confirmation_rejections: usize,
+    property_confirmation_timeouts: usize,
+    returned_candidates: usize,
+}
+
+struct AdvertisementEvidence {
+    local_name: Option<String>,
+    local_name_readable: bool,
+    service_uuids_readable: bool,
+    advertised_polar_service: bool,
+    advertisement_type_readable: bool,
+    connectable: Option<bool>,
+    manufacturer_section_count: Option<u32>,
+}
+
 struct ScanAccumulator {
     devices: HashMap<u64, ScanObservation>,
+    diagnostics: ScanDiagnostics,
+    diagnostics_enabled: bool,
+    overflowed: bool,
 }
 
 impl ScanAccumulator {
-    fn record(
-        &mut self,
-        address: u64,
-        name: String,
-        rssi: i16,
-        advertised_polar_service: bool,
-    ) -> bool {
-        let name_is_polar = name.to_ascii_lowercase().contains("polar");
-        if !name_is_polar && !advertised_polar_service && !self.devices.contains_key(&address) {
-            return true;
+    fn new(diagnostics_enabled: bool) -> Self {
+        Self {
+            devices: HashMap::new(),
+            diagnostics: ScanDiagnostics::default(),
+            diagnostics_enabled,
+            overflowed: false,
         }
+    }
+
+    fn record_malformed(&mut self) {
+        if self.diagnostics_enabled {
+            self.diagnostics.advertisements += 1;
+            self.diagnostics.malformed_core_fields += 1;
+        }
+    }
+
+    fn record(&mut self, address: u64, rssi: i16, evidence: AdvertisementEvidence) {
+        let exact_name = evidence
+            .local_name
+            .as_deref()
+            .is_some_and(is_polar_h10_name);
+        self.observe_predicates(&evidence, exact_name);
+
         if let Some(existing) = self.devices.get_mut(&address) {
-            if !name.is_empty() {
-                existing.name = name;
+            if exact_name {
+                existing.name = evidence.local_name;
             }
             existing.rssi = existing.rssi.max(rssi);
-            return true;
+            existing.advertised_polar_service |= evidence.advertised_polar_service;
+            if self.diagnostics_enabled {
+                self.diagnostics.admitted_known_duplicate += 1;
+            }
+            return;
         }
+
+        if !exact_name && !evidence.advertised_polar_service {
+            if self.diagnostics_enabled {
+                self.diagnostics.rejected_no_strong_evidence += 1;
+            }
+            return;
+        }
+
         if self.devices.len() >= MAX_SCANNED_DEVICES {
-            return false;
+            self.overflowed = true;
+            if self.diagnostics_enabled {
+                self.diagnostics.overflow_rejections += 1;
+            }
+            return;
+        }
+
+        if self.diagnostics_enabled {
+            if exact_name {
+                self.diagnostics.admitted_by_name += 1;
+            } else {
+                self.diagnostics.admitted_by_service += 1;
+            }
         }
         self.devices.insert(
             address,
             ScanObservation {
-                name: if name.is_empty() {
-                    "Unnamed Polar sensor".into()
-                } else {
-                    name
-                },
+                name: evidence.local_name.filter(|_| exact_name),
                 rssi,
+                advertised_polar_service: evidence.advertised_polar_service,
             },
         );
-        true
     }
 
-    fn finish(self) -> Vec<DeviceSummary> {
-        let mut devices = self
+    fn observe_predicates(&mut self, evidence: &AdvertisementEvidence, exact_name: bool) {
+        if !self.diagnostics_enabled {
+            return;
+        }
+        let diagnostics = &mut self.diagnostics;
+        diagnostics.advertisements += 1;
+        if evidence.advertisement_type_readable {
+            diagnostics.advertisement_type_readable += 1;
+        } else {
+            diagnostics.advertisement_type_unavailable += 1;
+        }
+        match evidence.connectable {
+            Some(true) => diagnostics.connectable_true += 1,
+            Some(false) => diagnostics.connectable_false += 1,
+            None => diagnostics.connectable_unavailable += 1,
+        }
+        if evidence.local_name_readable {
+            diagnostics.local_name_readable += 1;
+            if evidence
+                .local_name
+                .as_deref()
+                .is_some_and(|name| !name.is_empty())
+            {
+                diagnostics.local_name_present += 1;
+                if exact_name {
+                    diagnostics.exact_h10_name_match += 1;
+                } else {
+                    diagnostics.local_name_nonmatch += 1;
+                }
+            } else {
+                diagnostics.local_name_missing += 1;
+            }
+        } else {
+            diagnostics.local_name_unavailable += 1;
+        }
+        if evidence.service_uuids_readable {
+            diagnostics.service_uuids_readable += 1;
+            if evidence.advertised_polar_service {
+                diagnostics.polar_service_match += 1;
+            } else {
+                diagnostics.polar_service_nonmatch += 1;
+            }
+        } else {
+            diagnostics.service_uuids_unavailable += 1;
+        }
+        match evidence.manufacturer_section_count {
+            Some(0) => diagnostics.manufacturer_sections_absent += 1,
+            Some(_) => diagnostics.manufacturer_sections_present += 1,
+            None => diagnostics.manufacturer_sections_unavailable += 1,
+        }
+    }
+
+    fn finish(self) -> ScanBatch {
+        let candidates = self
             .devices
             .into_iter()
-            .map(|(address, observation)| DeviceSummary {
-                id: format!("{address:012X}"),
+            .map(|(address, observation)| ScanCandidate {
+                address,
                 name: observation.name,
-                rssi: Some(observation.rssi),
+                rssi: observation.rssi,
+                advertised_polar_service: observation.advertised_polar_service,
             })
             .collect::<Vec<_>>();
-        devices.sort_by(|left, right| {
-            right
-                .rssi
-                .cmp(&left.rssi)
-                .then_with(|| left.name.cmp(&right.name))
-        });
-        devices
+        ScanBatch {
+            candidates,
+            diagnostics: self.diagnostics,
+            diagnostics_enabled: self.diagnostics_enabled,
+            overflowed: self.overflowed,
+        }
     }
+}
+
+struct ScanBatch {
+    candidates: Vec<ScanCandidate>,
+    diagnostics: ScanDiagnostics,
+    diagnostics_enabled: bool,
+    overflowed: bool,
+}
+
+fn is_polar_h10_name(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    normalized == "polar h10"
+        || normalized
+            .strip_prefix("polar h10")
+            .is_some_and(|suffix| suffix.starts_with(' ') || suffix.starts_with('-'))
 }
 
 struct AdvertisementWatcherGuard {
@@ -133,6 +288,10 @@ struct AdvertisementWatcherGuard {
 
 fn watcher_needs_stop(status: BluetoothLEAdvertisementWatcherStatus) -> bool {
     status == BluetoothLEAdvertisementWatcherStatus::Started
+}
+
+fn take_received_token(received_token: &mut Option<i64>) -> Option<i64> {
+    received_token.take()
 }
 
 fn watcher_status_name(status: BluetoothLEAdvertisementWatcherStatus) -> &'static str {
@@ -167,7 +326,7 @@ fn report_scan_status(
 
 impl Drop for AdvertisementWatcherGuard {
     fn drop(&mut self) {
-        if let Some(token) = self.received_token.take() {
+        if let Some(token) = take_received_token(&mut self.received_token) {
             let _ = self.watcher.RemoveReceived(token);
         }
         if self.watcher.Status().is_ok_and(watcher_needs_stop) {
@@ -177,12 +336,22 @@ impl Drop for AdvertisementWatcherGuard {
 }
 
 pub(super) async fn scan() -> Result<Vec<DeviceSummary>, String> {
-    tokio::task::spawn_blocking(scan_blocking)
+    let mut batch = tokio::task::spawn_blocking(scan_blocking)
         .await
-        .map_err(|error| format!("Windows WinRT scan worker failed: {error}"))?
+        .map_err(|error| format!("Windows WinRT scan worker failed: {error}"))??;
+    if batch.overflowed {
+        report_scan_predicates(&batch);
+        return Err(format!(
+            "Windows WinRT scan exceeded its {MAX_SCANNED_DEVICES}-device bound"
+        ));
+    }
+    let devices = confirm_scan_candidates(&mut batch).await;
+    batch.diagnostics.returned_candidates = devices.len();
+    report_scan_predicates(&batch);
+    Ok(devices)
 }
 
-fn scan_blocking() -> Result<Vec<DeviceSummary>, String> {
+fn scan_blocking() -> Result<ScanBatch, String> {
     let diagnostics_enabled = std::env::var_os(SCAN_DIAGNOSTICS_ENV).is_some();
     let watcher = BluetoothLEAdvertisementWatcher::new()
         .map_err(|error| stage_error("scan initialization", error))?;
@@ -191,52 +360,61 @@ fn scan_blocking() -> Result<Vec<DeviceSummary>, String> {
         .SetScanningMode(BluetoothLEScanningMode::Active)
         .map_err(|error| stage_error("scan mode", error))?;
 
-    let observations = Arc::new(Mutex::new(ScanAccumulator::default()));
-    let overflowed = Arc::new(AtomicBool::new(false));
-    let advertisement_count = diagnostics_enabled.then(|| Arc::new(AtomicUsize::new(0)));
-    let accepted_observation_count = diagnostics_enabled.then(|| Arc::new(AtomicUsize::new(0)));
+    let observations = Arc::new(Mutex::new(ScanAccumulator::new(diagnostics_enabled)));
     let callback_observations = observations.clone();
-    let callback_overflowed = overflowed.clone();
-    let callback_advertisement_count = advertisement_count.clone();
-    let callback_accepted_observation_count = accepted_observation_count.clone();
     let handler = TypedEventHandler::<
         BluetoothLEAdvertisementWatcher,
         BluetoothLEAdvertisementReceivedEventArgs,
     >::new(
         move |_, args: Ref<BluetoothLEAdvertisementReceivedEventArgs>| {
-            let result = (|| {
-                let args = args.ok()?;
-                if let Some(count) = &callback_advertisement_count {
-                    count.fetch_add(1, Ordering::Relaxed);
-                }
-                let address = args.BluetoothAddress()?;
-                let rssi = args.RawSignalStrengthInDBm()?;
-                let advertisement = args.Advertisement()?;
-                let name = advertisement.LocalName()?.to_string();
-                let services = advertisement.ServiceUuids()?;
-                let heart_rate = GUID::from_u128(HEART_RATE_SERVICE.as_u128());
-                let pmd = GUID::from_u128(PMD_SERVICE.as_u128());
-                let advertised_polar_service = (0..services.Size()?).any(|index| {
-                    services
-                        .GetAt(index)
-                        .is_ok_and(|service| service == heart_rate || service == pmd)
-                });
-                let mut observations = callback_observations
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if !observations.record(address, name, rssi, advertised_polar_service) {
-                    callback_overflowed.store(true, Ordering::Release);
-                } else if observations.devices.contains_key(&address)
-                    && let Some(count) = &callback_accepted_observation_count
-                {
-                    count.fetch_add(1, Ordering::Relaxed);
-                }
-                Ok::<(), windows::core::Error>(())
-            })();
-            if result.is_err() {
-                // Malformed or partial advertisements are not device evidence.
-                // Ignore the one callback without disrupting the bounded scan.
-            }
+            let Ok(args) = args.ok() else {
+                record_malformed_callback(&callback_observations);
+                return Ok(());
+            };
+            let (Ok(address), Ok(rssi), Ok(advertisement)) = (
+                args.BluetoothAddress(),
+                args.RawSignalStrengthInDBm(),
+                args.Advertisement(),
+            ) else {
+                record_malformed_callback(&callback_observations);
+                return Ok(());
+            };
+
+            let local_name = advertisement.LocalName();
+            let local_name_readable = local_name.is_ok();
+            let local_name = local_name.ok().map(|name| name.to_string());
+            let service_uuids = advertised_polar_service(&advertisement);
+            let service_uuids_readable = service_uuids.is_ok();
+            let advertised_polar_service = service_uuids.unwrap_or(false);
+            let advertisement_type_readable = if diagnostics_enabled {
+                args.AdvertisementType().is_ok()
+            } else {
+                false
+            };
+            let connectable = diagnostics_enabled
+                .then(|| args.IsConnectable().ok())
+                .flatten();
+            let manufacturer_section_count = diagnostics_enabled
+                .then(|| {
+                    advertisement
+                        .ManufacturerData()
+                        .and_then(|sections| sections.Size())
+                        .ok()
+                })
+                .flatten();
+            let evidence = AdvertisementEvidence {
+                local_name,
+                local_name_readable,
+                service_uuids_readable,
+                advertised_polar_service,
+                advertisement_type_readable,
+                connectable,
+                manufacturer_section_count,
+            };
+            callback_observations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .record(address, rssi, evidence);
             Ok(())
         },
     );
@@ -259,42 +437,196 @@ fn scan_blocking() -> Result<Vec<DeviceSummary>, String> {
         .Stop()
         .map_err(|error| stage_error("scan stop", error))?;
     report_scan_status(diagnostics_enabled, "after-stop", &guard.watcher);
-    if let Some(token) = guard.received_token.take() {
+    if let Some(token) = take_received_token(&mut guard.received_token) {
         guard
             .watcher
             .RemoveReceived(token)
             .map_err(|error| stage_error("scan handler cleanup", error))?;
     }
     drop(handler);
-    if overflowed.load(Ordering::Acquire) {
-        return Err(format!(
-            "Windows WinRT scan exceeded its {MAX_SCANNED_DEVICES}-device bound"
-        ));
-    }
     let observations = {
         let mut observations = observations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::mem::take(&mut *observations)
+        std::mem::replace(
+            &mut *observations,
+            ScanAccumulator::new(diagnostics_enabled),
+        )
     };
-    let devices = observations.finish();
-    if diagnostics_enabled {
-        let accepted = accepted_observation_count
-            .as_deref()
-            .map(|count| count.load(Ordering::Relaxed))
-            .unwrap_or_default();
-        eprintln!(
-            "POLAR_H10_SCAN_DIAGNOSTIC advertisements={} accepted_observations={} unique_candidates={} coalesced_repeats={}",
-            advertisement_count
-                .as_deref()
-                .map(|count| count.load(Ordering::Relaxed))
-                .unwrap_or_default(),
-            accepted,
-            devices.len(),
-            accepted.saturating_sub(devices.len())
-        );
+    Ok(observations.finish())
+}
+
+fn record_malformed_callback(observations: &Arc<Mutex<ScanAccumulator>>) {
+    observations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .record_malformed();
+}
+
+fn advertised_polar_service(
+    advertisement: &windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisement,
+) -> windows::core::Result<bool> {
+    let services = advertisement.ServiceUuids()?;
+    let heart_rate = GUID::from_u128(HEART_RATE_SERVICE.as_u128());
+    let pmd = GUID::from_u128(PMD_SERVICE.as_u128());
+    for index in 0..services.Size()? {
+        let service = services.GetAt(index)?;
+        if service == heart_rate || service == pmd {
+            return Ok(true);
+        }
     }
-    Ok(devices)
+    Ok(false)
+}
+
+enum PropertyConfirmation {
+    Confirmed(String),
+    Rejected,
+    TimedOut,
+}
+
+async fn confirm_scan_candidates(batch: &mut ScanBatch) -> Vec<DeviceSummary> {
+    let mut devices = Vec::new();
+    let mut provisional = Vec::new();
+    for candidate in std::mem::take(&mut batch.candidates) {
+        if let Some(device) = confirmed_device_summary(&candidate, None) {
+            devices.push(device);
+        } else if candidate.advertised_polar_service {
+            provisional.push(candidate);
+        }
+    }
+
+    batch.diagnostics.property_confirmation_attempts = provisional.len();
+    let total_provisional = provisional.len();
+    let confirmations = stream::iter(provisional)
+        .map(|candidate| async move {
+            let confirmation = confirm_h10_property(candidate.address).await;
+            (candidate, confirmation)
+        })
+        .buffer_unordered(PROPERTY_CONFIRMATION_CONCURRENCY);
+    tokio::pin!(confirmations);
+    let deadline = tokio::time::Instant::now() + PROPERTY_SWEEP_TIMEOUT;
+    let mut completed = 0_usize;
+    while let Ok(Some((candidate, confirmation))) =
+        tokio::time::timeout_at(deadline, confirmations.next()).await
+    {
+        completed += 1;
+        if let Some(device) =
+            apply_property_confirmation(&candidate, confirmation, &mut batch.diagnostics)
+        {
+            devices.push(device);
+        }
+    }
+    batch.diagnostics.property_confirmation_timeouts += total_provisional.saturating_sub(completed);
+    devices.sort_by(|left, right| {
+        right
+            .rssi
+            .cmp(&left.rssi)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    devices
+}
+
+fn apply_property_confirmation(
+    candidate: &ScanCandidate,
+    confirmation: PropertyConfirmation,
+    diagnostics: &mut ScanDiagnostics,
+) -> Option<DeviceSummary> {
+    match confirmation {
+        PropertyConfirmation::Confirmed(name) => {
+            let device = confirmed_device_summary(candidate, Some(name));
+            if device.is_some() {
+                diagnostics.property_confirmation_passes += 1;
+            } else {
+                diagnostics.property_confirmation_rejections += 1;
+            }
+            device
+        }
+        PropertyConfirmation::Rejected => {
+            diagnostics.property_confirmation_rejections += 1;
+            None
+        }
+        PropertyConfirmation::TimedOut => {
+            diagnostics.property_confirmation_timeouts += 1;
+            None
+        }
+    }
+}
+
+fn confirmed_device_summary(
+    candidate: &ScanCandidate,
+    confirmed_property_name: Option<String>,
+) -> Option<DeviceSummary> {
+    let name = candidate
+        .name
+        .clone()
+        .filter(|name| is_polar_h10_name(name))
+        .or_else(|| confirmed_property_name.filter(|name| is_polar_h10_name(name)))?;
+    Some(DeviceSummary {
+        id: format!("{:012X}", candidate.address),
+        name,
+        rssi: Some(candidate.rssi),
+    })
+}
+
+async fn confirm_h10_property(address: u64) -> PropertyConfirmation {
+    let Ok(operation) = BluetoothLEDevice::FromBluetoothAddressAsync(address) else {
+        return PropertyConfirmation::Rejected;
+    };
+    let device =
+        match tokio::time::timeout(PROPERTY_CONFIRMATION_TIMEOUT, operation.into_future()).await {
+            Ok(Ok(device)) => device,
+            Ok(Err(_)) => return PropertyConfirmation::Rejected,
+            Err(_) => return PropertyConfirmation::TimedOut,
+        };
+    let name = device.Name().ok().map(|name| name.to_string());
+    let _ = device.Close();
+    match name.filter(|name| is_polar_h10_name(name)) {
+        Some(name) => PropertyConfirmation::Confirmed(name),
+        None => PropertyConfirmation::Rejected,
+    }
+}
+
+fn report_scan_predicates(batch: &ScanBatch) {
+    if !batch.diagnostics_enabled {
+        return;
+    }
+    let d = &batch.diagnostics;
+    eprintln!(
+        "POLAR_H10_SCAN_DIAGNOSTIC predicates advertisements={} malformed_core={} advertisement_type_readable={} advertisement_type_unavailable={} connectable_true={} connectable_false={} connectable_unavailable={} local_name_readable={} local_name_unavailable={} local_name_present={} local_name_missing={} exact_h10_name_match={} local_name_nonmatch={} service_uuids_readable={} service_uuids_unavailable={} polar_service_match={} polar_service_nonmatch={} manufacturer_present={} manufacturer_absent={} manufacturer_unavailable={}",
+        d.advertisements,
+        d.malformed_core_fields,
+        d.advertisement_type_readable,
+        d.advertisement_type_unavailable,
+        d.connectable_true,
+        d.connectable_false,
+        d.connectable_unavailable,
+        d.local_name_readable,
+        d.local_name_unavailable,
+        d.local_name_present,
+        d.local_name_missing,
+        d.exact_h10_name_match,
+        d.local_name_nonmatch,
+        d.service_uuids_readable,
+        d.service_uuids_unavailable,
+        d.polar_service_match,
+        d.polar_service_nonmatch,
+        d.manufacturer_sections_present,
+        d.manufacturer_sections_absent,
+        d.manufacturer_sections_unavailable,
+    );
+    eprintln!(
+        "POLAR_H10_SCAN_DIAGNOSTIC admission by_name={} by_service={} known_duplicate={} rejected_no_strong_evidence={} overflow_rejections={} property_attempts={} property_passes={} property_rejections={} property_timeouts={} returned_candidates={}",
+        d.admitted_by_name,
+        d.admitted_by_service,
+        d.admitted_known_duplicate,
+        d.rejected_no_strong_evidence,
+        d.overflow_rejections,
+        d.property_confirmation_attempts,
+        d.property_confirmation_passes,
+        d.property_confirmation_rejections,
+        d.property_confirmation_timeouts,
+        d.returned_candidates,
+    );
 }
 
 pub(super) struct PreparedConnection {
@@ -1306,39 +1638,142 @@ mod tests {
     use super::*;
     use polar_h10_core::AccSample;
 
+    fn evidence(
+        name: Option<&str>,
+        local_name_readable: bool,
+        service_uuids_readable: bool,
+        advertised_polar_service: bool,
+    ) -> AdvertisementEvidence {
+        AdvertisementEvidence {
+            local_name: name.map(str::to_owned),
+            local_name_readable,
+            service_uuids_readable,
+            advertised_polar_service,
+            advertisement_type_readable: true,
+            connectable: Some(true),
+            manufacturer_section_count: Some(1),
+        }
+    }
+
     #[test]
-    fn scan_accumulator_filters_and_coalesces_advertisements() {
-        let mut scan = ScanAccumulator::default();
-        assert!(scan.record(1, "Unrelated".into(), -20, false));
+    fn exact_reference_name_does_not_depend_on_service_uuid_readback() {
+        let mut scan = ScanAccumulator::new(true);
+        scan.record(1, -45, evidence(Some("Polar H10 TEST"), true, false, false));
+        let batch = scan.finish();
+        assert_eq!(batch.candidates.len(), 1);
+        assert_eq!(batch.candidates[0].name.as_deref(), Some("Polar H10 TEST"));
+        assert_eq!(batch.diagnostics.service_uuids_unavailable, 1);
+        assert_eq!(batch.diagnostics.admitted_by_name, 1);
+    }
+
+    #[test]
+    fn scan_accumulator_rejects_weak_shapes_and_coalesces_known_packets() {
+        let mut scan = ScanAccumulator::new(true);
+        scan.record(1, -20, evidence(Some("Unrelated"), true, true, false));
+        scan.record(2, -20, evidence(None, true, true, false));
+        scan.record(3, -20, evidence(Some("Polar H100"), true, true, false));
+        scan.record(4, -20, evidence(Some("Fake Polar H10"), true, true, false));
         assert!(scan.devices.is_empty());
 
-        assert!(scan.record(2, String::new(), -80, true));
-        assert!(scan.record(2, "Polar H10 TEST".into(), -55, false));
-        assert!(scan.record(2, String::new(), -70, false));
-        let devices = scan.finish();
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].id, "000000000002");
-        assert_eq!(devices[0].name, "Polar H10 TEST");
-        assert_eq!(devices[0].rssi, Some(-55));
+        scan.record(5, -80, evidence(Some("Polar H10 TEST"), true, true, false));
+        scan.record(5, -55, evidence(None, true, true, false));
+        scan.record(5, -70, evidence(Some("Unrelated"), true, true, false));
+        let batch = scan.finish();
+        assert_eq!(batch.candidates.len(), 1);
+        assert_eq!(batch.candidates[0].address, 5);
+        assert_eq!(batch.candidates[0].name.as_deref(), Some("Polar H10 TEST"));
+        assert_eq!(batch.candidates[0].rssi, -55);
+        assert_eq!(batch.diagnostics.admitted_known_duplicate, 2);
+        assert_eq!(batch.diagnostics.rejected_no_strong_evidence, 4);
+    }
+
+    #[test]
+    fn missing_name_service_candidate_requires_exact_property_confirmation() {
+        let mut scan = ScanAccumulator::new(true);
+        scan.record(7, -60, evidence(None, true, true, true));
+        let batch = scan.finish();
+        assert_eq!(batch.candidates.len(), 1);
+        let candidate = &batch.candidates[0];
+        assert!(confirmed_device_summary(candidate, None).is_none());
+        assert!(confirmed_device_summary(candidate, Some("Polar Verity Sense".into())).is_none());
+        let confirmed =
+            confirmed_device_summary(candidate, Some("Polar H10 CONFIRMED".into())).unwrap();
+        assert_eq!(confirmed.name, "Polar H10 CONFIRMED");
+        assert_eq!(confirmed.id, "000000000007");
+        assert_eq!(batch.diagnostics.admitted_by_service, 1);
+    }
+
+    #[test]
+    fn property_confirmation_outcomes_are_counted_and_fail_closed() {
+        let candidate = ScanCandidate {
+            address: 9,
+            name: None,
+            rssi: -50,
+            advertised_polar_service: true,
+        };
+        let mut diagnostics = ScanDiagnostics::default();
+        assert!(
+            apply_property_confirmation(
+                &candidate,
+                PropertyConfirmation::Confirmed("Polar H10 confirmed".into()),
+                &mut diagnostics,
+            )
+            .is_some()
+        );
+        assert!(
+            apply_property_confirmation(
+                &candidate,
+                PropertyConfirmation::Confirmed("Polar Verity Sense".into()),
+                &mut diagnostics,
+            )
+            .is_none()
+        );
+        assert!(
+            apply_property_confirmation(
+                &candidate,
+                PropertyConfirmation::Rejected,
+                &mut diagnostics,
+            )
+            .is_none()
+        );
+        assert!(
+            apply_property_confirmation(
+                &candidate,
+                PropertyConfirmation::TimedOut,
+                &mut diagnostics,
+            )
+            .is_none()
+        );
+        assert_eq!(diagnostics.property_confirmation_passes, 1);
+        assert_eq!(diagnostics.property_confirmation_rejections, 2);
+        assert_eq!(diagnostics.property_confirmation_timeouts, 1);
     }
 
     #[test]
     fn scan_accumulator_fails_closed_at_unique_device_bound() {
-        let mut scan = ScanAccumulator::default();
+        let mut scan = ScanAccumulator::new(true);
         for address in 0..MAX_SCANNED_DEVICES as u64 {
-            assert!(scan.record(address, "Polar sensor".into(), -60, false));
+            scan.record(
+                address,
+                -60,
+                evidence(Some("Polar H10 bounded"), true, true, false),
+            );
         }
-        assert!(!scan.record(
+        scan.record(
             MAX_SCANNED_DEVICES as u64,
-            "Polar overflow".into(),
             -60,
-            false
-        ));
+            evidence(Some("Polar H10 overflow"), true, true, false),
+        );
         assert_eq!(scan.devices.len(), MAX_SCANNED_DEVICES);
+        assert!(scan.overflowed);
+        assert_eq!(scan.diagnostics.overflow_rejections, 1);
     }
 
     #[test]
     fn watcher_cleanup_stops_only_an_active_scan() {
+        let mut received_token = Some(42);
+        assert_eq!(take_received_token(&mut received_token), Some(42));
+        assert_eq!(take_received_token(&mut received_token), None);
         assert!(watcher_needs_stop(
             BluetoothLEAdvertisementWatcherStatus::Started
         ));

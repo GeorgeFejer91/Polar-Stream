@@ -78,8 +78,10 @@ Its output may contain a device identifier and must remain ignored/private; it
 records bounded aggregates, not physiological samples. Official inlet
 collection starts only after exact selection, the direct WinRT session, and
 advancing ECG/ACC source frames. It runs in a daemon worker so a native liblsl
-call cannot defeat the outer two-minute source and consumer deadline; the
-worker must close before the source is stopped.
+call cannot defeat the outer deadline; selection has a separate 20-second
+fail-fast bound, post-selection source readiness has a 60-second bound, and
+source/consumer collection retains its two-minute bound. The worker must close
+before the source is stopped.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
@@ -89,6 +91,15 @@ pre-publication attempt initialized both Rusty outlets but the `btleplug`
 scanner did not return before exact H10 selection. Polar Stream now has its own
 direct safe-Rust WinRT advertisement and session backend with bounded discovery,
 subscription, first-frame qualification, cancellation, queues, and cleanup.
+An attended differential scan then proved the exact published reference
+watcher could observe one H10 while the candidate received advertisements but
+admitted none. Source diagnosis found that the candidate evaluated service-UUID
+enumeration before the exact local-name route used by the reference. Those
+predicates are now independent, and unnamed service candidates require bounded
+direct WinRT exact-model confirmation; this repair remains host-only until the
+next explicitly authorized physical run. An earlier zero from the published
+reference CLI wrapper is invalid because that wrapper returns immediately after
+starting its asynchronous watcher and is not device-state evidence.
 That implementation is still host evidence until this exact Polar Stream path
 passes the physical runner. No identifiers or physiological recordings are
 committed, and neither the reference-doctor runs nor compilation may be

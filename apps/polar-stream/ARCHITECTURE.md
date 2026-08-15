@@ -185,11 +185,21 @@ cancellation is checked at every stage boundary, the raw-notification and
 first-frame queues have fixed capacities, and overflow stops acquisition rather
 than hiding loss. Shutdown has one global deadline before synchronous handler
 removal and WinRT handle closure; `GattSession.MaintainConnection` is always
-cleared. The scanner coalesces advertisements by address for four seconds,
-admits at most 256 unique matching devices, and removes its callback before
-returning. Cleanup calls `Stop` only while the watcher is actively started; it
-does not perform per-device property reads that can stall
-selection.
+cleared. The scanner coalesces advertisements by address for four seconds and
+admits at most 256 strong candidates. An exact `Polar H10` local-name packet is
+sufficient even when that packet's service-UUID collection is unavailable. A
+PMD/heart-rate service packet without an exact name remains provisional and is
+returned only after a bounded, eight-way, six-second WinRT
+`BluetoothLEDevice.Name` confirmation resolves the exact H10 model.
+Missing-name repeats may update an already admitted address, while generic BLE
+presence, manufacturer data, and a non-H10 Polar name never admit a device by
+themselves. The callback is removed before property confirmation or return.
+Cleanup calls `Stop` only while the watcher is actively started.
+
+Setting `POLAR_STREAM_H10_SCAN_DIAGNOSTICS` emits opt-in aggregate predicate
+counters for advertisement shape, exact-name/service routes, duplicates,
+property confirmation, rejection, and overflow. Those diagnostics contain no
+address, name, payload bytes, manufacturer value, or stable device identity.
 
 [WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
 read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).
@@ -205,6 +215,14 @@ persistent session ownership, active advertisement discovery, Windows service
 access, retry, subscription, and cleanup. No C# source is copied. Cross-platform compilation and deterministic
 tests remain host evidence only; the physical Windows gate requires advancing
 130 Hz ECG and 200 Hz three-axis ACC evidence from Polar Stream itself.
+
+The discovery predicate repair additionally uses a black-box, identifier-free
+observation of that exact published watcher: one physical H10 was admitted by
+an exact local-name shape without requiring advertised service UUIDs. The
+published CLI `scan` wrapper returns after starting its asynchronous watcher,
+so an earlier zero-result invocation was discarded and is not device-state
+evidence. The candidate borrows only the observed predicate contract; it does
+not copy the reference implementation or treat generic advertisements as H10s.
 
 ## Stable discovery names
 
