@@ -1,10 +1,18 @@
-//! Direct Windows WinRT GATT backend.
+//! Direct Windows WinRT Bluetooth backend.
 //!
-//! The cross-platform scanner remains in the parent module, but Windows
-//! connections deliberately bypass `btleplug` after selection. WinRT owns one
-//! persistent `GattSession`, all characteristic subscriptions, and teardown.
+//! Windows uses an active WinRT advertisement watcher for bounded discovery,
+//! then owns one persistent `GattSession`, all characteristic subscriptions,
+//! and teardown. Other platforms retain the cross-platform `btleplug` path.
 
-use std::{collections::VecDeque, future::IntoFuture, sync::Weak, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    future::IntoFuture,
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use polar_h10_core::{
     ACC_MEASUREMENT, ECG_MEASUREMENT, PmdFrame, decode_heart_rate, decode_pmd,
@@ -14,6 +22,10 @@ use tokio::sync::{mpsc, watch};
 use windows::{
     Devices::{
         Bluetooth::{
+            Advertisement::{
+                BluetoothLEAdvertisementReceivedEventArgs, BluetoothLEAdvertisementWatcher,
+                BluetoothLEScanningMode,
+            },
             BluetoothCacheMode, BluetoothLEDevice, BluetoothLEPreferredConnectionParameters,
             BluetoothLEPreferredConnectionParametersRequest,
             GenericAttributeProfile::{
@@ -26,14 +38,16 @@ use windows::{
     },
     Foundation::TypedEventHandler,
     Storage::Streams::{DataReader, DataWriter, IBuffer},
-    core::GUID,
+    core::{GUID, Ref},
 };
 
 use super::{
-    BATTERY_LEVEL, HEART_RATE_MEASUREMENT, HEART_RATE_SERVICE, InputEvent, InputManager,
-    PMD_CONTROL_POINT, PMD_DATA, PMD_SERVICE, parse_bluetooth_address,
+    BATTERY_LEVEL, DeviceSummary, HEART_RATE_MEASUREMENT, HEART_RATE_SERVICE, InputEvent,
+    InputManager, PMD_CONTROL_POINT, PMD_DATA, PMD_SERVICE, parse_bluetooth_address,
 };
 
+const SCAN_DURATION: Duration = Duration::from_secs(4);
+const MAX_SCANNED_DEVICES: usize = 256;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const GATT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,6 +57,175 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 const CHARACTERISTIC_ATTEMPTS: usize = 3;
 const RAW_NOTIFICATION_CAPACITY: usize = 128;
 const FIRST_FRAME_BUFFER_CAPACITY: usize = 64;
+
+#[derive(Clone)]
+struct ScanObservation {
+    name: String,
+    rssi: i16,
+}
+
+#[derive(Default)]
+struct ScanAccumulator {
+    devices: HashMap<u64, ScanObservation>,
+}
+
+impl ScanAccumulator {
+    fn record(
+        &mut self,
+        address: u64,
+        name: String,
+        rssi: i16,
+        advertised_polar_service: bool,
+    ) -> bool {
+        let name_is_polar = name.to_ascii_lowercase().contains("polar");
+        if !name_is_polar && !advertised_polar_service && !self.devices.contains_key(&address) {
+            return true;
+        }
+        if let Some(existing) = self.devices.get_mut(&address) {
+            if !name.is_empty() {
+                existing.name = name;
+            }
+            existing.rssi = existing.rssi.max(rssi);
+            return true;
+        }
+        if self.devices.len() >= MAX_SCANNED_DEVICES {
+            return false;
+        }
+        self.devices.insert(
+            address,
+            ScanObservation {
+                name: if name.is_empty() {
+                    "Unnamed Polar sensor".into()
+                } else {
+                    name
+                },
+                rssi,
+            },
+        );
+        true
+    }
+
+    fn finish(self) -> Vec<DeviceSummary> {
+        let mut devices = self
+            .devices
+            .into_iter()
+            .map(|(address, observation)| DeviceSummary {
+                id: format!("{address:012X}"),
+                name: observation.name,
+                rssi: Some(observation.rssi),
+            })
+            .collect::<Vec<_>>();
+        devices.sort_by(|left, right| {
+            right
+                .rssi
+                .cmp(&left.rssi)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        devices
+    }
+}
+
+struct AdvertisementWatcherGuard {
+    watcher: BluetoothLEAdvertisementWatcher,
+    received_token: Option<i64>,
+}
+
+impl Drop for AdvertisementWatcherGuard {
+    fn drop(&mut self) {
+        if let Some(token) = self.received_token.take() {
+            let _ = self.watcher.RemoveReceived(token);
+        }
+        let _ = self.watcher.Stop();
+    }
+}
+
+pub(super) async fn scan() -> Result<Vec<DeviceSummary>, String> {
+    tokio::task::spawn_blocking(scan_blocking)
+        .await
+        .map_err(|error| format!("Windows WinRT scan worker failed: {error}"))?
+}
+
+fn scan_blocking() -> Result<Vec<DeviceSummary>, String> {
+    let watcher = BluetoothLEAdvertisementWatcher::new()
+        .map_err(|error| stage_error("scan initialization", error))?;
+    watcher
+        .SetScanningMode(BluetoothLEScanningMode::Active)
+        .map_err(|error| stage_error("scan mode", error))?;
+
+    let observations = Arc::new(Mutex::new(ScanAccumulator::default()));
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let callback_observations = observations.clone();
+    let callback_overflowed = overflowed.clone();
+    let handler = TypedEventHandler::<
+        BluetoothLEAdvertisementWatcher,
+        BluetoothLEAdvertisementReceivedEventArgs,
+    >::new(
+        move |_, args: Ref<BluetoothLEAdvertisementReceivedEventArgs>| {
+            let result = (|| {
+                let args = args.ok()?;
+                let address = args.BluetoothAddress()?;
+                let rssi = args.RawSignalStrengthInDBm()?;
+                let advertisement = args.Advertisement()?;
+                let name = advertisement.LocalName()?.to_string();
+                let services = advertisement.ServiceUuids()?;
+                let heart_rate = GUID::from_u128(HEART_RATE_SERVICE.as_u128());
+                let pmd = GUID::from_u128(PMD_SERVICE.as_u128());
+                let advertised_polar_service = (0..services.Size()?).any(|index| {
+                    services
+                        .GetAt(index)
+                        .is_ok_and(|service| service == heart_rate || service == pmd)
+                });
+                let mut observations = callback_observations
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !observations.record(address, name, rssi, advertised_polar_service) {
+                    callback_overflowed.store(true, Ordering::Release);
+                }
+                Ok::<(), windows::core::Error>(())
+            })();
+            if result.is_err() {
+                // Malformed or partial advertisements are not device evidence.
+                // Ignore the one callback without disrupting the bounded scan.
+            }
+            Ok(())
+        },
+    );
+    let received_token = watcher
+        .Received(&handler)
+        .map_err(|error| stage_error("scan handler", error))?;
+    let mut guard = AdvertisementWatcherGuard {
+        watcher,
+        received_token: Some(received_token),
+    };
+    guard
+        .watcher
+        .Start()
+        .map_err(|error| stage_error("scan start", error))?;
+    std::thread::sleep(SCAN_DURATION);
+    guard
+        .watcher
+        .Stop()
+        .map_err(|error| stage_error("scan stop", error))?;
+    if let Some(token) = guard.received_token.take() {
+        guard
+            .watcher
+            .RemoveReceived(token)
+            .map_err(|error| stage_error("scan handler cleanup", error))?;
+    }
+    drop(handler);
+    if overflowed.load(Ordering::Acquire) {
+        return Err(format!(
+            "Windows WinRT scan exceeded its {MAX_SCANNED_DEVICES}-device bound"
+        ));
+    }
+    let observations = {
+        let mut observations = observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *observations)
+    };
+    Ok(observations.finish())
+}
 
 pub(super) struct PreparedConnection {
     session: WinrtSession,
@@ -1052,6 +1235,37 @@ fn stage_error(stage: &str, error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use polar_h10_core::AccSample;
+
+    #[test]
+    fn scan_accumulator_filters_and_coalesces_advertisements() {
+        let mut scan = ScanAccumulator::default();
+        assert!(scan.record(1, "Unrelated".into(), -20, false));
+        assert!(scan.devices.is_empty());
+
+        assert!(scan.record(2, String::new(), -80, true));
+        assert!(scan.record(2, "Polar H10 TEST".into(), -55, false));
+        assert!(scan.record(2, String::new(), -70, false));
+        let devices = scan.finish();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "000000000002");
+        assert_eq!(devices[0].name, "Polar H10 TEST");
+        assert_eq!(devices[0].rssi, Some(-55));
+    }
+
+    #[test]
+    fn scan_accumulator_fails_closed_at_unique_device_bound() {
+        let mut scan = ScanAccumulator::default();
+        for address in 0..MAX_SCANNED_DEVICES as u64 {
+            assert!(scan.record(address, "Polar sensor".into(), -60, false));
+        }
+        assert!(!scan.record(
+            MAX_SCANNED_DEVICES as u64,
+            "Polar overflow".into(),
+            -60,
+            false
+        ));
+        assert_eq!(scan.devices.len(), MAX_SCANNED_DEVICES);
+    }
 
     fn ecg_event() -> InputEvent {
         InputEvent::Ecg {

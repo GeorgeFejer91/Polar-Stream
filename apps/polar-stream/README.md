@@ -119,8 +119,8 @@ cargo run -p polar-stream
 ```
 
 Linux Bluetooth access uses BlueZ/D-Bus. macOS packages must include a Bluetooth
-usage description. Windows uses `btleplug` for scanning, then owns the selected
-H10 through a direct persistent WinRT GATT session. It requests service access,
+usage description. Windows uses a bounded direct WinRT advertisement watcher,
+then owns the selected H10 through one persistent WinRT GATT session. It requests service access,
 discovers PMD uncached with bounded retry, subscribes directly, and waits for
 both decoded ECG and three-axis ACC before reporting a successful connection.
 Setup, queues, cancellation, and cleanup are bounded. The best-effort

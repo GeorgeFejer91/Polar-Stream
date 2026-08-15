@@ -212,10 +212,12 @@ async fn main() -> Result<(), String> {
         })
     };
 
-    println!("POLAR_H10_LSL_READY {}", health.lsl);
+    println!("POLAR_H10_LSL_INITIALIZED {}", health.lsl);
     flush_stdout();
 
     let manager = Arc::new(InputManager::new());
+    println!("POLAR_H10_STAGE scanning");
+    flush_stdout();
     let devices = manager.scan().await?;
     let requested_id = env::var(DEVICE_ID_ENV).ok();
     let selected = select_device(&devices, requested_id.as_deref())?;
@@ -230,6 +232,8 @@ async fn main() -> Result<(), String> {
     );
     flush_stdout();
 
+    println!("POLAR_H10_STAGE opening-winrt-session");
+    flush_stdout();
     let mut events = manager.connect(&selected.id).await?;
     let deadline = Instant::now() + MAX_CAPTURE;
     let mut connected_name = None;
@@ -238,6 +242,7 @@ async fn main() -> Result<(), String> {
     let mut axes = AxisStats::default();
     let mut consumer_ecg_samples = 0_u64;
     let mut consumer_acc_samples = 0_u64;
+    let mut source_ready_announced = false;
 
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -288,6 +293,20 @@ async fn main() -> Result<(), String> {
             }
         }
         flush_stdout();
+
+        let source_ready = connected_name.is_some()
+            && ecg.frames >= 2
+            && acc.frames >= 2
+            && ecg.timestamp_advanced()
+            && acc.timestamp_advanced()
+            && axes.each_axis_nonzero()
+            && ecg.reordered_frames == 0
+            && acc.reordered_frames == 0;
+        if source_ready && !source_ready_announced {
+            println!("POLAR_H10_SOURCE_READY {}", output.health().lsl);
+            flush_stdout();
+            source_ready_announced = true;
+        }
 
         let physical_ready = connected_name.is_some()
             && ecg.frames >= MIN_ECG_FRAMES

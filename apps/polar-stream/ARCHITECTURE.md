@@ -14,7 +14,7 @@ Primary evidence:
 
 - [Tauri supports HTML/CSS/JS frontends and Rust/Swift/Kotlin backend logic](https://v2.tauri.app/start/).
 - [Tauri uses the platform WebView rather than bundling a browser](https://v2.tauri.app/reference/webview-versions/).
-- [`btleplug` 0.12 supplies cross-platform scanning and the non-Windows GATT adapters](https://docs.rs/crate/btleplug/latest); Windows selection transitions to the direct WinRT session described below.
+- [`btleplug` 0.12 supplies the non-Windows scanning and GATT adapters](https://docs.rs/crate/btleplug/latest); Windows uses the direct WinRT path described below.
 - [liblsl supports Windows, Linux, macOS, Android, and iOS](https://labstreaminglayer.readthedocs.io/info/intro.html).
 - [Tauri channels are intended for ordered, high-throughput native-to-frontend data](https://v2.tauri.app/develop/calling-rust/).
 
@@ -171,13 +171,13 @@ and licensing/release holds.
 
 ## Windows BLE link policy
 
-Windows uses `btleplug` for a bounded advertisement scan and exact device selection,
-then bypasses its GATT connection layer. `polar-h10-input` opens the selected
-Bluetooth address directly with WinRT and owns one persistent `GattSession`,
+Windows uses an active `BluetoothLEAdvertisementWatcher` for a bounded scan and
+exact device selection, then opens the selected Bluetooth address directly with
+WinRT. `polar-h10-input` owns one persistent `GattSession`,
 uncached PMD service discovery, `RequestAccessAsync`, bounded uncached/cached
 characteristic discovery, direct WinRT notification handlers, PMD start/stop,
 and handle closure. Other operating systems retain the cross-platform
-`btleplug` connection path.
+`btleplug` scan and connection path.
 
 Setup does not emit `Connected` until it has decoded both an ECG frame and a
 three-axis ACC frame. Every external setup operation has a deadline,
@@ -185,9 +185,10 @@ cancellation is checked at every stage boundary, the raw-notification and
 first-frame queues have fixed capacities, and overflow stops acquisition rather
 than hiding loss. Shutdown has one global deadline before synchronous handler
 removal and WinRT handle closure; `GattSession.MaintainConnection` is always
-cleared. Scan start/result/stop operations are time-bounded, and peripheral
-property reads use a bounded concurrent sweep so one stale advertisement cannot
-stall the session before selection.
+cleared. The scanner coalesces advertisements by address for four seconds,
+admits at most 256 unique matching devices, and removes its callback before
+returning; it does not perform per-device property reads that can stall
+selection.
 
 [WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
 read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).
@@ -199,8 +200,8 @@ forces MTU nor treats a rejected optimization request as an acquisition error.
 The original safe-Rust implementation uses the public MIT-licensed
 [`MesmerPrism/PolarH10`](https://github.com/MesmerPrism/PolarH10) transport at
 commit `3777ccf6970d2a0457d0a4be99e6c15645818db0` as a behavioral reference for
-persistent session ownership, Windows service access, retry, subscription, and
-cleanup. No C# source is copied. Cross-platform compilation and deterministic
+persistent session ownership, active advertisement discovery, Windows service
+access, retry, subscription, and cleanup. No C# source is copied. Cross-platform compilation and deterministic
 tests remain host evidence only; the physical Windows gate requires advancing
 130 Hz ECG and 200 Hz three-axis ACC evidence from Polar Stream itself.
 

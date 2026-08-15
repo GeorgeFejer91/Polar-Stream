@@ -13,10 +13,12 @@ mod windows_backend;
 
 #[cfg(not(target_os = "windows"))]
 use btleplug::api::WriteType;
+#[cfg(not(target_os = "windows"))]
 use btleplug::{
     api::{Central, Manager as _, Peripheral as _, ScanFilter},
     platform::{Manager, Peripheral},
 };
+#[cfg(not(target_os = "windows"))]
 use futures_util::StreamExt;
 use polar_h10_core::AccSample;
 #[cfg(not(target_os = "windows"))]
@@ -34,10 +36,19 @@ const BATTERY_LEVEL: Uuid = Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34
 const PMD_SERVICE: Uuid = Uuid::from_u128(0xfb005c80_02e7_f387_1cad_8acd2d8df0c8);
 const PMD_CONTROL_POINT: Uuid = Uuid::from_u128(0xfb005c81_02e7_f387_1cad_8acd2d8df0c8);
 const PMD_DATA: Uuid = Uuid::from_u128(0xfb005c82_02e7_f387_1cad_8acd2d8df0c8);
+#[cfg(not(target_os = "windows"))]
 const BLE_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(not(target_os = "windows"))]
 const SCAN_DURATION: Duration = Duration::from_secs(4);
+#[cfg(not(target_os = "windows"))]
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(4);
+#[cfg(not(target_os = "windows"))]
 const PROPERTY_READ_CONCURRENCY: usize = 16;
+
+#[cfg(target_os = "windows")]
+type ScannedDevice = String;
+#[cfg(not(target_os = "windows"))]
+type ScannedDevice = Peripheral;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,7 +100,7 @@ struct ActiveConnection {
 }
 
 pub struct InputManager {
-    devices: Mutex<HashMap<String, Peripheral>>,
+    devices: Mutex<HashMap<String, ScannedDevice>>,
     active: Mutex<Option<ActiveConnection>>,
     #[cfg(target_os = "windows")]
     next_generation: AtomicU64,
@@ -111,6 +122,18 @@ impl InputManager {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
+        let found = windows_backend::scan().await?;
+        let next_devices = found
+            .iter()
+            .map(|device| (device.id.clone(), device.name.clone()))
+            .collect();
+        *self.devices.lock().await = next_devices;
+        Ok(found)
+    }
+
+    #[cfg(not(target_os = "windows"))]
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
         let manager = tokio::time::timeout(BLE_OPERATION_TIMEOUT, Manager::new())
             .await
@@ -201,6 +224,17 @@ impl InputManager {
         device_id: &str,
     ) -> Result<mpsc::Receiver<InputEvent>, String> {
         self.disconnect().await?;
+        #[cfg(target_os = "windows")]
+        let device_name = self
+            .devices
+            .lock()
+            .await
+            .get(device_id)
+            .cloned()
+            .ok_or_else(|| {
+                "That sensor is no longer in the scan results. Scan again.".to_string()
+            })?;
+        #[cfg(not(target_os = "windows"))]
         let peripheral = self
             .devices
             .lock()
@@ -223,13 +257,6 @@ impl InputManager {
         #[cfg(target_os = "windows")]
         {
             let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-            let device_name = peripheral
-                .properties()
-                .await
-                .ok()
-                .flatten()
-                .and_then(|properties| properties.local_name)
-                .unwrap_or_else(|| "Polar H10".into());
             let (cancel, mut cancelled) = watch::channel(false);
             let (finished_tx, finished) = watch::channel(false);
             self.active.lock().await.replace(ActiveConnection {

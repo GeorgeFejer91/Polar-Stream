@@ -1,12 +1,12 @@
 # Decision log
 
-## 2026-08-15 — Windows owns one direct WinRT GATT session
+## 2026-08-15 — Windows owns one direct WinRT Bluetooth session
 
-Windows continues to use `btleplug` only for bounded advertisement scanning and
-device selection. Scan operations and cleanup have deadlines, and a bounded
-concurrent property sweep prevents one stale peripheral from blocking all
-results. After selection, `polar-h10-input` opens the Bluetooth address
-directly with WinRT and owns one persistent `GattSession`, uncached PMD service
+Windows uses an active WinRT advertisement watcher for four seconds and
+coalesces at most 256 unique matching addresses before exact device selection.
+The callback is removed before return, and no per-device property request can
+stall the scan. After selection, `polar-h10-input` opens the Bluetooth address
+with WinRT and owns one persistent `GattSession`, uncached PMD service
 discovery, access requests, characteristic discovery, notification handlers,
 start commands, and teardown. Linux, macOS, iOS, and Android retain the existing
 `btleplug` connection path.
@@ -22,10 +22,10 @@ and negotiated MTU remains a read-only observation.
 This is an original safe-Rust adapter using the repository's existing
 `windows` crate. Its behavioral reference is the public MIT-licensed
 [`MesmerPrism/PolarH10`](https://github.com/MesmerPrism/PolarH10) Windows
-transport at commit `3777ccf6970d2a0457d0a4be99e6c15645818db0`: persistent
-session ownership, `RequestAccessAsync`, uncached discovery/retry, direct CCCD
-subscription, and explicit close. No C# source or local experimental evidence
-is incorporated. Compilation and synthetic tests do not replace a physical H10
+transport at commit `3777ccf6970d2a0457d0a4be99e6c15645818db0`: active
+advertisement discovery, persistent session ownership, `RequestAccessAsync`,
+uncached discovery/retry, direct CCCD subscription, and explicit close. No C#
+source or local experimental evidence is incorporated. Compilation and synthetic tests do not replace a physical H10
 acceptance run.
 
 ## 2026-08-15 — Rusty outlets admit one official consumer

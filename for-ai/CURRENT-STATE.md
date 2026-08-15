@@ -5,8 +5,9 @@ Last verified: 2026-08-15
 ## Implemented
 
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
-- Windows uses `btleplug` only for deadline-bounded scanning and selection,
-  then owns one direct persistent WinRT GATT session. It requests PMD service access, discovers
+- Windows uses a four-second direct WinRT advertisement watcher for bounded
+  scanning and selection, then owns one persistent WinRT GATT session. It
+  requests PMD service access, discovers
   uncached with bounded retry/cached fallback, installs direct notification
   handlers, and does not report success until both ECG and three-axis ACC have
   decoded. Setup stages, cancellation, internal queues, and cleanup are bounded.
@@ -124,7 +125,7 @@ Last verified: 2026-08-15
 
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.
-- Windows CI validates the WinRT/`btleplug` integration at compile and unit-test
+- Windows CI validates the WinRT integration and the non-Windows `btleplug` path at compile and unit-test
   level only. It does not prove that a particular adapter/H10 accepted the
   preferred connection parameters; retain the reported link values and sample
   counts from a physical Windows run before making that claim.
@@ -136,9 +137,9 @@ Last verified: 2026-08-15
 - Physical-device latency percentiles, queue high-water marks, and transport
   drop/error counters are not yet captured as a single end-to-end benchmark.
 - The optional Rusty LSL backend is host-qualified but not yet physically
-  accepted. The prior Windows `btleplug` acquisition attempts stopped at
+  accepted. Prior Windows `btleplug` acquisition attempts stopped at scan,
   connect, notification-receiver setup, or before the first PMD frame. The new
-  direct WinRT backend is compiled and deterministically tested, but those host
+  direct WinRT scanner/session backend is compiled and deterministically tested, but those host
   gates do not prove physical acquisition or official-inlet delivery. Retain
   the release hold until one Polar Stream run supplies that exact evidence.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.

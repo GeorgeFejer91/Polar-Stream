@@ -306,12 +306,12 @@ def main() -> int:
                 line = events.get(timeout=0.25)
             except queue.Empty:
                 if process.poll() is not None:
-                    raise RuntimeError("physical source exited before LSL readiness")
+                    raise RuntimeError("physical source exited before source readiness")
                 continue
-            if line.startswith("POLAR_H10_LSL_READY "):
+            if line.startswith("POLAR_H10_SOURCE_READY "):
                 break
         else:
-            raise RuntimeError("physical source did not reach LSL readiness")
+            raise RuntimeError("physical source did not reach source readiness")
 
         official_thread = threading.Thread(
             target=collect_official_inlets,
@@ -347,7 +347,9 @@ def main() -> int:
             time.sleep(0.01)
         if source_result is None or official_result is None:
             raise RuntimeError(
-                "physical source and official inlets did not complete within two minutes"
+                "physical source and official inlets did not complete within two minutes "
+                f"(source_complete={source_result is not None}, "
+                f"official_complete={official_result is not None})"
             )
         if source_result["result"] != "source-pass":
             raise RuntimeError(f"physical source result was not a pass: {source_result!r}")

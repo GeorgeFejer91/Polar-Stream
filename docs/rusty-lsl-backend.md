@@ -76,15 +76,18 @@ ECG/ACC sensor timestamps, nonzero bounded X/Y/Z data, exact descriptors,
 distinct official inlets, and count/rate/loss/reorder plus cleanup evidence.
 Its output may contain a device identifier and must remain ignored/private; it
 records bounded aggregates, not physiological samples. Official inlet
-collection runs in a daemon worker so a native liblsl call cannot defeat the
-outer two-minute source and consumer deadline; the worker must close before the
-source is stopped.
+collection starts only after exact selection, the direct WinRT session, and
+advancing ECG/ACC source frames. It runs in a daemon worker so a native liblsl
+call cannot defeat the outer two-minute source and consumer deadline; the
+worker must close before the source is stopped.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
 Polar Stream's old `btleplug` GATT connection path stopped at connect,
-notification-receiver setup, or before the first PMD frame. Polar Stream now
-has its own direct safe-Rust WinRT session backend with bounded discovery,
+notification-receiver setup, or before the first PMD frame. A later bounded
+pre-publication attempt initialized both Rusty outlets but the `btleplug`
+scanner did not return before exact H10 selection. Polar Stream now has its own
+direct safe-Rust WinRT advertisement and session backend with bounded discovery,
 subscription, first-frame qualification, cancellation, queues, and cleanup.
 That implementation is still host evidence until this exact Polar Stream path
 passes the physical runner. No identifiers or physiological recordings are
