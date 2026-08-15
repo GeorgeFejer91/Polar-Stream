@@ -24,7 +24,7 @@ use windows::{
         Bluetooth::{
             Advertisement::{
                 BluetoothLEAdvertisementReceivedEventArgs, BluetoothLEAdvertisementWatcher,
-                BluetoothLEScanningMode,
+                BluetoothLEAdvertisementWatcherStatus, BluetoothLEScanningMode,
             },
             BluetoothCacheMode, BluetoothLEDevice, BluetoothLEPreferredConnectionParameters,
             BluetoothLEPreferredConnectionParametersRequest,
@@ -130,12 +130,18 @@ struct AdvertisementWatcherGuard {
     received_token: Option<i64>,
 }
 
+fn watcher_needs_stop(status: BluetoothLEAdvertisementWatcherStatus) -> bool {
+    status == BluetoothLEAdvertisementWatcherStatus::Started
+}
+
 impl Drop for AdvertisementWatcherGuard {
     fn drop(&mut self) {
         if let Some(token) = self.received_token.take() {
             let _ = self.watcher.RemoveReceived(token);
         }
-        let _ = self.watcher.Stop();
+        if self.watcher.Status().is_ok_and(watcher_needs_stop) {
+            let _ = self.watcher.Stop();
+        }
     }
 }
 
@@ -1265,6 +1271,25 @@ mod tests {
             false
         ));
         assert_eq!(scan.devices.len(), MAX_SCANNED_DEVICES);
+    }
+
+    #[test]
+    fn watcher_cleanup_stops_only_an_active_scan() {
+        assert!(watcher_needs_stop(
+            BluetoothLEAdvertisementWatcherStatus::Started
+        ));
+        assert!(!watcher_needs_stop(
+            BluetoothLEAdvertisementWatcherStatus::Created
+        ));
+        assert!(!watcher_needs_stop(
+            BluetoothLEAdvertisementWatcherStatus::Stopping
+        ));
+        assert!(!watcher_needs_stop(
+            BluetoothLEAdvertisementWatcherStatus::Stopped
+        ));
+        assert!(!watcher_needs_stop(
+            BluetoothLEAdvertisementWatcherStatus::Aborted
+        ));
     }
 
     fn ecg_event() -> InputEvent {

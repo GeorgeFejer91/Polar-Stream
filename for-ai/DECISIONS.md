@@ -4,8 +4,9 @@
 
 Windows uses an active WinRT advertisement watcher for four seconds and
 coalesces at most 256 unique matching addresses before exact device selection.
-The callback is removed before return, and no per-device property request can
-stall the scan. After selection, `polar-h10-input` opens the Bluetooth address
+The callback is removed before return, cleanup calls `Stop` only while the
+watcher is actively started, and no per-device property request can stall the
+scan. After selection, `polar-h10-input` opens the Bluetooth address
 with WinRT and owns one persistent `GattSession`, uncached PMD service
 discovery, access requests, characteristic discovery, notification handlers,
 start commands, and teardown. Linux, macOS, iOS, and Android retain the existing

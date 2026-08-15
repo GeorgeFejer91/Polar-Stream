@@ -187,7 +187,8 @@ than hiding loss. Shutdown has one global deadline before synchronous handler
 removal and WinRT handle closure; `GattSession.MaintainConnection` is always
 cleared. The scanner coalesces advertisements by address for four seconds,
 admits at most 256 unique matching devices, and removes its callback before
-returning; it does not perform per-device property reads that can stall
+returning. Cleanup calls `Stop` only while the watcher is actively started; it
+does not perform per-device property reads that can stall
 selection.
 
 [WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
