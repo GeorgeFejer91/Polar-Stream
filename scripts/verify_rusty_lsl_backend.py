@@ -13,7 +13,6 @@ from dataclasses import dataclass
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUSTY_LSL_REVISION = "74f7d0ea2cce9b3d049ea24602527a5f52360554"
-POLAR_STREAM_BASE = "a0731ee9e323efa264adf599f9deeb66f3731e74"
 
 
 @dataclass(frozen=True)
@@ -65,6 +64,12 @@ def expected_descriptor(pylsl, expected: ExpectedStream):
     )
 
 
+def git_read(*arguments: str) -> str:
+    return subprocess.check_output(
+        ["git", *arguments], cwd=ROOT, text=True, encoding="utf-8"
+    ).strip()
+
+
 def resolve_exact_streams(pylsl, timeout: float):
     """Enumerate broadly, then select only exact descriptors client-side."""
     deadline = time.monotonic() + timeout
@@ -112,6 +117,13 @@ def main() -> int:
 
     if pylsl.__version__ != "1.18.2":
         raise SystemExit(f"expected pylsl 1.18.2, found {pylsl.__version__}")
+    status = git_read("status", "--porcelain", "--untracked-files=normal")
+    if status:
+        raise SystemExit(
+            "synthetic qualification requires an exact clean Polar Stream checkout"
+        )
+    polar_stream_revision = git_read("rev-parse", "HEAD")
+    polar_stream_tree = git_read("rev-parse", "HEAD^{tree}")
 
     command = [
         "cargo",
@@ -178,7 +190,8 @@ def main() -> int:
             raise RuntimeError("Rusty backend exited unsuccessfully")
         result = {
             "schema": "polar.stream.rusty_lsl_backend_official_consumer.v2",
-            "polar_stream_base": POLAR_STREAM_BASE,
+            "polar_stream_revision": polar_stream_revision,
+            "polar_stream_tree": polar_stream_tree,
             "rusty_lsl_revision": RUSTY_LSL_REVISION,
             "scope": {
                 "official_consumer": f"pylsl {pylsl.__version__}",

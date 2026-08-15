@@ -1,5 +1,31 @@
 # Decision log
 
+## 2026-08-15 — Windows owns one direct WinRT GATT session
+
+Windows continues to use `btleplug` only for bounded advertisement scanning and
+device selection. After selection, `polar-h10-input` opens the Bluetooth address
+directly with WinRT and owns one persistent `GattSession`, uncached PMD service
+discovery, access requests, characteristic discovery, notification handlers,
+start commands, and teardown. Linux, macOS, iOS, and Android retain the existing
+`btleplug` connection path.
+
+The Windows session does not announce connection success until it has decoded
+both an ECG frame and a three-axis ACC frame. Setup stages have explicit
+deadlines and observe cancellation at stage boundaries. Notification and
+first-frame buffers are bounded and fail closed rather than lose data silently;
+shutdown has one global deadline followed by synchronous handler and WinRT
+handle release. A throughput-optimized connection request remains best effort,
+and negotiated MTU remains a read-only observation.
+
+This is an original safe-Rust adapter using the repository's existing
+`windows` crate. Its behavioral reference is the public MIT-licensed
+[`MesmerPrism/PolarH10`](https://github.com/MesmerPrism/PolarH10) Windows
+transport at commit `3777ccf6970d2a0457d0a4be99e6c15645818db0`: persistent
+session ownership, `RequestAccessAsync`, uncached discovery/retry, direct CCCD
+subscription, and explicit close. No C# source or local experimental evidence
+is incorporated. Compilation and synthetic tests do not replace a physical H10
+acceptance run.
+
 ## 2026-08-15 — Rusty outlets admit one official consumer
 
 Polar Stream bounds every optional Rusty LSL outlet to one official consumer.

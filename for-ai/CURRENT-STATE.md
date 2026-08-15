@@ -5,14 +5,15 @@ Last verified: 2026-08-15
 ## Implemented
 
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
+- Windows uses `btleplug` only for scanning and selection, then owns one direct
+  persistent WinRT GATT session. It requests PMD service access, discovers
+  uncached with bounded retry/cached fallback, installs direct notification
+  handlers, and does not report success until both ECG and three-axis ACC have
+  decoded. Setup stages, cancellation, internal queues, and cleanup are bounded.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
-  parameter request and reports the observed interval, peripheral latency, and
-  read-only negotiated MTU. Older Windows versions continue fail-soft with
-  system-managed timing.
-- Before normal Windows service discovery, the input adapter ports MesmerPrism's
-  WinRT PMD access pattern: uncached service access, `RequestAccessAsync`,
-  uncached characteristic discovery, and three bounded retries. This improves
-  AccessDenied/Unreachable reliability but still does not force ATT MTU.
+  parameter request and reports the request status, observed interval,
+  peripheral latency, and read-only negotiated MTU. Older Windows versions
+  continue with system-managed timing.
 - Immediate raw LSL/OSC publication with canonical names.
 - A default-off, mutually exclusive Rusty LSL source backend is pinned to merge
   `74f7d0ea2cce9b3d049ea24602527a5f52360554`. Pinned pylsl
@@ -134,13 +135,12 @@ Last verified: 2026-08-15
   infrastructure states otherwise.
 - Physical-device latency percentiles, queue high-water marks, and transport
   drop/error counters are not yet captured as a single end-to-end benchmark.
-- The optional Rusty LSL backend is host-qualified but not physically accepted.
-  Two straps passed the separate native WinRT doctor through ECG and ACC frames,
-  but bounded Polar Stream attempts stopped in the existing Windows `btleplug`
-  path at connect, notification-receiver setup, or before the first PMD frame.
-  Do not infer Polar Stream device success from the reference backend or the
-  synthetic official-inlet pass. A native WinRT backend is a separate future
-  source/license/ownership unit.
+- The optional Rusty LSL backend is host-qualified but not yet physically
+  accepted. The prior Windows `btleplug` acquisition attempts stopped at
+  connect, notification-receiver setup, or before the first PMD frame. The new
+  direct WinRT backend is compiled and deterministically tested, but those host
+  gates do not prove physical acquisition or official-inlet delivery. Retain
+  the release hold until one Polar Stream run supplies that exact evidence.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also

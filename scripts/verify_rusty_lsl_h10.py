@@ -44,6 +44,12 @@ def expected_descriptor(pylsl, role: str):
     return (name, stream_type, channels, rate, pylsl.cf_float32, source_id)
 
 
+def git_read(*arguments: str) -> str:
+    return subprocess.check_output(
+        ["git", *arguments], cwd=ROOT, text=True, encoding="utf-8"
+    ).strip()
+
+
 def resolve_exact_streams(pylsl, timeout: float):
     """Use only broad enumeration, with exact client-side descriptor matching."""
     deadline = time.monotonic() + timeout
@@ -168,6 +174,13 @@ def main() -> int:
             f"expected pylsl 1.18.2/liblsl 117, found "
             f"{pylsl.__version__}/{pylsl.library_version()}"
         )
+    status = git_read("status", "--porcelain", "--untracked-files=normal")
+    if status:
+        raise SystemExit(
+            "physical qualification requires an exact clean Polar Stream checkout"
+        )
+    polar_stream_revision = git_read("rev-parse", "HEAD")
+    polar_stream_tree = git_read("rev-parse", "HEAD^{tree}")
 
     command = [
         "cargo",
@@ -291,7 +304,8 @@ def main() -> int:
 
         result = {
             "schema": "polar.stream.h10_rusty_lsl_official_acceptance.v1",
-            "polar_stream_base": "9d18dd9a41791af94afb621de447aeffafc340f9",
+            "polar_stream_revision": polar_stream_revision,
+            "polar_stream_tree": polar_stream_tree,
             "rusty_lsl_revision": RUSTY_LSL_REVISION,
             "official_consumer": {
                 "pylsl": pylsl.__version__,

@@ -67,25 +67,27 @@ that API.
 
 ## Validation and limits
 
-`scripts/verify_rusty_lsl_backend.py` runs two synthetic outlets against
-pinned pylsl 1.18.2/liblsl 1.17.7. It is host interoperability evidence, not a
-device test. `scripts/verify_rusty_lsl_h10.py` additionally drives the native
-Windows BLE input and requires one exact H10, advancing ECG/ACC sensor
+`scripts/verify_rusty_lsl_backend.py` runs two synthetic outlets from an exact
+clean commit/tree against pinned pylsl 1.18.2/liblsl 1.17.7. It is host
+interoperability evidence, not a device test.
+`scripts/verify_rusty_lsl_h10.py` additionally drives the native
+Windows BLE input from an exact clean commit/tree and requires one exact H10,
+advancing ECG/ACC sensor
 timestamps, nonzero bounded X/Y/Z data, exact descriptors, distinct official
 inlets, and count/rate/loss/reorder plus cleanup evidence. Its output may
 contain a device identifier and must remain ignored/private; it records bounded
 aggregates, not physiological samples.
 
-The synthetic host qualification passed. During bounded physical Windows
-testing, two available straps each passed the separate native WinRT reference
-doctor through PMD ECG and ACC frames. Polar Stream's existing `btleplug`
-acquisition path did not complete the same acceptance: clean attempts stopped
-at connect, notification-receiver setup, or before the first PMD frame. This is
-a stage-specific Windows backend blocker, not Rusty LSL or device acceptance.
-No identifiers or physiological recordings are committed. A future native
-WinRT backend is a separate source/license/ownership unit; this adapter does not
-copy it. A ready change or release still requires a passing Polar Stream
-physical run.
+The synthetic host qualification passed. Earlier bounded physical Windows
+testing found two straps with the separate native WinRT reference doctor, while
+Polar Stream's old `btleplug` GATT connection path stopped at connect,
+notification-receiver setup, or before the first PMD frame. Polar Stream now
+has its own direct safe-Rust WinRT session backend with bounded discovery,
+subscription, first-frame qualification, cancellation, queues, and cleanup.
+That implementation is still host evidence until this exact Polar Stream path
+passes the physical runner. No identifiers or physiological recordings are
+committed, and neither the reference-doctor runs nor compilation may be
+substituted for the pending acceptance.
 
 The browser application is outside this transport. Its same-origin
 `BroadcastChannel`, event API, and CSV recorder are not LSL and remain unable
