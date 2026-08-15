@@ -2,8 +2,16 @@
 
 mod config;
 mod csv;
+#[cfg(feature = "liblsl-backend")]
 mod lsl;
 mod osc;
+#[cfg(feature = "rusty-lsl-backend")]
+mod rusty_lsl;
+
+#[cfg(all(feature = "liblsl-backend", feature = "rusty-lsl-backend"))]
+compile_error!("select exactly one LSL backend feature");
+#[cfg(not(any(feature = "liblsl-backend", feature = "rusty-lsl-backend")))]
+compile_error!("select either the liblsl-backend or rusty-lsl-backend feature");
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -18,11 +26,14 @@ pub use config::{
     custom_output_stream_name, normalize_stream_base, output_stream_name,
 };
 use csv::CsvPublisher;
+#[cfg(feature = "liblsl-backend")]
 use lsl::LslPublisher;
 use osc::{OSC_TARGET, OscPublisher};
 use polar_h10_core::AccSample;
 use polar_h10_math::{CompiledFormula, FormulaFrame, MAX_TOTAL_STATE_SAMPLES};
 pub use polar_h10_math::{FormulaError, FormulaRuntimeState, FormulaValidation, validate_formula};
+#[cfg(feature = "rusty-lsl-backend")]
+use rusty_lsl::RustyLslPublisher as LslPublisher;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug)]
@@ -213,6 +224,21 @@ impl OutputRouter {
             .unwrap_or_default()
     }
 
+    /// Returns the current fail-soft transport and recording state.
+    pub fn health(&self) -> OutputHealth {
+        self.inner
+            .lock()
+            .map(|inner| inner.health())
+            .unwrap_or_else(|_| OutputHealth {
+                stream_name: self.config().stream_name,
+                lsl: "Output router lock failed".into(),
+                osc: "Output router lock failed".into(),
+                csv: "Output router lock failed".into(),
+                audio: "Output router lock failed".into(),
+                formulas: Vec::new(),
+            })
+    }
+
     /// Starts fresh whole-run and sliding normalization state for a new sensor session.
     pub fn reset_measurement(&self) {
         let Ok(mut inner) = self.inner.lock() else {
@@ -289,6 +315,20 @@ impl OutputRouter {
             ),
         );
         batch
+    }
+
+    /// Advances caller-owned Rusty LSL discovery, timedata, and consumer work.
+    ///
+    /// The default liblsl backend owns its own service lifecycle and therefore
+    /// does not expose this operation. The experimental Rusty backend is
+    /// deliberately polled by the native application coordinator instead of
+    /// hiding a worker in the transport crate.
+    #[cfg(feature = "rusty-lsl-backend")]
+    pub fn poll_lsl(&self) -> Option<String> {
+        let Ok(mut inner) = self.inner.lock() else {
+            return Some("Rusty LSL output lock failed".into());
+        };
+        inner.lsl.poll()
     }
 
     pub fn publish_ecg(&self, sensor_timestamp_ns: u64, samples: &[i32]) -> Option<String> {

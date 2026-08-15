@@ -14,6 +14,14 @@ Last verified: 2026-08-15
   uncached characteristic discovery, and three bounded retries. This improves
   AccessDenied/Unreachable reliability but still does not force ATT MTU.
 - Immediate raw LSL/OSC publication with canonical names.
+- A default-off, mutually exclusive Rusty LSL source backend is pinned to merge
+  `74f7d0ea2cce9b3d049ea24602527a5f52360554`. Pinned pylsl
+  1.18.2/liblsl 1.17.7 broadly discovered and exactly matched independent
+  1-channel/130 Hz ECG and 3-channel/200 Hz ACC outlets in the synthetic host
+  gate. Each outlet admits one official consumer; a second concurrent consumer
+  rejects without disturbing the admitted one. The synchronous poll loop runs
+  on Tokio's blocking pool with explicit stop and bounded join. Default/package
+  behavior remains liblsl.
 - A native **Save local CSV** destination records every received raw ECG/ACC
   sample, HR/RR, and every produced selected metric under `Downloads/Polar
   Stream` (app-data fallback). Its 128-notification writer queue is non-blocking
@@ -126,6 +134,21 @@ Last verified: 2026-08-15
   infrastructure states otherwise.
 - Physical-device latency percentiles, queue high-water marks, and transport
   drop/error counters are not yet captured as a single end-to-end benchmark.
+- The optional Rusty LSL backend is host-qualified but not physically accepted.
+  Two straps passed the separate native WinRT doctor through ECG and ACC frames,
+  but bounded Polar Stream attempts stopped in the existing Windows `btleplug`
+  path at connect, notification-receiver setup, or before the first PMD frame.
+  Do not infer Polar Stream device success from the reference backend or the
+  synthetic official-inlet pass. A native WinRT backend is a separate future
+  source/license/ownership unit.
+- Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
+  Consumers must enumerate broadly and exactly match the six documented
+  descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also
+  requires an explicit distribution/compliance decision before any enabled
+  package.
+- The one-official-consumer-per-outlet bound is a Polar Stream deployment
+  constraint. Generic Rusty LSL auxiliary-connection and multi-consumer
+  conformance remains separately scoped if the product later requires it.
 - Selected derived processors execute after raw publication in the coordinator
   loop. The input channel is bounded, but physical-device measurements have not
   yet proven every opt-in metric set stays inside the next-notification budget.

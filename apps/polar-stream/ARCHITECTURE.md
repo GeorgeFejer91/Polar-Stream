@@ -147,6 +147,28 @@ channel above is intentionally browser-scoped and must never be presented as an
 LSL outlet. A native LabRecorder requirement continues to use the installed
 Tauri application's liblsl outlets.
 
+## Native LSL backend boundary
+
+The installed application selects exactly one compile-time LSL backend.
+`liblsl-backend` remains the default and the only packaged path.
+`rusty-lsl-backend` is an experimental, default-off source feature pinned to
+one exact upstream merge. Both implementations stay inside
+`polar-h10-output`, reuse the canonical metric catalog and names, and remain
+independent of the WebView.
+
+The Rusty implementation owns a shared bounded discovery registry and
+independent persistent outlets. The native coordinator advances its
+caller-owned discovery/timedata/consumer work on Tokio's blocking pool only
+while a sensor session exists. An explicit stop signal and bounded join keep
+that synchronous loop from occupying an async runtime worker during operation
+or shutdown. Each outlet admits one official consumer; a second concurrent
+connection rejects without disturbing the admitted consumer. This is a Polar
+Stream deployment bound, not general Rusty LSL multi-consumer conformance.
+Official qualification enumerates broadly and matches the complete descriptor
+client-side; server-side property predicate conformance is not claimed. See
+`docs/rusty-lsl-backend.md` for the exact revision, shapes, limits, evidence,
+and licensing/release holds.
+
 ## Windows BLE link policy
 
 The Windows native adapter distinguishes ATT MTU from BLE connection timing.

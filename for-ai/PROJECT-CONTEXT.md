@@ -55,7 +55,9 @@ operational contract for that ordering.
 - Tauri 2 with the operating system WebView.
 - Plain dependency-light HTML, CSS, and JavaScript frontend.
 - `btleplug` for cross-platform BLE.
-- Dynamically loaded liblsl and native UDP OSC output.
+- Dynamically loaded liblsl and native UDP OSC output. A mutually exclusive,
+  exact-revision Rusty LSL backend exists only as a default-off source feature;
+  packages continue to use liblsl.
 - Playwright for deterministic interface scenarios.
 - Development-only Python/NeuroKit cleaning and metric derivation from the
   checked-in real preview fixture; no Python runtime or generated-signal
@@ -66,6 +68,9 @@ operational contract for that ordering.
 - One normalized base name produces stable per-output suffixes such as
   `participant_07_rawECG` and `participant_07_rawACC`.
 - LSL and OSC share the same canonical discoverable output name.
+- Official Rusty-backend qualification must enumerate broadly and apply exact
+  client-side name/type/channel/rate/format/source-ID matching before opening.
+  Predicate-filter conformance is intentionally unsupported.
 - Configuration and remembered-device preferences have one schema-versioned
   native owner.
 - Scientific definitions originate in the Rust metric catalog and are surfaced

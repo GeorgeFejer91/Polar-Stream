@@ -27,6 +27,11 @@ platform support.
 - `polar-h10-output` owns canonical discovery names, fail-soft LSL/OSC
   transport behavior, and bounded native CSV persistence. Transport code must
   not know about the WebView.
+- LSL backend experiments remain mutually exclusive compile-time features.
+  liblsl is the packaged default. Any Rusty LSL candidate must pin an exact
+  reviewed commit, preserve canonical descriptors, qualify through official
+  broad enumeration plus exact client-side matching, and retain separate
+  physical-device and licensing/release gates.
 - `apps/polar-stream` coordinates lifecycle and IPC. It must not become a second
   protocol decoder, metric engine, catalog, or transport implementation.
 - JavaScript consumes bounded display data. It may decimate or skip visual

@@ -6,6 +6,11 @@ mod preferences;
 
 use std::{path::PathBuf, sync::Arc};
 
+#[cfg(feature = "rusty-lsl-backend")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "rusty-lsl-backend")]
+use std::time::Duration;
+
 use polar_h10_core::AccSample;
 use polar_h10_input::{DeviceSummary, InputEvent, InputManager};
 use polar_h10_metrics::{
@@ -22,6 +27,36 @@ use tauri_plugin_opener::OpenerExt;
 
 use error::{CommandError, CommandResult};
 use preferences::{PreferencesSnapshot, PreferencesStore, SavedDevice};
+
+#[cfg(feature = "rusty-lsl-backend")]
+const LSL_POLL_INTERVAL: Duration = Duration::from_millis(5);
+#[cfg(feature = "rusty-lsl-backend")]
+const LSL_POLL_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(feature = "rusty-lsl-backend")]
+fn run_lsl_poll_loop<F>(stop: &AtomicBool, interval: Duration, mut poll: F)
+where
+    F: FnMut(),
+{
+    while !stop.load(Ordering::Acquire) {
+        poll();
+        std::thread::sleep(interval);
+    }
+}
+
+#[cfg(feature = "rusty-lsl-backend")]
+async fn stop_and_join_lsl_poll(
+    stop: &AtomicBool,
+    task: tokio::task::JoinHandle<()>,
+    timeout: Duration,
+) -> Result<(), &'static str> {
+    stop.store(true, Ordering::Release);
+    match tokio::time::timeout(timeout, task).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("Rusty LSL blocking poll task failed"),
+        Err(_) => Err("Rusty LSL blocking poll task did not stop within its deadline"),
+    }
+}
 
 struct AppState {
     input: Arc<InputManager>,
@@ -237,6 +272,25 @@ async fn connect_device(
             }
         });
 
+        #[cfg(feature = "rusty-lsl-backend")]
+        let lsl_poll_stop = Arc::new(AtomicBool::new(false));
+        #[cfg(feature = "rusty-lsl-backend")]
+        let lsl_poll_task = {
+            let output = output.clone();
+            let ui_tx = ui_tx.clone();
+            let stop = lsl_poll_stop.clone();
+            tokio::task::spawn_blocking(move || {
+                run_lsl_poll_loop(stop.as_ref(), LSL_POLL_INTERVAL, || {
+                    if let Some(message) = output.poll_lsl() {
+                        let _ = ui_tx.try_send(AppEvent::Error {
+                            code: "LSL_TRANSPORT_WARNING",
+                            message,
+                        });
+                    }
+                });
+            })
+        };
+
         let settings = *processing_settings.borrow_and_update();
         let mut metrics_engine = MetricEngine::with_selection(settings.metrics);
         metrics_engine.apply_breathing_settings(settings.breathing);
@@ -392,6 +446,18 @@ async fn connect_device(
             };
             if !continue_streaming {
                 break;
+            }
+        }
+        #[cfg(feature = "rusty-lsl-backend")]
+        {
+            if let Err(message) =
+                stop_and_join_lsl_poll(lsl_poll_stop.as_ref(), lsl_poll_task, LSL_POLL_JOIN_TIMEOUT)
+                    .await
+            {
+                let _ = ui_tx.try_send(AppEvent::Error {
+                    code: "LSL_TRANSPORT_WARNING",
+                    message: message.into(),
+                });
             }
         }
         drop(ui_tx);
@@ -593,4 +659,47 @@ fn lsl_resource_path() -> &'static str {
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn lsl_resource_path() -> &'static str {
     "liblsl"
+}
+
+#[cfg(all(test, feature = "rusty-lsl-backend"))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn rusty_lsl_polling_uses_the_blocking_pool_and_stops_within_a_bound() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let mut started_tx = Some(started_tx);
+        let task = {
+            let stop = stop.clone();
+            let polls = polls.clone();
+            tokio::task::spawn_blocking(move || {
+                run_lsl_poll_loop(stop.as_ref(), Duration::from_millis(1), || {
+                    polls.fetch_add(1, Ordering::Relaxed);
+                    if let Some(sender) = started_tx.take() {
+                        let _ = sender.send(());
+                    }
+                    std::thread::sleep(Duration::from_millis(40));
+                });
+            })
+        };
+
+        tokio::time::timeout(Duration::from_millis(200), started_rx)
+            .await
+            .expect("blocking poll loop must start")
+            .expect("blocking poll loop must signal startup");
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            tokio::time::sleep(Duration::from_millis(10)),
+        )
+        .await
+        .expect("Tokio timers must remain responsive while Rusty LSL polls");
+
+        stop_and_join_lsl_poll(stop.as_ref(), task, Duration::from_millis(200))
+            .await
+            .expect("stop signal must terminate the blocking poll loop within its bound");
+        assert!(polls.load(Ordering::Relaxed) >= 1);
+    }
 }

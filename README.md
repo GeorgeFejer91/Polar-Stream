@@ -164,6 +164,13 @@ The packages include a checksum-pinned liblsl runtime. No separate LSL install
 is required. Windows packages include the Microsoft runtime needed by liblsl,
 and the Windows installer carries WebView2's offline installer.
 
+Source developers may instead compile the experimental, default-off Rusty LSL
+backend. It is pinned to one reviewed upstream commit and is not enabled in any
+package. Its official-consumer host qualification, exact descriptor-selection
+rule, physical-device gate, predicate-filter exclusion, and AGPL licensing
+boundary are documented in the
+[optional Rusty LSL backend guide](docs/rusty-lsl-backend.md).
+
 Current packages are ad-hoc/unsigned. Windows SmartScreen and macOS Gatekeeper
 may therefore require an explicit confirmation. See the download page for the
 short platform-specific instructions.
@@ -213,6 +220,9 @@ legacy-output mapping are in [the metric evidence inventory](docs/metric-evidenc
 The exact ACC breathing lineage, formulas, settings, known batch-timing
 limitation, and proposed reference-validation protocol are in the
 [ACC-derived breathing handoff](docs/acc-breathing-handoff.md).
+The [optional Rusty LSL backend guide](docs/rusty-lsl-backend.md) records the
+separate default-off transport, interoperability evidence, and remaining
+device/licensing gates.
 
 ## Develop
 
