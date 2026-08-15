@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 
 
@@ -163,6 +164,70 @@ class InletEvidence:
         }
 
 
+def collect_official_inlets(pylsl, results, close_requested):
+    """Collect in a daemon thread so native inlet calls cannot defeat the outer deadline."""
+    inlets = {}
+    try:
+        streams = resolve_exact_streams(pylsl, timeout=15.0)
+        for role in ("ecg", "acc"):
+            inlet = pylsl.StreamInlet(streams[role], max_buflen=30, recover=False)
+            inlet.open_stream(timeout=10.0)
+            inlets[role] = inlet
+
+        evidence = {
+            "ecg": InletEvidence(channels=1, nominal_rate=130.0),
+            "acc": InletEvidence(channels=3, nominal_rate=200.0),
+        }
+        while (
+            evidence["ecg"].sample_count < 260
+            or evidence["acc"].sample_count < 400
+        ):
+            for role in ("ecg", "acc"):
+                samples, timestamps = inlets[role].pull_chunk(
+                    timeout=0.05, max_samples=1024
+                )
+                evidence[role].observe(samples, timestamps)
+
+        ecg = evidence["ecg"]
+        acc = evidence["acc"]
+        if ecg.reordered or acc.reordered:
+            raise RuntimeError(
+                f"official inlet reorder: ECG={ecg.reordered}, ACC={acc.reordered}"
+            )
+        if not all(count > 0 for count in acc.nonzero_by_channel):
+            raise RuntimeError(
+                f"ACC axes were not independently nonzero: {acc.nonzero_by_channel!r}"
+            )
+        if any(
+            abs(value) > 32768.0
+            for value in acc.minimum_by_channel + acc.maximum_by_channel
+        ):
+            raise RuntimeError("ACC value exceeded the bounded i16 device domain")
+
+        results.put(
+            (
+                "ready",
+                {
+                    "descriptors": {
+                        role: descriptor(streams[role]) for role in ("ecg", "acc")
+                    },
+                    "outlet_uids_distinct": (
+                        streams["ecg"].uid() != streams["acc"].uid()
+                    ),
+                    "inlets": {
+                        role: evidence[role].evidence() for role in ("ecg", "acc")
+                    },
+                },
+            )
+        )
+        close_requested.wait(timeout=150.0)
+    except Exception as error:
+        results.put(("error", f"{error}\n{traceback.format_exc()}"))
+    finally:
+        for inlet in inlets.values():
+            inlet.close_stream()
+
+
 def main() -> int:
     try:
         import pylsl
@@ -231,7 +296,9 @@ def main() -> int:
 
     reader = threading.Thread(target=read_output, daemon=True)
     reader.start()
-    inlets = {}
+    official_results = queue.Queue()
+    close_official = threading.Event()
+    official_thread = None
     try:
         ready_deadline = time.monotonic() + 180.0
         while time.monotonic() < ready_deadline:
@@ -246,24 +313,16 @@ def main() -> int:
         else:
             raise RuntimeError("physical source did not reach LSL readiness")
 
-        streams = resolve_exact_streams(pylsl, timeout=15.0)
-        for role in ("ecg", "acc"):
-            inlet = pylsl.StreamInlet(streams[role], max_buflen=30, recover=False)
-            inlet.open_stream(timeout=10.0)
-            inlets[role] = inlet
-
-        evidence = {
-            "ecg": InletEvidence(channels=1, nominal_rate=130.0),
-            "acc": InletEvidence(channels=3, nominal_rate=200.0),
-        }
+        official_thread = threading.Thread(
+            target=collect_official_inlets,
+            args=(pylsl, official_results, close_official),
+            daemon=True,
+        )
+        official_thread.start()
         source_result = None
+        official_result = None
         collection_deadline = time.monotonic() + 120.0
         while time.monotonic() < collection_deadline:
-            for role in ("ecg", "acc"):
-                samples, timestamps = inlets[role].pull_chunk(
-                    timeout=0.0, max_samples=1024
-                )
-                evidence[role].observe(samples, timestamps)
             while True:
                 try:
                     line = events.get_nowait()
@@ -273,39 +332,30 @@ def main() -> int:
                     source_result = json.loads(
                         line.removeprefix("POLAR_H10_CAPTURE_COMPLETE ")
                     )
-            if source_result is not None:
+            try:
+                official_status, official_payload = official_results.get_nowait()
+            except queue.Empty:
+                pass
+            else:
+                if official_status == "error":
+                    raise RuntimeError(f"official inlet worker failed: {official_payload}")
+                official_result = official_payload
+            if source_result is not None and official_result is not None:
                 break
             if process.poll() is not None:
                 raise RuntimeError("physical source exited before capture completion")
             time.sleep(0.01)
-        if source_result is None:
-            raise RuntimeError("physical source did not complete within two minutes")
-
-        ecg = evidence["ecg"]
-        acc = evidence["acc"]
-        if ecg.sample_count < 260 or acc.sample_count < 400:
+        if source_result is None or official_result is None:
             raise RuntimeError(
-                f"insufficient official samples: ECG={ecg.sample_count}, ACC={acc.sample_count}"
+                "physical source and official inlets did not complete within two minutes"
             )
-        if ecg.reordered or acc.reordered:
-            raise RuntimeError(
-                f"official inlet reorder: ECG={ecg.reordered}, ACC={acc.reordered}"
-            )
-        if not all(count > 0 for count in acc.nonzero_by_channel):
-            raise RuntimeError(
-                f"ACC axes were not independently nonzero: {acc.nonzero_by_channel!r}"
-            )
-        if any(
-            abs(value) > 32768.0
-            for value in acc.minimum_by_channel + acc.maximum_by_channel
-        ):
-            raise RuntimeError("ACC value exceeded the bounded i16 device domain")
         if source_result["result"] != "source-pass":
             raise RuntimeError(f"physical source result was not a pass: {source_result!r}")
 
-        for inlet in inlets.values():
-            inlet.close_stream()
-        inlets.clear()
+        close_official.set()
+        official_thread.join(timeout=10.0)
+        if official_thread.is_alive():
+            raise RuntimeError("official inlet worker did not close within ten seconds")
         assert process.stdin is not None
         process.stdin.write("\n")
         process.stdin.flush()
@@ -329,11 +379,9 @@ def main() -> int:
                 "discovery": "broad enumeration plus exact client-side descriptor match",
                 "predicate_filter_conformance": "unsupported and not exercised",
             },
-            "descriptors": {
-                role: descriptor(streams[role]) for role in ("ecg", "acc")
-            },
-            "outlet_uids_distinct": streams["ecg"].uid() != streams["acc"].uid(),
-            "inlets": {role: evidence[role].evidence() for role in ("ecg", "acc")},
+            "descriptors": official_result["descriptors"],
+            "outlet_uids_distinct": official_result["outlet_uids_distinct"],
+            "inlets": official_result["inlets"],
             "source": source_result,
             "cross_stream_misidentification": False,
             "cleanup": {
@@ -349,8 +397,7 @@ def main() -> int:
         print(json.dumps(result, sort_keys=True))
         return 0
     except Exception:
-        for inlet in inlets.values():
-            inlet.close_stream()
+        close_official.set()
         if process.poll() is None:
             process.terminate()
             try:
@@ -358,6 +405,8 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5.0)
+        if official_thread is not None:
+            official_thread.join(timeout=2.0)
         reader.join(timeout=2.0)
         print("".join(lines), file=sys.stderr)
         raise

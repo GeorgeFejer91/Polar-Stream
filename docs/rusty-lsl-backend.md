@@ -70,13 +70,15 @@ that API.
 `scripts/verify_rusty_lsl_backend.py` runs two synthetic outlets from an exact
 clean commit/tree against pinned pylsl 1.18.2/liblsl 1.17.7. It is host
 interoperability evidence, not a device test.
-`scripts/verify_rusty_lsl_h10.py` additionally drives the native
-Windows BLE input from an exact clean commit/tree and requires one exact H10,
-advancing ECG/ACC sensor
-timestamps, nonzero bounded X/Y/Z data, exact descriptors, distinct official
-inlets, and count/rate/loss/reorder plus cleanup evidence. Its output may
-contain a device identifier and must remain ignored/private; it records bounded
-aggregates, not physiological samples.
+`scripts/verify_rusty_lsl_h10.py` additionally drives the native Windows BLE
+input from an exact clean commit/tree and requires one exact H10, advancing
+ECG/ACC sensor timestamps, nonzero bounded X/Y/Z data, exact descriptors,
+distinct official inlets, and count/rate/loss/reorder plus cleanup evidence.
+Its output may contain a device identifier and must remain ignored/private; it
+records bounded aggregates, not physiological samples. Official inlet
+collection runs in a daemon worker so a native liblsl call cannot defeat the
+outer two-minute source and consumer deadline; the worker must close before the
+source is stopped.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
