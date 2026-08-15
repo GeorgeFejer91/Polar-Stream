@@ -3,7 +3,7 @@ use std::{collections::HashMap, net::SocketAddr};
 use polar_h10_core::AccSample;
 use tokio::net::UdpSocket;
 
-use crate::output_stream_name;
+use crate::{CustomFormulaConfig, custom_output_stream_name, output_stream_name};
 
 pub(crate) const OSC_TARGET: &str = "127.0.0.1:9000";
 
@@ -36,6 +36,13 @@ impl OscPublisher {
             if let Some(name) = output_stream_name(stream_name, id) {
                 self.paths.insert(id.clone(), format!("/{name}"));
             }
+        }
+    }
+
+    pub(crate) fn configure_custom(&mut self, stream_name: &str, formulas: &[CustomFormulaConfig]) {
+        for formula in formulas.iter().filter(|formula| formula.enabled) {
+            let name = custom_output_stream_name(stream_name, formula);
+            self.paths.insert(formula.id.clone(), format!("/{name}"));
         }
     }
 

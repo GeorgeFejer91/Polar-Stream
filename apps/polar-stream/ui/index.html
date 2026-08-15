@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#17221d" />
     <meta name="description" content="Polar Stream interface demo for Polar H10 ECG and accelerometer research outputs." />
@@ -12,6 +12,10 @@
     <script src="polar-web-bluetooth.js" defer></script>
     <script src="browser-session.js" defer></script>
     <script src="audio-data-link.js" defer></script>
+    <script src="metric-catalog.js" defer></script>
+    <script src="metric-previews.js" defer></script>
+    <script src="preview-fixture.js" defer></script>
+    <script src="formula-preview.js" defer></script>
     <script src="runtime-api.js" defer></script>
     <script src="preferences.js" defer></script>
     <script src="app.js" defer></script>
@@ -144,6 +148,12 @@
             <input id="osc-toggle" class="switch-input" type="checkbox" />
             <span class="switch" aria-hidden="true"></span>
           </label>
+          <div class="destination-error" id="native-output-browser-error" role="alert" hidden>
+            <span id="native-output-browser-error-text">This output requires the installed Polar Stream app.</span>
+            <a id="desktop-app-download" href="#" target="_blank" rel="noreferrer">
+              Download the installed app
+            </a>
+          </div>
           <label class="destination-row" id="csv-destination-row">
             <span class="protocol-mark csv-mark">CSV</span>
             <span>
@@ -233,13 +243,20 @@
       <span>Polar H10 · unofficial research tool</span>
     </footer>
 
-    <dialog class="output-dialog" id="output-dialog" aria-labelledby="output-dialog-title">
+    <dialog class="output-dialog" id="output-dialog" data-mobile-view="browse" aria-labelledby="output-dialog-title">
       <form method="dialog">
         <header>
-          <div><p class="eyebrow">Output library</p><h2 id="output-dialog-title">Add signals</h2></div>
+          <button class="metric-back-button" id="metric-back-button" type="button" aria-label="Back to all signals">
+            <span aria-hidden="true">←</span>
+            <span>Signals</span>
+          </button>
+          <div class="dialog-title"><p class="eyebrow">Output library</p><h2 id="output-dialog-title">Add signals</h2></div>
           <button class="icon-button" value="cancel" aria-label="Close">×</button>
         </header>
-        <p class="dialog-intro">Choose the sensor family first, then review and configure one output before adding it.</p>
+        <div class="dialog-intro output-library-intro">
+          <p>Choose the sensor family first, then review and configure one output before adding it.</p>
+          <button class="secondary-button compact" id="open-formula-lab" type="button">Open Formula Lab</button>
+        </div>
         <section class="metric-family-picker" aria-labelledby="metric-family-heading">
           <div class="metric-family-heading">
             <span id="metric-family-heading">Signal family</span>
@@ -278,6 +295,65 @@
         <footer>
           <span id="dialog-output-status">Select one metric to inspect</span>
           <button class="primary-button compact" id="save-metric-output" type="button" disabled>Save output</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="formula-dialog" id="formula-dialog" aria-labelledby="formula-dialog-title">
+      <form method="dialog">
+        <header>
+          <div><p class="eyebrow">Math module</p><h2 id="formula-dialog-title">Formula Lab</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </header>
+        <p class="dialog-intro">Build one scalar output at a time. Sensor time is always the x-axis; your expression computes the y-value from the selected signal channel and its bounded history.</p>
+        <div class="formula-lab-layout">
+          <aside class="formula-library">
+            <section>
+              <header><strong>Custom outputs</strong><button id="new-custom-formula" type="button">＋ New</button></header>
+              <div id="formula-saved-list"></div>
+            </section>
+            <section>
+              <header><strong>Load a metric</strong><span>Editable templates</span></header>
+              <div id="formula-template-buttons"></div>
+            </section>
+          </aside>
+          <main class="formula-editor">
+            <section class="formula-variable-map" aria-labelledby="formula-variable-map-title">
+              <header><strong id="formula-variable-map-title">Signal variable map</strong><span>one source clock per formula</span></header>
+              <div>
+                <article><code>ecg</code><span>ECG amplitude · µV · 130 Hz</span></article>
+                <article><code>x y z</code><span>ACC axes · mg · 200 Hz</span></article>
+                <article><code>hr</code><span>device heart rate · bpm · event rate</span></article>
+                <article><code>rr</code><span>beat interval · ms · HRV source</span></article>
+              </div>
+              <p>No separate x variable is needed. Sample or event time is retained automatically; for example, RMSSD operates on the history of <code>rr</code>, not ECG amplitude.</p>
+            </section>
+            <div class="formula-fields">
+              <label><span>Output name</span><input id="formula-name" maxlength="48" spellcheck="false" /></label>
+              <label><span>Signal source</span><select id="formula-source">
+                <option value="ecg">ECG · ecg · 130 Hz</option>
+                <option value="accelerometer">Accelerometer · x, y, z · 200 Hz</option>
+                <option value="heartRate">Heart rate · hr · event rate</option>
+                <option value="rrInterval">RR interval · rr · beat rate</option>
+              </select></label>
+              <label><span>Unit</span><input id="formula-unit" maxlength="24" spellcheck="false" /></label>
+              <label class="formula-expression-field"><span>Expression</span><textarea id="formula-expression" maxlength="2048" rows="3" spellcheck="false"></textarea></label>
+            </div>
+            <section class="formula-keyboard">
+              <header><strong>Insert keyboard</strong><span>Hover or focus a key to learn what it does</span></header>
+              <div class="formula-keyboard-groups" id="formula-keyboard"></div>
+            </section>
+            <section class="formula-preview-card">
+              <header><strong>Recorded before / after</strong><span id="formula-preview-current">—</span></header>
+              <canvas id="formula-preview-canvas" role="img" aria-label="Recorded formula input and output preview"></canvas>
+              <footer><span class="formula-preview-legend"><span><i class="input"></i>Input</span><span><i class="output"></i>Formula output</span></span><span id="formula-preview-note">Enter a formula or load a template</span></footer>
+            </section>
+          </main>
+        </div>
+        <footer>
+          <button class="text-button danger" id="delete-custom-formula" type="button" hidden>Delete output</button>
+          <span id="formula-validation-status">Draft formula</span>
+          <button class="primary-button compact" id="save-custom-formula" type="button">Save custom output</button>
         </footer>
       </form>
     </dialog>

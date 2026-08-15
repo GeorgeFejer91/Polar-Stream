@@ -173,7 +173,7 @@ impl BreathingSnapshot {
     }
 }
 
-pub(crate) struct BreathingProcessor {
+pub struct BreathingProcessor {
     settings: BreathingSettings,
     filtered: [f32; 3],
     has_filtered: bool,
@@ -202,7 +202,7 @@ impl Default for BreathingProcessor {
 }
 
 impl BreathingProcessor {
-    pub(crate) fn new(settings: BreathingSettings) -> Self {
+    pub fn new(settings: BreathingSettings) -> Self {
         Self {
             settings: settings.clamped(),
             filtered: [0.0; 3],
@@ -226,7 +226,7 @@ impl BreathingProcessor {
         }
     }
 
-    pub(crate) fn apply_settings(&mut self, settings: BreathingSettings) {
+    pub fn apply_settings(&mut self, settings: BreathingSettings) {
         let settings = settings.clamped();
         if self.settings != settings {
             *self = Self::new(settings);
@@ -246,7 +246,7 @@ impl BreathingProcessor {
         0.0005 + (1.0 - self.settings.sensitivity).powi(2) * 0.015_625
     }
 
-    pub(crate) fn push(&mut self, samples: &[AccSample]) -> Option<BreathingSnapshot> {
+    pub fn push(&mut self, samples: &[AccSample]) -> Option<BreathingSnapshot> {
         if samples.is_empty() {
             return None;
         }

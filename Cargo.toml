@@ -3,6 +3,7 @@ members = [
     "apps/polar-stream",
     "crates/polar-h10-core",
     "crates/polar-h10-input",
+    "crates/polar-h10-math",
     "crates/polar-h10-metrics",
     "crates/polar-h10-output",
 ]

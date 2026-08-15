@@ -1,5 +1,50 @@
 # Decision log
 
+## 2026-08-15 — Completed edits synchronize source, desktop install, and live Pages
+
+The user-visible application has three delivery surfaces: canonical source,
+the resolved per-user desktop installation, and the public Pages app at
+`https://georgefejer91.github.io/Polar-Stream/`. A completed edit must leave all
+three on the same accepted UI state. The delivery workflow therefore includes
+production build, rollback-preserving local install and smoke test, reviewed
+publication to `main`, Pages deployment, and live manifest/hash verification.
+Every edit handoff includes the public URL. A branch-only, staged-only, or
+locally installed change is incomplete; unrelated dirty work is never swept
+into a deployment to meet this rule.
+
+## 2026-08-15 — Previews come from one real recording; formulas are bounded native outputs
+
+`apps/polar-stream/ui/data/preview-recording.json` is the sole hardware-free
+preview signal: an anonymized 60-second real H10 ECG/ACC recording. Browser
+replay and every metric preview derive from it, and the generated preview asset
+records its hash. NeuroKit may be used for offline cleaning/method provenance,
+but no simulated signal is a shipped fallback.
+
+The metric catalog remains the Rust source of truth for labels, scientific
+context, citations, formulas, and executable templates; Pages consumes a
+generated catalog asset. Formula Lab retains sensor/event time automatically
+and evaluates a scalar y-value from exactly one source clock (`ecg`, `x/y/z`,
+`hr`, or `rr`). Expressions have no assignment, loops, strings, or user-defined
+functions and are bounded by formula count, expression/AST depth, operations,
+and retained state. Specialized spectral or multi-stage metrics receive honest
+mathematical definitions without a fake one-line executable template.
+
+## 2026-08-14 — Frontend controls do not disappear with backend capability
+
+Tauri and GitHub Pages use one canonical frontend, including the same control
+placement, responsive formatting, and interaction flows. Runtime adapters may
+produce different results only where platform capability genuinely differs.
+The missing capability must not be handled by removing or disabling the shared
+control: an attempted unsupported action fails closed and presents a specific
+error plus a useful next step.
+
+Accordingly, Pages continues to display interactive LSL and OSC toggles. A
+browser attempt leaves the toggle off and shows that native publication requires
+the installed app, with a link to the latest GitHub release. Pages still does
+not publish, relay, or rename another transport as LSL/OSC. This supersedes only
+the control-hiding portion of the 2026-08-13 self-contained-browser decision;
+the no-companion and native-protocol boundaries remain in force.
+
 ## 2026-08-14 - Browser Bluetooth compatibility is capability-based
 
 The Pages adapter does not admit or reject browsers by brand. It checks the
@@ -156,17 +201,17 @@ interval was applied.
 GitHub Pages is a presentation demo of the Tauri application, not a separately
 designed website. Pages artifacts are staged from `apps/polar-stream/ui/`, and
 the same HTML, CSS, application logic, metric library, and visualizations ship
-in both targets. A runtime adapter selects native IPC or a deterministic local
-NeuroKit mock input. That mock input is also selectable in the offline Tauri
-app, allowing interface exploration without a Polar strap while remaining
-isolated from real native acquisition and publication. CI must exercise the
+in both targets. At the time, a runtime adapter selected native IPC or a local
+NeuroKit mock. The 2026-08-15 recorded-preview decision supersedes that mock
+signal with the canonical real fixture while preserving isolation from native
+acquisition/publication. CI must exercise the
 staged Pages artifact at desktop and smartphone widths so visual feedback on
 the hosted version remains applicable to the desktop interface.
 
-The browser labels NeuroKit input synthetic and the direct-H10 adapter
-experimental. Web Bluetooth is available only in compatible secure Chromium
-contexts and requires an explicit chooser. It is not the portable fallback and
-does not claim native timing, LSL/OSC transport, or scientific validation.
+The direct-H10 adapter remains experimental. Web Bluetooth is available only in
+compatible secure Chromium contexts and requires an explicit chooser. Recorded
+preview replay is the hardware-free path and claims neither native timing,
+LSL/OSC transport, nor scientific validation.
 
 ## 2026-08-13 — Browser H10 input is experimental and local to the tab
 
@@ -174,7 +219,7 @@ GitHub Pages may acquire H10 ECG/ACC and standard HR/RR directly through Web
 Bluetooth. The adapter mirrors Polar PMD commands/decoding and only the two
 retained ACC breathing processors so the canonical interface can receive live
 data without a local app. It is feature-detected, visibly permission-gated, and
-must retain NeuroKit fallback. Physical-H10 verification is required before a
+must retain the hardware-free recorded preview. Physical-H10 verification is required before a
 release claim.
 
 Ordinary browser tabs cannot provide the native socket behavior used by LSL

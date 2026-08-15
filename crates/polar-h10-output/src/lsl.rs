@@ -7,7 +7,7 @@ use std::{
 use libloading::Library;
 use polar_h10_core::AccSample;
 
-use crate::{MetricSpec, output_stream_name};
+use crate::{CustomFormulaConfig, MetricSpec, custom_output_stream_name, output_stream_name};
 
 type StreamInfo = *mut c_void;
 type Outlet = *mut c_void;
@@ -222,6 +222,49 @@ impl LslPublisher {
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
     }
 
+    pub(crate) fn add_custom_outlet(&mut self, base_name: &str, formula: &CustomFormulaConfig) {
+        let Some(api) = &self.api else { return };
+        let output_name = custom_output_stream_name(base_name, formula);
+        let Ok(name) = CString::new(output_name.as_str()) else {
+            return;
+        };
+        let Ok(stream_type) = CString::new(formula.source.stream_type()) else {
+            return;
+        };
+        let Ok(source) = CString::new(format!("polar-h10-formula-{}", formula.id)) else {
+            return;
+        };
+        let info = unsafe {
+            (api.create_streaminfo)(
+                name.as_ptr(),
+                stream_type.as_ptr(),
+                1,
+                formula.source.rate_hz(),
+                1,
+                source.as_ptr(),
+            )
+        };
+        if info.is_null() {
+            self.status = format!("Could not create {} stream", formula.name);
+            return;
+        }
+        append_custom_metadata(api, info, formula);
+        let outlet = unsafe { (api.create_outlet)(info, 0, 360) };
+        unsafe { (api.destroy_streaminfo)(info) };
+        if outlet.is_null() {
+            self.status = format!("Could not open {} outlet", formula.name);
+            return;
+        }
+        self.outlets.insert(
+            formula.id.clone(),
+            LslOutlet {
+                handle: outlet,
+                rate_hz: formula.source.rate_hz(),
+            },
+        );
+        self.status = format!("Publishing {} stream(s)", self.outlets.len());
+    }
+
     pub(crate) fn push_scalar(&mut self, id: &str, value: f32) {
         self.push_values(id, &[value], None);
     }
@@ -353,6 +396,63 @@ fn append_stream_metadata(api: &LslApi, info: StreamInfo, spec: MetricSpec) {
         append_value(append_child_value, channel, "unit", spec.unit);
         append_value(append_child_value, channel, "type", spec.stream_type);
     }
+}
+
+fn append_custom_metadata(api: &LslApi, info: StreamInfo, formula: &CustomFormulaConfig) {
+    let (Some(get_description), Some(append_child), Some(append_child_value)) = (
+        api.get_description,
+        api.append_child,
+        api.append_child_value,
+    ) else {
+        return;
+    };
+    let description = unsafe { get_description(info) };
+    if description.is_null() {
+        return;
+    }
+    append_value(append_child_value, description, "manufacturer", "Polar");
+    append_value(append_child_value, description, "model", "H10");
+    append_value(
+        append_child_value,
+        description,
+        "application",
+        "Polar Stream",
+    );
+
+    let Ok(channels_name) = CString::new("channels") else {
+        return;
+    };
+    let channels = unsafe { append_child(description, channels_name.as_ptr()) };
+    let Ok(channel_name) = CString::new("channel") else {
+        return;
+    };
+    let channel = unsafe { append_child(channels, channel_name.as_ptr()) };
+    append_value(append_child_value, channel, "label", &formula.name);
+    append_value(append_child_value, channel, "unit", &formula.unit);
+    append_value(
+        append_child_value,
+        channel,
+        "type",
+        formula.source.stream_type(),
+    );
+
+    let Ok(processing_name) = CString::new("processing") else {
+        return;
+    };
+    let processing = unsafe { append_child(description, processing_name.as_ptr()) };
+    append_value(
+        append_child_value,
+        processing,
+        "formula",
+        &formula.expression,
+    );
+    append_value(
+        append_child_value,
+        processing,
+        "source",
+        &format!("{:?}", formula.source),
+    );
+    append_value(append_child_value, processing, "formula_id", &formula.id);
 }
 
 fn append_value(append_child_value: AppendChildValue, parent: XmlElement, name: &str, value: &str) {

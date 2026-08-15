@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 libloading.workspace = true
 polar-h10-core = { path = "../polar-h10-core" }
+polar-h10-math = { path = "../polar-h10-math" }
 polar-h10-metrics = { path = "../polar-h10-metrics" }
 serde.workspace = true
 tokio.workspace = true

@@ -36,7 +36,7 @@ enum CsvMessage {
     },
     Metrics {
         clock: CaptureClock,
-        values: Vec<(String, f32)>,
+        values: Vec<(String, f32, String)>,
     },
 }
 
@@ -143,8 +143,29 @@ impl CsvPublisher {
             clock: self.clock(),
             values: values
                 .iter()
-                .map(|(id, value)| ((*id).to_owned(), *value))
+                .map(|(id, value)| {
+                    (
+                        (*id).to_owned(),
+                        *value,
+                        MetricDefinition::for_id(id)
+                            .map_or("", |metric| metric.unit)
+                            .to_owned(),
+                    )
+                })
                 .collect(),
+        })
+    }
+
+    pub(crate) fn publish_custom_metrics(
+        &self,
+        values: &[(String, f32, String)],
+    ) -> Result<(), String> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        self.send(CsvMessage::Metrics {
+            clock: self.clock(),
+            values: values.to_vec(),
         })
     }
 
@@ -317,9 +338,8 @@ fn write_message(writer: &mut impl Write, message: CsvMessage) -> std::io::Resul
             }
         }
         CsvMessage::Metrics { clock, values } => {
-            for (index, (id, value)) in values.into_iter().enumerate() {
-                let unit = MetricDefinition::for_id(&id).map_or("", |metric| metric.unit);
-                write_scalar(writer, clock, &id, index, value, unit)?;
+            for (index, (id, value, unit)) in values.into_iter().enumerate() {
+                write_scalar(writer, clock, &id, index, value, &unit)?;
             }
         }
     }

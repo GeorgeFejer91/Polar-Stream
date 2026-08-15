@@ -6,8 +6,12 @@
   const browserSession = window.PolarBrowserSession;
   const audioDataLink = window.PolarAudioDataLink;
   const preferences = window.PolarPreferences;
-  let metricPreviews = null;
+  const previewFixtureApi = window.PolarPreviewFixture;
+  const formulaPreview = window.PolarFormulaPreview;
+  let metricPreviews = window.PolarMetricPreviews || null;
   let metricPreviewsPromise = null;
+  let previewRecording = null;
+  let previewRecordingPromise = null;
   const isInterfaceRenderer = new URLSearchParams(window.location.search).has("renderer");
   const svgNamespace = "http://www.w3.org/2000/svg";
   let metricPreviewSequence = 0;
@@ -30,7 +34,7 @@
     keywords: `${label} ${category}`.toLowerCase(),
     explainer: `${label} is exposed as a descriptive research signal using the formula named in this card. Its physiological meaning depends on signal quality, recording context and the cited method; it is not a diagnosis or a standalone emotional-state measure.`,
   });
-  const fallbackCatalog = [
+  const legacyFallbackCatalog = [
     fallbackMetric("raw_ecg", "rawECG", "Raw ECG", "µV", "Raw signals", "quality", "Unfiltered H10 voltage · 130 Hz", true, false, 130),
     fallbackMetric("raw_acc", "rawACC", "Raw accelerometer", "mg", "Raw signals", "breathing", "X, Y and Z · 200 Hz", true, false, 200),
     fallbackMetric("acc_magnitude", "accMagnitude", "3D acceleration magnitude", "g", "Raw signals", "breathing", "√(x²+y²+z²) · device motion", false, true, 200),
@@ -57,6 +61,7 @@
     fallbackMetric("excitement_score", "excitementScore", "Excite-O-Meter excitement score", "0–1", "Excitation (experimental)", "exciteometer", "1 − mean[Φ(zRR), Φ(zRMSSD)] · live provisional", false, false),
     fallbackMetric("excitometer", "excitometer", "Activation composite (experimental)", "0–1", "Excitation (experimental)", "stress", "Within-session HR ↑ plus lnRMSSD ↓"),
   ];
+  const fallbackCatalog = window.PolarMetricCatalog || legacyFallbackCatalog;
 
   const visualDefinitions = {
     raw_ecg: { label: "Raw ECG", unit: "µV", rate: 130, color: "#d85151", symmetric: true },
@@ -75,8 +80,19 @@
     rmssd: { label: "RMSSD", unit: "ms", rate: 1, color: "#168259" },
   };
 
-  const accLibraryIds = new Set(["raw_acc", "acc_magnitude", "acc_breathing_magnitude", "breathing_phase"]);
+  const accLibraryIds = new Set(fallbackCatalog
+    .filter((metric) => metric.id === "raw_acc"
+      || metric.id === "acc_magnitude"
+      || metric.category === "Breathing"
+      || metric.category === "Breathing dynamics")
+    .map((metric) => metric.id));
   const breathingOutputIds = new Set(["acc_breathing_magnitude", "breathing_phase"]);
+  const formulaSources = Object.freeze({
+    ecg: { label: "ECG · 130 Hz", variables: "ecg", color: "#d85151" },
+    accelerometer: { label: "Accelerometer · 200 Hz", variables: "x, y, z", color: "#3b78aa" },
+    heartRate: { label: "Heart rate · event rate", variables: "hr", color: "#a65757" },
+    rrInterval: { label: "RR interval · beat rate", variables: "rr", color: "#6c62a8" },
+  });
 
   function defaultBreathingSettings() {
     return {
@@ -142,16 +158,21 @@
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value",
     "scan-button", "scan-caption", "device-list", "activity-list", "output-state", "raw-ecg-value",
     "raw-acc-x", "raw-acc-y", "raw-acc-z", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
-    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "browser-local-destination", "browser-recorder-actions", "included-count", "output-chips", "open-output-dialog", "visual-source",
+    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "included-count", "output-chips", "open-output-dialog", "visual-source",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
     "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
-    "metric-options", "metric-detail", "dialog-output-status", "save-metric-output", "toast-region",
+    "metric-options", "metric-detail", "metric-back-button", "dialog-output-status", "save-metric-output", "toast-region",
     "stream-name-preview", "metric-search", "metric-filters", "metric-library-summary",
     "metric-family-toggle", "metric-family-context", "metric-family-note",
     "adjust-visual", "visual-window-label", "visual-scale-label", "module-dialog", "module-dialog-title",
     "module-dialog-intro", "module-settings", "module-dialog-status", "save-module-settings",
     "pipeline-title", "pipeline-detail", "browser-export-button",
     "browser-discard-button", "browser-recorder-count", "browser-recorder-status",
+    "open-formula-lab", "formula-dialog", "formula-dialog-title", "new-custom-formula",
+    "formula-saved-list", "formula-template-buttons", "formula-name", "formula-source",
+    "formula-unit", "formula-expression", "formula-keyboard", "formula-preview-current",
+    "formula-preview-canvas", "formula-preview-note", "formula-validation-status",
+    "delete-custom-formula", "save-custom-formula",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
   const signalContext = elements["signal-canvas"].getContext("2d", {
@@ -167,6 +188,11 @@
     catalog: fallbackCatalog,
     outputs: new Set(["raw_ecg", "raw_acc"]),
     metricOptions: {},
+    customFormulas: [],
+    formulaDraft: null,
+    editingFormulaId: null,
+    formulaPreviewTimer: null,
+    formulaNoticesShown: new Set(),
     visualNormalizers: {},
     selectedMetricId: null,
     editingModuleId: null,
@@ -219,6 +245,34 @@
     const suffix = metric.streamSuffix
       || fallbackCatalog.find((candidate) => candidate.id === metric.id)?.streamSuffix
       || metric.id;
+    return base ? `${base}_${suffix}` : `—_${suffix}`;
+  }
+
+  function newFormulaId() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    globalThis.crypto?.getRandomValues?.(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  function normalizeFormulaDraft(value = {}) {
+    const source = formulaSources[value.source] ? value.source : "ecg";
+    return {
+      id: value.id || newFormulaId(),
+      name: String(value.name || "Processed_ECG"),
+      source,
+      expression: String(value.expression || formulaPreview.sourceMap[source].variables[0]),
+      unit: String(value.unit || (source === "ecg" ? "µV" : source === "accelerometer" ? "mg" : source === "heartRate" ? "bpm" : "ms")),
+      enabled: value.enabled !== false,
+    };
+  }
+
+  function customStreamName(formula, value = app.streamName) {
+    const base = normalizeStreamBase(value);
+    const suffix = String(formula?.name || "custom").trim().replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^[_-]+|[_-]+$/g, "") || "custom";
     return base ? `${base}_${suffix}` : `—_${suffix}`;
   }
 
@@ -277,11 +331,30 @@
     return metricPreviewsPromise;
   }
 
+  function ensurePreviewRecording() {
+    if (previewRecording) return Promise.resolve(previewRecording);
+    if (previewRecordingPromise) return previewRecordingPromise;
+    previewRecordingPromise = fetch("data/preview-recording.json", { cache: "no-cache" })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      })
+      .then((value) => {
+        previewRecording = previewFixtureApi.validateFixture(value);
+        return previewRecording;
+      })
+      .catch((error) => {
+        previewRecordingPromise = null;
+        throw error;
+      });
+    return previewRecordingPromise;
+  }
+
   function renderRuntimeContext({ simulated = false, transport = null } = {}) {
     if (simulated) {
-      elements["runtime-path-label"].textContent = "NeuroKit simulated data";
-      elements["pipeline-title"].textContent = "Simulation stays local";
-      elements["pipeline-detail"].textContent = "A checked-in NeuroKit fixture drives this shared interface; no BLE, LSL, or OSC connection is opened.";
+      elements["runtime-path-label"].textContent = "Recorded H10 preview data";
+      elements["pipeline-title"].textContent = "Recorded preview stays local";
+      elements["pipeline-detail"].textContent = "The canonical anonymized ECG and ACC recording drives this interface; no BLE, LSL, or OSC connection is opened.";
       return;
     }
     if (isInterfaceRenderer) {
@@ -296,8 +369,8 @@
     }
     if (runtime.isBrowser) {
       elements["runtime-path-label"].textContent = "Browser-local inputs";
-      elements["pipeline-title"].textContent = "Choose live or simulated input";
-      elements["pipeline-detail"].textContent = "Connect an H10 with Chromium Web Bluetooth, or run the offline NeuroKit fixture. All processing stays in this tab.";
+      elements["pipeline-title"].textContent = "Choose live or recorded input";
+      elements["pipeline-detail"].textContent = "Connect an H10 with Chromium Web Bluetooth, or replay the anonymized 60-second H10 recording. All processing stays in this tab.";
       return;
     }
     elements["runtime-path-label"].textContent = "Native data path";
@@ -307,7 +380,7 @@
 
   async function initialize() {
     let bootstrap = {
-      config: { streamName: "Polar-H10", lslEnabled: false, oscEnabled: false, csvEnabled: false, audioEnabled: false, outputs: ["raw_ecg", "raw_acc"], metricOptions: {} },
+      config: { streamName: "Polar-H10", lslEnabled: false, oscEnabled: false, csvEnabled: false, audioEnabled: false, outputs: ["raw_ecg", "raw_acc"], metricOptions: {}, customFormulas: [] },
       platform: "browser preview",
       metricCatalog: fallbackCatalog,
     };
@@ -347,8 +420,10 @@
       : app.preferences.outputConfig || bootstrap.config || {};
     app.outputs = new Set(initialConfig.outputs || ["raw_ecg", "raw_acc"]);
     app.metricOptions = structuredClone(initialConfig.metricOptions || {});
+    app.customFormulas = (initialConfig.customFormulas || []).map(normalizeFormulaDraft);
     app.breathingSettings = configuredBreathingSettings(app.metricOptions);
     installCatalogVisuals();
+    installCustomFormulaVisuals();
     app.streamName = normalizeStreamBase(app.preferences.streamName)
       || normalizeStreamBase(initialConfig.streamName)
       || "Polar-H10";
@@ -359,13 +434,10 @@
     // Web Audio must be resumed from an explicit user gesture. Never restore
     // an emitting audio modem silently after launch or reload.
     elements["audio-toggle"].checked = false;
+    elements["desktop-app-download"].href = "https://github.com/GeorgeFejer91/Polar-Stream/releases/latest";
     if (runtime.isBrowser) {
       elements["lsl-toggle"].checked = false;
       elements["osc-toggle"].checked = false;
-      elements["lsl-toggle"].disabled = true;
-      elements["osc-toggle"].disabled = true;
-      elements["lsl-destination-row"].hidden = true;
-      elements["osc-destination-row"].hidden = true;
       elements["browser-local-destination"].hidden = false;
       elements["browser-recorder-actions"].hidden = false;
       elements["stream-name-label"].textContent = "Signal base name";
@@ -374,7 +446,7 @@
     elements["platform-label"].textContent = isInterfaceRenderer ? "RENDERER" : String(bootstrap.platform || "local").toUpperCase();
     renderRuntimeContext();
     if (runtime.isDemo) {
-      elements["scan-caption"].textContent = "Web Bluetooth or offline mock";
+      elements["scan-caption"].textContent = "Web Bluetooth or recorded preview";
       elements["scan-button"].querySelector("span").textContent = "Choose Polar H10";
     } else if (isInterfaceRenderer) {
       elements["scan-caption"].textContent = "Deterministic background render";
@@ -384,7 +456,7 @@
     renderDevices(app.devices);
     if (app.devices.length) {
       elements["input-state"].textContent = runtime.isBrowser ? "Browser ready" : "Mock ready";
-      elements["connection-detail"].textContent = "Choose browser Bluetooth for a live H10, or start the offline NeuroKit input.";
+      elements["connection-detail"].textContent = "Choose browser Bluetooth for a live H10, or replay the anonymized recording.";
     }
 
     renderMetricFilters();
@@ -414,8 +486,8 @@
       void scanDevices();
     });
     elements["disconnect-button"].addEventListener("click", disconnectDevice);
-    elements["lsl-toggle"].addEventListener("change", configureOutputs);
-    elements["osc-toggle"].addEventListener("change", configureOutputs);
+    elements["lsl-toggle"].addEventListener("change", () => handleNativeDestinationToggle("LSL"));
+    elements["osc-toggle"].addEventListener("change", () => handleNativeDestinationToggle("OSC"));
     elements["csv-toggle"].addEventListener("change", async () => {
       if (runtime.isBrowser && browserSession) {
         try {
@@ -499,19 +571,42 @@
     elements["open-output-dialog"].addEventListener("click", async () => {
       app.selectedMetricId = null;
       app.libraryMetricDraft = null;
+      setMetricLibraryView("browse");
       updateMetricFamilyUi();
       renderMetricDetail();
       elements["output-dialog"].showModal();
       const loading = document.createElement("p");
       loading.className = "metric-library-empty";
-      loading.textContent = "Loading synthetic previews…";
+      loading.textContent = "Loading recorded H10 previews…";
       elements["metric-options"].replaceChildren(loading);
       try {
-        await ensureMetricPreviews();
+        await Promise.all([ensureMetricPreviews(), ensurePreviewRecording()]);
       } catch (error) {
         toast(String(error), true);
       }
       if (elements["output-dialog"].open) renderMetricOptions();
+    });
+    elements["open-formula-lab"].addEventListener("click", () => {
+      elements["output-dialog"].close();
+      void openFormulaLab();
+    });
+    elements["new-custom-formula"].addEventListener("click", () => editFormulaDraft());
+    for (const id of ["formula-name", "formula-unit", "formula-expression"]) {
+      elements[id].addEventListener("input", scheduleFormulaPreview);
+    }
+    elements["formula-source"].addEventListener("change", () => {
+      if (!app.formulaDraft) return;
+      app.formulaDraft.source = elements["formula-source"].value;
+      renderFormulaKeyboard();
+      scheduleFormulaPreview();
+    });
+    elements["save-custom-formula"].addEventListener("click", () => void saveCustomFormula());
+    elements["delete-custom-formula"].addEventListener("click", deleteCustomFormula);
+    elements["metric-back-button"].addEventListener("click", () => {
+      setMetricLibraryView("browse");
+      window.requestAnimationFrame(() => {
+        elements["metric-options"].querySelector(".metric-option.selected")?.focus({ preventScroll: true });
+      });
     });
     elements["save-metric-output"].addEventListener("click", () => {
       const metric = app.catalog.find((candidate) => candidate.id === app.selectedMetricId);
@@ -521,12 +616,12 @@
         toast(support.reason, true);
         return;
       }
+      const draft = structuredClone(app.libraryMetricDraft || metricOptionFor(metric.id, { forSelection: true }));
       if (breathingOutputIds.has(metric.id)) {
-        const draft = structuredClone(app.libraryMetricDraft || metricOptionFor(metric.id, { forSelection: true }));
         if (breathingDraftIsInvalid(draft.processing.breathing)) return;
         app.breathingSettings = structuredClone(draft.processing.breathing);
-        app.metricOptions[metric.id] = draft;
       }
+      app.metricOptions[metric.id] = draft;
       app.outputs.add(metric.id);
       renderOutputs();
       configureOutputs();
@@ -568,6 +663,7 @@
     elements["output-dialog"].addEventListener("close", () => {
       app.selectedMetricId = null;
       app.libraryMetricDraft = null;
+      setMetricLibraryView("browse");
       elements["metric-options"].replaceChildren();
       renderMetricDetail();
       elements["metric-library-summary"].textContent = `${libraryCatalog().length} metrics`;
@@ -635,7 +731,7 @@
           ? "Input connected · choose another to switch"
           : polarCount
             ? "Choose a Polar H10 or mock input"
-            : "Offline NeuroKit mock is available",
+            : "Recorded Polar H10 preview is available",
         app.connected ? "connected" : "idle",
       );
       addActivity(polarCount
@@ -741,7 +837,7 @@
     renderDevices(app.devices);
     setTopStatus(
       isMock
-        ? "Starting offline NeuroKit input"
+        ? "Starting recorded Polar H10 preview"
         : isWebBluetooth
           ? "Waiting for browser Bluetooth selection"
           : automatic ? "Reconnecting to last used Polar H10" : "Connecting to Polar H10",
@@ -750,7 +846,7 @@
     elements["input-state"].textContent = "Connecting";
     elements["device-name"].textContent = device.name;
     elements["connection-detail"].textContent = isMock
-      ? "Loading the checked-in synthetic fixture…"
+      ? "Loading the checked-in anonymized recording…"
       : isWebBluetooth
         ? "Choose the Polar H10 in the browser permission prompt…"
       : "Opening the low-energy connection…";
@@ -804,6 +900,7 @@
 
   function handleNativeEvent(event, device = null) {
     audioDataLink?.capture(event);
+    ingestFormulaBatch(event.formulas);
     switch (event.kind) {
       case "status":
         setTopStatus(event.message, "working");
@@ -835,6 +932,28 @@
       default:
         break;
     }
+  }
+
+  function ingestFormulaBatch(batch) {
+    if (!batch) return;
+    for (const series of batch.series || []) {
+      const formula = app.customFormulas.find((candidate) => candidate.id === series.formulaId);
+      if (!formula) continue;
+      ensureBuffer(`formula:${formula.id}`).pushMany(series.values || []);
+    }
+    for (const fault of batch.faults || []) {
+      const key = `${fault.formulaId}:${fault.code}`;
+      if (app.formulaNoticesShown.has(key)) continue;
+      app.formulaNoticesShown.add(key);
+      toast(`Formula stopped: ${fault.message}`, true);
+    }
+    for (const warning of batch.warnings || []) {
+      const key = `warning:${warning}`;
+      if (app.formulaNoticesShown.has(key)) continue;
+      app.formulaNoticesShown.add(key);
+      toast(warning, true);
+    }
+    if ((batch.series || []).length) markTelemetryDirty();
   }
 
   function updateConnection(event, device = null) {
@@ -870,17 +989,17 @@
     elements["connection-detail"].textContent = app.connected ? event.message : "Scan for a nearby chest strap.";
     elements["battery-value"].textContent = event.batteryPercent == null ? "—" : `${event.batteryPercent}%`;
     elements["input-state"].textContent = app.connected
-      ? simulated ? "Demo live" : webBluetooth ? "Browser BLE live" : "Streaming"
+      ? simulated ? "Recorded preview live" : webBluetooth ? "Browser BLE live" : "Streaming"
       : runtime.isBrowser ? "Browser ready" : "Idle";
     setTopStatus(
       app.connected
         ? simulated
-          ? "Synthetic input · demo streams live"
+          ? "Recorded H10 preview · streams live"
           : webBluetooth ? "H10 connected directly to this browser tab" : "Sensor connected · streams live"
         : runtime.isBrowser ? "Browser inputs ready" : "Ready to connect",
       app.connected ? "connected" : "idle",
     );
-    addActivity(app.connected ? `${event.deviceName} ${simulated ? "started" : "connected"}` : simulated ? "Synthetic input stopped" : "Sensor disconnected");
+    addActivity(app.connected ? `${event.deviceName} ${simulated ? "started" : "connected"}` : simulated ? "Recorded preview stopped" : "Sensor disconnected");
     if (!app.connected) elements["render-rate"].textContent = "Idle";
     if (elements["output-dialog"].open) {
       updateMetricFamilyUi();
@@ -1025,7 +1144,7 @@
   }
 
   function createMetricPreview(metric, { compact = false, animated = false } = {}) {
-    const data = metricPreviews?.metrics?.[metric.id];
+    const data = metricPreviewData(metric, compact);
     const figure = document.createElement("figure");
     figure.className = `metric-preview${compact ? " metric-preview-compact" : " metric-preview-large"}`;
     figure.dataset.metricId = metric.id;
@@ -1046,10 +1165,10 @@
       preserveAspectRatio: "none",
       role: compact ? "presentation" : "img",
       "aria-hidden": compact ? "true" : "false",
-      "aria-label": compact ? "" : `Synthetic NeuroKit preview of ${metric.label}`,
+      "aria-label": compact ? "" : `Recorded Polar H10 outcome preview of ${metric.label}`,
     });
     const title = svgElement("title");
-    title.textContent = `${metric.label}: looped synthetic signal preview`;
+    title.textContent = `${metric.label}: recorded Polar H10 outcome preview`;
     svg.append(title, svgElement("rect", { class: "metric-preview-background", width, height, rx: compact ? 5 : 8 }));
     for (const fraction of [0.25, 0.5, 0.75]) {
       svg.append(svgElement("line", {
@@ -1072,7 +1191,7 @@
       for (const offset of animated ? [0, width] : [0]) {
         group.append(svgElement("path", {
           class: "metric-preview-line",
-          d: channel.path,
+          d: channel.path || previewPath(channel.values, data.minimum, data.maximum, width, height, metric.id === "breathing_phase"),
           stroke: channel.color,
           "stroke-width": compact ? 1.3 : 2,
           transform: offset ? `translate(${offset} 0)` : "",
@@ -1099,10 +1218,120 @@
       const legend = data.channels.map((channel) => channel.label).join(" · ");
       caption.textContent = metric.id === "breathing_phase"
         ? `${legend} · −1 exhale · 0 pause/not ready · +1 inhale`
-        : `${legend} · ${data.durationSeconds}s loop · ${formatPreviewRange(data.minimum, data.maximum, metric.unit)}`;
+        : `${legend} · ${data.durationSeconds}s recorded view · ${formatPreviewRange(data.minimum, data.maximum, previewUnit(metric))}`;
       figure.append(caption);
     }
     return figure;
+  }
+
+  function metricPreviewData(metric, compact) {
+    const stored = metricPreviews?.metrics?.[metric.id];
+    if (!stored?.channels?.length) return stored;
+    const settings = compact || app.selectedMetricId !== metric.id
+      ? { normalization: "none", windowSeconds: 60, displayWindowSeconds: stored.durationSeconds }
+      : app.libraryMetricDraft || metricOptionFor(metric.id, { forSelection: true });
+
+    if (!compact && previewRecording && metric.formulaTemplate) {
+      try {
+        const result = formulaPreview.preview(previewRecording, {
+          id: `preview-${metric.id}`,
+          name: metric.streamSuffix,
+          unit: metric.unit,
+          source: metric.formulaSource,
+          expression: previewFormulaExpression(metric, settings),
+          enabled: true,
+        }, {
+          displaySeconds: settings.displayWindowSeconds,
+          normalization: settings.normalization,
+          windowSeconds: settings.windowSeconds,
+        });
+        const values = result.output.map((sample) => sample.value);
+        if (values.length) return previewPayload([{ label: "Formula output", color: stored.channels[0].color, values }], result.output.at(-1).time - result.output[0].time);
+      } catch {
+        // The checked-in recorded derivation remains available while a draft
+        // setting or formula is temporarily incomplete.
+      }
+    }
+
+    const channels = stored.channels.map((channel) => ({
+      label: channel.label,
+      color: channel.color,
+      values: transformPreviewValues(channel.values || [], stored.durationSeconds, settings),
+    }));
+    const duration = Math.min(Number(stored.durationSeconds) || 0, Number(settings.displayWindowSeconds) || Number(stored.durationSeconds) || 0);
+    return previewPayload(channels, duration);
+  }
+
+  function previewFormulaExpression(metric, settings) {
+    if (metric.id !== "acc_breathing_magnitude" && metric.id !== "breathing_phase") return metric.formulaTemplate;
+    const breathing = settings.processing?.breathing || defaultBreathingSettings();
+    const [axisX, axisY, axisZ] = breathing.axes.map((enabled) => String(Boolean(enabled)));
+    const smoothing = Number(breathing.smoothingWindowSeconds) || 0.75;
+    const invert = String(Boolean(breathing.invertDirection));
+    if (metric.id === "breathing_phase") {
+      return `breathing_phase(x, y, z, ${axisX}, ${axisY}, ${axisZ}, ${smoothing}, ${Number(breathing.sensitivity) || 0.60}, ${invert})`;
+    }
+    const normalize = String(settings.normalization !== "none");
+    return `breathing_magnitude(x, y, z, ${axisX}, ${axisY}, ${axisZ}, ${smoothing}, ${normalize}, ${invert})`;
+  }
+
+  function transformPreviewValues(values, durationSeconds, settings) {
+    if (!values.length) return [];
+    const visible = Math.max(1, Number(settings.displayWindowSeconds) || durationSeconds);
+    const count = Math.max(2, Math.min(values.length, Math.ceil(values.length * visible / Math.max(visible, durationSeconds))));
+    const source = values.map(Number);
+    if (settings.normalization === "none") return source.slice(source.length - count);
+    if (settings.normalization === "session") {
+      const low = Math.min(...values);
+      const high = Math.max(...values);
+      return source.map((value) => previewMinMax(value, low, high)).slice(source.length - count);
+    }
+    const windowCount = Math.max(2, Math.ceil(values.length * (Number(settings.windowSeconds) || 60) / Math.max(1, durationSeconds)));
+    const transformed = source.map((value, index) => {
+      const window = source.slice(Math.max(0, index - windowCount + 1), index + 1);
+      return previewMinMax(value, Math.min(...window), Math.max(...window));
+    });
+    return transformed.slice(transformed.length - count);
+  }
+
+  function previewMinMax(value, low, high) {
+    return Math.abs(high - low) < Number.EPSILON ? 0.5 : Math.max(0, Math.min(1, (value - low) / (high - low)));
+  }
+
+  function previewPayload(channels, durationSeconds) {
+    const all = channels.flatMap((channel) => channel.values).filter(Number.isFinite);
+    if (!all.length) return { channels: [], minimum: 0, maximum: 0, durationSeconds: 0 };
+    let minimum = Math.min(...all);
+    let maximum = Math.max(...all);
+    if (Math.abs(maximum - minimum) < Number.EPSILON) {
+      minimum -= 1;
+      maximum += 1;
+    }
+    return {
+      channels: channels.map((channel) => ({ ...channel, path: previewPath(channel.values, minimum, maximum, 240, 72) })),
+      minimum,
+      maximum,
+      durationSeconds: Math.max(0.1, Number(durationSeconds) || 0).toLocaleString(undefined, { maximumFractionDigits: 1 }),
+    };
+  }
+
+  function previewPath(values, minimum, maximum, width = 240, height = 72, step = false) {
+    const span = Math.max(Number.EPSILON, maximum - minimum);
+    return values.map((value, index) => {
+      const x = index / Math.max(1, values.length - 1) * width;
+      const y = 7 + (1 - (value - minimum) / span) * (height - 14);
+      if (!index) return `M${x.toFixed(1)},${y.toFixed(1)}`;
+      if (step) {
+        const previous = values[index - 1];
+        const previousY = 7 + (1 - (previous - minimum) / span) * (height - 14);
+        return `L${x.toFixed(1)},${previousY.toFixed(1)}L${x.toFixed(1)},${y.toFixed(1)}`;
+      }
+      return `L${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join("");
+  }
+
+  function previewUnit(metric) {
+    return app.selectedMetricId === metric.id && app.libraryMetricDraft?.normalization !== "none" ? "0–1" : metric.unit;
   }
 
   function formatPreviewRange(minimum, maximum, unit) {
@@ -1117,14 +1346,14 @@
     section.className = "metric-preview-panel";
     const header = document.createElement("div");
     const title = document.createElement("h4");
-    title.textContent = "Synthetic signal preview";
+    title.textContent = "Recorded outcome preview";
     const provenance = document.createElement("span");
     provenance.className = "metric-preview-provenance";
-    provenance.textContent = `${metricPreviews?.source?.library || "NeuroKit2"} ${metricPreviews?.source?.version || ""} · ${metricPreviews?.source?.model || "synthetic"}`;
+    provenance.textContent = `${metricPreviews?.source?.library || "Recorded Polar H10"} · ${metricPreviews?.source?.version || "canonical fixture"}`;
     header.append(title, provenance);
     const note = document.createElement("p");
     note.className = "metric-preview-note";
-    note.textContent = "Illustrative loop generated from synthetic ECG and respiration. It shows the output form, not expected personal values or validation accuracy.";
+    note.textContent = "The preview is derived from the anonymized 60-second ECG/ACC recording. It shows how the selected settings transform that recording, not expected personal values or validation accuracy.";
     section.append(header, createMetricPreview(metric, { animated: true }), note);
     return section;
   }
@@ -1147,6 +1376,12 @@
       && metric.category !== "Breathing"
       && metric.category !== "Breathing dynamics"
     ));
+  }
+
+  function setMetricLibraryView(view) {
+    const nextView = view === "detail" ? "detail" : "browse";
+    elements["output-dialog"].dataset.mobileView = nextView;
+    if (nextView === "detail") elements["metric-detail"].scrollTop = 0;
   }
 
   function updateMetricFamilyUi() {
@@ -1229,6 +1464,7 @@
           candidate.setAttribute("aria-pressed", String(selected));
         }
         renderMetricDetail();
+        setMetricLibraryView("detail");
       });
       option.append(mark, copy, preview, state);
       return option;
@@ -1313,6 +1549,29 @@
     });
     source.append(sourceTitle, citation);
 
+    const mathematics = document.createElement("section");
+    mathematics.className = "metric-formula-context";
+    const mathematicsTitle = document.createElement("h4");
+    mathematicsTitle.textContent = "Equivalent mathematical definition";
+    const formula = document.createElement("code");
+    formula.textContent = metric.formula || "See the processor implementation.";
+    mathematics.append(mathematicsTitle, formula);
+    if (metric.formulaTemplate) {
+      const useFormula = document.createElement("button");
+      useFormula.type = "button";
+      useFormula.className = "secondary-button compact";
+      useFormula.textContent = "Open editable formula + preview";
+      useFormula.addEventListener("click", () => {
+        elements["output-dialog"].close();
+        void openFormulaLab(metric);
+      });
+      mathematics.append(useFormula);
+    } else {
+      const note = document.createElement("p");
+      note.textContent = "This definition uses a specialized multi-stage processor. Formula Lab is scalar and bounded, so this metric is documented here but is not presented as a misleading one-line executable template.";
+      mathematics.append(note);
+    }
+
     const stream = document.createElement("section");
     stream.className = "metric-stream-preview";
     const streamTitle = document.createElement("h4");
@@ -1335,8 +1594,9 @@
       ? createBreathingSelectionSettings(metric)
       : null;
     article.append(header);
+    article.append(createPreviewSelectionSettings(metric));
     if (breathingSettings) article.append(breathingSettings);
-    article.append(createMetricPreviewPanel(metric), measurement, consensus, source, stream);
+    article.append(createMetricPreviewPanel(metric), measurement, mathematics, consensus, source, stream);
     elements["metric-detail"].replaceChildren(article);
     const alreadyAdded = app.outputs.has(metric.id);
     const support = runtime.outputSupport(metric.id, app.currentInputKind);
@@ -1354,6 +1614,70 @@
       : invalidAxes
         ? "Choose at least two axes"
         : invalidBounds ? "Keep at least 0.10 between quantile bounds" : `Ready to add ${metric.label}`;
+  }
+
+  function createPreviewSelectionSettings(metric) {
+    const section = document.createElement("section");
+    section.className = "metric-preview-settings";
+    const heading = document.createElement("header");
+    const title = document.createElement("h4");
+    title.textContent = "Try output settings live";
+    const badge = document.createElement("span");
+    badge.textContent = "RECORDED DATA";
+    heading.append(title, badge);
+    const controls = document.createElement("div");
+    controls.className = "inline-setting-grid";
+    const settings = app.libraryMetricDraft || metricOptionFor(metric.id, { forSelection: true });
+    controls.append(numberSetting(
+      "Display window",
+      "Seconds shown in the visualizer; this does not change published samples.",
+      settings.displayWindowSeconds,
+      1,
+      600,
+      1,
+      (value) => {
+        settings.displayWindowSeconds = clampNumber(value, 1, 600, 5);
+        refreshSelectedMetricPreview(metric);
+      },
+    ));
+    if (metric.normalizable) {
+      controls.append(selectSetting(
+        "Published scale",
+        "Normalization changes both published values and the visualizer. Watch the recorded trace update.",
+        settings.normalization,
+        [["none", "Original units"], ["slidingWindow", "0–1 sliding window"], ["session", "0–1 whole run"]],
+        (value) => {
+          settings.normalization = value;
+          renderMetricDetail();
+        },
+      ));
+      if (settings.normalization === "slidingWindow") {
+        controls.append(numberSetting(
+          "Normalization window",
+          "Seconds retained for the running minimum and maximum.",
+          settings.windowSeconds,
+          5,
+          3600,
+          5,
+          (value) => {
+            settings.windowSeconds = clampNumber(value, 5, 3600, 60);
+            refreshSelectedMetricPreview(metric);
+          },
+        ));
+      }
+    }
+    section.append(heading, controls);
+    return section;
+  }
+
+  function refreshSelectedMetricPreview(metric) {
+    window.requestAnimationFrame(() => {
+      if (app.selectedMetricId !== metric.id) return;
+      const current = elements["metric-detail"].querySelector(".metric-preview-panel");
+      current?.replaceWith(createMetricPreviewPanel(metric));
+      const meta = elements["metric-detail"].querySelector(".metric-stream-preview p");
+      if (meta) meta.textContent = `${metric.channels} channel${metric.channels === 1 ? "" : "s"} · ${previewUnit(metric)} · settings previewed above`;
+    });
   }
 
   function createBreathingSelectionSettings(metric) {
@@ -1496,6 +1820,259 @@
       : invalidAxes
         ? "Choose at least two axes"
         : invalidBounds ? "Adjust the calibration quantiles" : `Ready to add ${metric.label}`;
+    refreshSelectedMetricPreview(metric);
+  }
+
+  async function openFormulaLab(metric = null, formulaId = null) {
+    try {
+      await ensurePreviewRecording();
+    } catch (error) {
+      toast(`Recorded formula preview unavailable: ${error.message || error}`, true);
+    }
+    renderFormulaTemplates();
+    renderFormulaSavedList();
+    if (!elements["formula-dialog"].open) elements["formula-dialog"].showModal();
+    if (metric?.formulaTemplate) {
+      editFormulaDraft(normalizeFormulaDraft({
+        name: `${metric.streamSuffix}_custom`,
+        source: metric.formulaSource,
+        expression: previewFormulaExpression(metric, metricOptionFor(metric.id, { forSelection: true })),
+        unit: metric.unit,
+      }));
+    } else if (formulaId) {
+      editFormulaDraft(app.customFormulas.find((formula) => formula.id === formulaId));
+    } else {
+      editFormulaDraft(app.customFormulas[0] || normalizeFormulaDraft());
+    }
+  }
+
+  function editFormulaDraft(value = null) {
+    const formula = normalizeFormulaDraft(value || {});
+    app.editingFormulaId = app.customFormulas.some((candidate) => candidate.id === formula.id) ? formula.id : null;
+    app.formulaDraft = structuredClone(formula);
+    elements["formula-name"].value = formula.name;
+    elements["formula-source"].value = formula.source;
+    elements["formula-unit"].value = formula.unit;
+    elements["formula-expression"].value = formula.expression;
+    elements["delete-custom-formula"].hidden = !app.editingFormulaId;
+    elements["formula-dialog-title"].textContent = app.editingFormulaId ? `Edit ${formula.name}` : "New custom output";
+    renderFormulaKeyboard();
+    renderFormulaSavedList();
+    scheduleFormulaPreview();
+  }
+
+  function readFormulaDraft() {
+    return normalizeFormulaDraft({
+      id: app.formulaDraft?.id,
+      name: elements["formula-name"].value,
+      source: elements["formula-source"].value,
+      unit: elements["formula-unit"].value,
+      expression: elements["formula-expression"].value,
+      enabled: true,
+    });
+  }
+
+  function renderFormulaSavedList() {
+    const rows = app.customFormulas.map((formula) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = formula.id === app.editingFormulaId ? "active" : "";
+      const name = document.createElement("strong");
+      name.textContent = formula.name;
+      const expression = document.createElement("span");
+      expression.textContent = formula.expression;
+      button.append(name, expression);
+      button.addEventListener("click", () => editFormulaDraft(formula));
+      return button;
+    });
+    if (!rows.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "No custom outputs saved yet.";
+      elements["formula-saved-list"].replaceChildren(empty);
+    } else {
+      elements["formula-saved-list"].replaceChildren(...rows);
+    }
+  }
+
+  function renderFormulaTemplates() {
+    const buttons = app.catalog.filter((metric) => metric.formulaTemplate).map((metric) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      const name = document.createElement("strong");
+      name.textContent = metric.label;
+      const expression = document.createElement("code");
+      expression.textContent = metric.formulaTemplate;
+      button.append(name, expression);
+      button.title = `Load ${metric.label}, its expression, source, unit, and recorded preview`;
+      button.addEventListener("click", () => editFormulaDraft(normalizeFormulaDraft({
+        name: `${metric.streamSuffix}_custom`,
+        source: metric.formulaSource,
+        expression: previewFormulaExpression(metric, metricOptionFor(metric.id, { forSelection: true })),
+        unit: metric.unit,
+      })));
+      return button;
+    });
+    elements["formula-template-buttons"].replaceChildren(...buttons);
+  }
+
+  function renderFormulaKeyboard() {
+    const source = elements["formula-source"].value;
+    const labels = { variables: "Variables", common: "Operators", functions: "Functions" };
+    const groups = Object.entries(formulaPreview.keypad(source)).map(([groupName, entries]) => {
+      const section = document.createElement("section");
+      const title = document.createElement("span");
+      title.textContent = labels[groupName];
+      const keys = document.createElement("div");
+      for (const entry of entries) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = entry.label;
+        button.title = entry.title;
+        button.setAttribute("aria-label", `${entry.label}: ${entry.title}`);
+        button.addEventListener("click", () => insertFormulaText(entry));
+        keys.append(button);
+      }
+      section.append(title, keys);
+      return section;
+    });
+    elements["formula-keyboard"].replaceChildren(...groups);
+  }
+
+  function insertFormulaText(entry) {
+    const control = elements["formula-expression"];
+    const start = control.selectionStart ?? control.value.length;
+    const end = control.selectionEnd ?? start;
+    const selected = control.value.slice(start, end);
+    let insertion = entry.insert;
+    if (selected && insertion.endsWith("()")) insertion = `${insertion.slice(0, -1)}${selected})`;
+    control.setRangeText(insertion, start, end, "end");
+    if (!selected && entry.cursorBack) {
+      const cursor = Math.max(0, control.selectionStart - entry.cursorBack);
+      control.setSelectionRange(cursor, cursor);
+    }
+    control.focus();
+    scheduleFormulaPreview();
+  }
+
+  function scheduleFormulaPreview() {
+    window.clearTimeout(app.formulaPreviewTimer);
+    app.formulaPreviewTimer = window.setTimeout(() => void renderFormulaPreview(), 100);
+  }
+
+  async function renderFormulaPreview() {
+    const formula = readFormulaDraft();
+    app.formulaDraft = formula;
+    const status = elements["formula-validation-status"];
+    try {
+      const result = formulaPreview.preview(previewRecording, formula, { displaySeconds: 12 });
+      drawFormulaPreview(elements["formula-preview-canvas"], result);
+      elements["formula-preview-current"].textContent = `${formatValue(result.current, 3)} ${formula.unit}`;
+      elements["formula-preview-note"].textContent = result.note;
+      status.textContent = `Checking native formula · variables: ${formulaSources[formula.source].variables}`;
+      const validation = await runtime.validateCustomFormula(formula);
+      if (app.formulaDraft?.id !== formula.id || app.formulaDraft.expression !== formula.expression) return;
+      const stateCost = Number(validation.stateSamples || 0);
+      status.textContent = `Valid · variables ${validation.allowedVariables.join(", ")}${stateCost ? ` · ${stateCost.toLocaleString()} retained samples` : ""}`;
+      elements["save-custom-formula"].disabled = false;
+    } catch (error) {
+      drawFormulaPreview(elements["formula-preview-canvas"], null);
+      elements["formula-preview-current"].textContent = "—";
+      elements["formula-preview-note"].textContent = error.message || runtime.formatError(error);
+      status.textContent = `Fix formula · ${error.message || runtime.formatError(error)}`;
+      elements["save-custom-formula"].disabled = true;
+    }
+  }
+
+  function drawFormulaPreview(canvas, result) {
+    const width = Math.max(1, canvas.clientWidth);
+    const height = Math.max(1, canvas.clientHeight);
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    const context = canvas.getContext("2d");
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.clearRect(0, 0, width, height);
+    context.strokeStyle = "#dfe6e1";
+    for (let row = 1; row < 3; row += 1) {
+      context.beginPath();
+      context.moveTo(0, row * height / 3);
+      context.lineTo(width, row * height / 3);
+      context.stroke();
+    }
+    if (!result) return;
+    drawFormulaSeries(context, result.input, width, height, "#9aa8a0");
+    drawFormulaSeries(context, result.output, width, height, "#168259");
+  }
+
+  function drawFormulaSeries(context, samples, width, height, color) {
+    const clean = samples.filter((sample) => Number.isFinite(sample.value));
+    if (!clean.length) return;
+    let low = Math.min(...clean.map((sample) => sample.value));
+    let high = Math.max(...clean.map((sample) => sample.value));
+    if (Math.abs(high - low) < Number.EPSILON) { low -= 1; high += 1; }
+    const first = clean[0].time;
+    const duration = Math.max(Number.EPSILON, clean.at(-1).time - first);
+    const stride = Math.max(1, Math.floor(clean.length / Math.max(1, width * 1.5)));
+    context.beginPath();
+    for (let index = 0; index < clean.length; index += stride) {
+      const sample = clean[index];
+      const x = (sample.time - first) / duration * width;
+      const y = height - 5 - (sample.value - low) / (high - low) * (height - 10);
+      if (!index) context.moveTo(x, y); else context.lineTo(x, y);
+    }
+    context.strokeStyle = color;
+    context.lineWidth = color === "#168259" ? 1.7 : 1;
+    context.stroke();
+  }
+
+  async function saveCustomFormula() {
+    const draft = readFormulaDraft();
+    try {
+      const validation = await runtime.validateCustomFormula(draft);
+      const normalized = normalizeFormulaDraft(validation.normalized || draft);
+      const nameKey = normalized.name.toLowerCase();
+      if (app.customFormulas.some((formula) => formula.id !== normalized.id && formula.name.toLowerCase() === nameKey)) {
+        throw new Error("Custom output names must be unique.");
+      }
+      if (app.catalog.some((metric) => metric.streamSuffix.toLowerCase() === nameKey)) {
+        throw new Error("That name conflicts with a built-in output suffix.");
+      }
+      const index = app.customFormulas.findIndex((formula) => formula.id === normalized.id);
+      if (index >= 0) app.customFormulas[index] = normalized;
+      else app.customFormulas.push(normalized);
+      installCustomFormulaVisuals();
+      renderOutputs();
+      await configureOutputs();
+      elements["formula-dialog"].close();
+      toast(`${normalized.name} added as ${customStreamName(normalized)}`);
+    } catch (error) {
+      toast(error.message || runtime.formatError(error), true);
+    }
+  }
+
+  function deleteCustomFormula() {
+    if (!app.editingFormulaId) return;
+    const formula = app.customFormulas.find((candidate) => candidate.id === app.editingFormulaId);
+    app.customFormulas = app.customFormulas.filter((candidate) => candidate.id !== app.editingFormulaId);
+    if (app.selectedVisual === `formula:${app.editingFormulaId}`) app.selectedVisual = "raw_ecg";
+    renderOutputs();
+    void configureOutputs();
+    elements["formula-dialog"].close();
+    toast(`${formula?.name || "Custom output"} removed`);
+  }
+
+  function installCustomFormulaVisuals() {
+    for (const formula of app.customFormulas) {
+      const id = `formula:${formula.id}`;
+      visualDefinitions[id] = {
+        label: formula.name,
+        unit: formula.unit,
+        rate: formula.source === "ecg" ? 130 : formula.source === "accelerometer" ? 200 : 1,
+        color: formulaSources[formula.source].color,
+        formulaId: formula.id,
+      };
+      ensureBuffer(id);
+    }
   }
 
   function renderOutputs() {
@@ -1548,8 +2125,42 @@
       card.append(controls);
       return card;
     }).filter(Boolean);
+    for (const formula of app.customFormulas.filter((candidate) => candidate.enabled)) {
+      const card = document.createElement("article");
+      card.className = "output-card formula-output-card";
+      const header = document.createElement("header");
+      const identity = document.createElement("span");
+      const label = document.createElement("strong");
+      label.textContent = formula.name;
+      const stream = document.createElement("small");
+      stream.textContent = customStreamName(formula, elements["stream-name"].value);
+      identity.append(label, stream);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `Remove ${formula.name}`);
+      remove.addEventListener("click", () => {
+        app.customFormulas = app.customFormulas.filter((candidate) => candidate.id !== formula.id);
+        renderOutputs();
+        void configureOutputs();
+      });
+      header.append(identity, remove);
+      const controls = document.createElement("div");
+      controls.className = "metric-controls";
+      const summary = document.createElement("span");
+      summary.className = "module-summary";
+      summary.textContent = `${formulaSources[formula.source].label} · ${formula.expression} · ${formula.unit}`;
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "module-tune-button";
+      edit.textContent = "Edit formula";
+      edit.addEventListener("click", () => void openFormulaLab(null, formula.id));
+      controls.append(summary, edit);
+      card.append(header, controls);
+      cards.push(card);
+    }
     elements["output-chips"].replaceChildren(...cards);
-    const count = app.outputs.size;
+    const count = app.outputs.size + app.customFormulas.filter((formula) => formula.enabled).length;
     elements["included-count"].textContent = `${count} active`;
     elements["output-state"].textContent = `${count} signal${count === 1 ? "" : "s"}`;
     updateStreamNamePreview();
@@ -1830,6 +2441,7 @@
       .map((id) => byId.get(id))
       .filter(Boolean)
       .map((metric) => streamOutputName(metric, elements["stream-name"].value));
+    names.push(...app.customFormulas.filter((formula) => formula.enabled).map((formula) => customStreamName(formula, elements["stream-name"].value)));
     if (!normalizeStreamBase(elements["stream-name"].value)) {
       elements["stream-name-preview"].textContent = "Use at least one letter or number; spaces become underscores.";
       return;
@@ -1845,7 +2457,10 @@
     const choices = [];
     for (const [id, definition] of Object.entries(visualDefinitions)) {
       const parent = definition.parent || id;
-      if (!app.outputs.has(parent)) continue;
+      const enabled = definition.formulaId
+        ? app.customFormulas.some((formula) => formula.id === definition.formulaId && formula.enabled)
+        : app.outputs.has(parent);
+      if (!enabled) continue;
       choices.push({ id, definition });
     }
     elements["visual-source"].replaceChildren(...choices.map(({ id, definition }) => {
@@ -1864,14 +2479,17 @@
 
   function updateVisualLabels() {
     const definition = visualDefinitions[app.selectedVisual];
-    const options = metricOptionFor(optionIdForVisual(app.selectedVisual));
+    const custom = Boolean(definition?.formulaId);
+    const options = custom
+      ? { normalization: "none", windowSeconds: 60, displayWindowSeconds: 5 }
+      : metricOptionFor(optionIdForVisual(app.selectedVisual));
     const normalized = options.normalization !== "none";
     elements["visual-unit"].textContent = app.selectedVisual === "breathing_phase" ? "" : normalized ? "0–1" : definition?.unit || "";
     elements["visual-window-label"].textContent = app.selectedVisual === "breathing_phase" ? "Live phase" : `${options.displayWindowSeconds} second window`;
     elements["visual-scale-label"].textContent = normalized
       ? options.normalization === "session" ? "0–1 whole run" : `0–1 / ${options.windowSeconds}s`
       : "Original scale";
-    elements["adjust-visual"].disabled = !definition;
+    elements["adjust-visual"].disabled = !definition || custom;
     elements["chart-shell"].classList.toggle("phase-visual", app.selectedVisual === "breathing_phase");
     elements["chart-shell"].classList.toggle("stacked-axes", Boolean(definition?.channels));
     elements["visual-current"].classList.toggle("stacked-value", Boolean(definition?.channels));
@@ -1896,6 +2514,20 @@
     requestRender();
   }
 
+  function handleNativeDestinationToggle(protocol) {
+    const normalized = protocol.toLowerCase();
+    const toggle = elements[`${normalized}-toggle`];
+    if (runtime.isBrowser) {
+      toggle.checked = false;
+      elements["native-output-browser-error-text"].textContent = `${protocol} output is supported only by the installed Polar Stream app.`;
+      elements["native-output-browser-error"].hidden = false;
+      addActivity(`${protocol} output requires the installed app`);
+      toast(`${protocol} is available only in the installed Polar Stream app. Use the download link below.`, true);
+      return;
+    }
+    void configureOutputs();
+  }
+
   async function configureOutputs({ quiet = false } = {}) {
     const streamName = normalizeStreamBase(elements["stream-name"].value);
     if (!streamName) {
@@ -1913,6 +2545,7 @@
       audioEnabled: elements["audio-toggle"].checked,
       outputs: [...app.outputs],
       metricOptions: Object.fromEntries([...app.outputs].map((id) => [id, metricOptionFor(id)])),
+      customFormulas: app.customFormulas.map((formula) => ({ ...formula })),
     };
     const sequence = ++app.outputSequence;
     try {
@@ -1934,8 +2567,9 @@
       renderOutputs();
       updateDestinationHealth(health);
     } catch (error) {
-      if (runtime.isBrowser && elements["lsl-toggle"].checked) {
+      if (runtime.isBrowser) {
         elements["lsl-toggle"].checked = false;
+        elements["osc-toggle"].checked = false;
       }
       if (!quiet) toast(runtime.formatError(error), true);
     }
@@ -1958,8 +2592,8 @@
     elements["osc-detail"].textContent = oscText;
     if (!runtime.isBrowser) elements["csv-detail"].textContent = csvText;
     if (!audioDataLink?.status().enabled) elements["audio-detail"].textContent = audioText;
-    elements["lsl-detail"].classList.toggle("warning", elements["lsl-toggle"].checked && /not found|failed|could not|unavailable/i.test(lslText));
-    elements["osc-detail"].classList.toggle("warning", elements["osc-toggle"].checked && /failed|could not|unavailable/i.test(oscText));
+    elements["lsl-detail"].classList.toggle("warning", runtime.isBrowser || (elements["lsl-toggle"].checked && /not found|failed|could not|unavailable/i.test(lslText)));
+    elements["osc-detail"].classList.toggle("warning", runtime.isBrowser || (elements["osc-toggle"].checked && /failed|could not|unavailable/i.test(oscText)));
     elements["csv-detail"].classList.toggle("warning", elements["csv-toggle"].checked && /stopped|failed|could not|unavailable/i.test(csvText));
   }
 
@@ -2315,7 +2949,7 @@
 
   async function renderInterfaceScenario(name) {
     if (name === "metric-library-previews") {
-      await ensureMetricPreviews();
+      await Promise.all([ensureMetricPreviews(), ensurePreviewRecording()]);
       app.selectedMetricId = "raw_ecg";
       app.libraryMetricDraft = structuredClone(metricOptionFor("raw_ecg", { forSelection: true }));
       app.metricFamily = "ecg";
