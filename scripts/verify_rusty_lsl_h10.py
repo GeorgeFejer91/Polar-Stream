@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUSTY_LSL_REVISION = "74f7d0ea2cce9b3d049ea24602527a5f52360554"
 BASE = "polar_stream_h10_acceptance"
+SCAN_SELECTION_TIMEOUT_SECONDS = 20.0
+POST_SELECTION_SOURCE_READY_TIMEOUT_SECONDS = 60.0
 EXPECTED = {
     "ecg": (f"{BASE}_rawECG", "ECG", 1, 130.0, f"polar-h10-{BASE}_rawECG"),
     "acc": (
@@ -300,7 +302,8 @@ def main() -> int:
     close_official = threading.Event()
     official_thread = None
     try:
-        ready_deadline = time.monotonic() + 180.0
+        selected = False
+        ready_deadline = time.monotonic() + SCAN_SELECTION_TIMEOUT_SECONDS
         while time.monotonic() < ready_deadline:
             try:
                 line = events.get(timeout=0.25)
@@ -308,10 +311,21 @@ def main() -> int:
                 if process.poll() is not None:
                     raise RuntimeError("physical source exited before source readiness")
                 continue
+            if line.startswith("POLAR_H10_SELECTED "):
+                selected = True
+                ready_deadline = (
+                    time.monotonic() + POST_SELECTION_SOURCE_READY_TIMEOUT_SECONDS
+                )
             if line.startswith("POLAR_H10_SOURCE_READY "):
                 break
         else:
-            raise RuntimeError("physical source did not reach source readiness")
+            if not selected:
+                raise RuntimeError(
+                    "candidate scan did not select an H10 within its bounded window"
+                )
+            raise RuntimeError(
+                "physical source did not reach readiness after candidate selection"
+            )
 
         official_thread = threading.Thread(
             target=collect_official_inlets,
