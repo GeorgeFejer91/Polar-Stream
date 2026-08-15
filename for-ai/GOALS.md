@@ -43,6 +43,8 @@ items into the dated history instead of silently deleting them.
      layout.
    - Keep recorded previews for every catalog metric and update them live for
      settings that affect display or published values.
+   - Keep compact, detail, Formula Lab, and recorded-input displays continuously
+     looped without a boundary gap; preserve categorical outputs as stepped states.
    - Keep concise scientific context, citations, and mathematical definitions
      on every metric; retain the Excite-O-Meter source link and distinguish it
      from Polar Stream's experimental activation composite.

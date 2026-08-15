@@ -187,6 +187,7 @@ try {
   const coverage = await page.locator(".metric-preview-compact").evaluateAll((figures) => figures.map((figure) => ({
     id: figure.dataset.metricId,
     paths: figure.querySelectorAll("path.metric-preview-line").length,
+    animations: figure.querySelectorAll("animateTransform").length,
     pathLength: [...figure.querySelectorAll("path.metric-preview-line")]
       .reduce((sum, path) => sum + (path.getAttribute("d")?.length || 0), 0),
     minimum: Number(figure.dataset.minimum),
@@ -195,6 +196,7 @@ try {
   assert.equal(new Set(coverage.map((preview) => preview.id)).size, library.visibleCount);
   for (const preview of coverage) {
     assert.ok(preview.paths >= 1, `${preview.id} has no generated SVG path`);
+    assert.equal(preview.animations, 1, `${preview.id} compact preview is not continuously looped`);
     assert.ok(preview.pathLength > 120, `${preview.id} SVG path was unexpectedly small`);
     assert.ok(Number.isFinite(preview.minimum) && Number.isFinite(preview.maximum), `${preview.id} has no finite range`);
     assert.ok(preview.maximum >= preview.minimum, `${preview.id} has an inverted range`);

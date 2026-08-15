@@ -81,7 +81,7 @@ async function connectMock(page) {
   const source = page.locator('.device-row[data-input-kind="mock"], .device-row.mock').first();
   await source.waitFor({ state: "visible" });
   await source.click();
-  await page.locator("#input-state").filter({ hasText: "Recorded preview live" }).waitFor();
+  await page.locator("#input-state").filter({ hasText: "Recorded preview looping" }).waitFor();
   await page.waitForFunction(() => document.querySelector("#sample-counter")?.textContent !== "0 samples");
   assert.equal(await page.locator("#chart-empty").isHidden(), true, "mock input did not activate the live chart");
   assert.notEqual(await page.locator("#raw-ecg-value").textContent(), "—", "mock ECG did not update");
@@ -250,7 +250,7 @@ try {
   assert.equal(await desktop.locator("#platform-label").textContent(), "BROWSER DEMO");
   assert.equal(await desktop.locator("#runtime-path-label").textContent(), "Browser-local inputs");
   assert.match(await desktop.locator(".device-row.mock").textContent(), /RECORDED/);
-  assert.match(await desktop.locator(".device-row.mock").textContent(), /Anonymized 60-second ECG \+ ACC recording/);
+  assert.match(await desktop.locator(".device-row.mock").textContent(), /seamless loop of an anonymized 60-second ECG \+ ACC recording/i);
   assert.equal(await desktop.locator("#browser-local-destination").isVisible(), true, "browser-local destination is missing");
   assert.equal(await desktop.locator("#csv-destination-row").isVisible(), true, "local CSV toggle is missing");
   assert.equal(await desktop.locator("#audio-destination-row").isVisible(), true, "audio-data toggle is missing");
@@ -393,6 +393,7 @@ try {
   assert.equal(await desktop.locator('#formula-keyboard button[title]').count() > 10, true, "formula calculator keys lack hover help");
   await desktop.locator("#formula-validation-status").filter({ hasText: "Valid" }).waitFor();
   assert.notEqual(await desktop.locator("#formula-preview-current").textContent(), "—");
+  assert.equal(await desktop.locator("#formula-preview-canvas").getAttribute("data-looping"), "true", "Formula Lab preview is not continuously looped");
   await desktop.locator("#save-custom-formula").click();
   await desktop.locator(".formula-output-card").filter({ hasText: "rmssd_custom" }).waitFor();
   await desktop.locator("#open-output-dialog").click();

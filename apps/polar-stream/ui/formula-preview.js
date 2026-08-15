@@ -112,14 +112,40 @@
       value: inputValue(frame, formula.source),
     }));
     const visibleOutput = transformed.filter((sample) => sample.time >= start);
+    const outputStep = isCategoricalSeries(visibleOutput);
     return {
-      input,
-      output: visibleOutput,
+      input: closeDisplayLoop(input),
+      output: closeDisplayLoop(visibleOutput, 0.14, outputStep),
+      outputStep,
       current: visibleOutput.at(-1)?.value,
       inputLabel: source.inputLabel,
       inputUnit: source.inputUnit,
-      note: `Recorded Polar H10 data · ${visibleOutput.length.toLocaleString()} finite samples · ${options.normalization && options.normalization !== "none" ? "0–1 transformed" : "original units"}`,
+      note: `Seamless recorded Polar H10 loop · ${visibleOutput.length.toLocaleString()} finite samples · ${options.normalization && options.normalization !== "none" ? "0–1 transformed" : "original units"}`,
     };
+  }
+
+  function closeDisplayLoop(samples, fraction = 0.14, stepped = false) {
+    if (samples.length < 2) return samples.map((sample) => ({ ...sample }));
+    const result = samples.map((sample) => ({ ...sample, value: Number(sample.value) }));
+    if (stepped) {
+      result[result.length - 1].value = result[0].value;
+      return result;
+    }
+    const count = Math.min(result.length, Math.max(4, Math.round(result.length * fraction)));
+    const start = result.length - count;
+    const delta = result.at(-1).value - result[0].value;
+    for (let index = 0; index < count; index += 1) {
+      const progress = index / (count - 1);
+      const smooth = progress * progress * (3 - 2 * progress);
+      result[start + index].value -= delta * smooth;
+    }
+    result[result.length - 1].value = result[0].value;
+    return result;
+  }
+
+  function isCategoricalSeries(samples) {
+    const values = new Set(samples.map((sample) => Number(sample.value).toFixed(9)));
+    return values.size <= 4 && samples.every((sample) => Number.isInteger(Number(sample.value)));
   }
 
   function transformOutput(samples, options) {
@@ -469,5 +495,5 @@
     return option ? normalized : smoothed;
   }
 
-  return Object.freeze({ keypad, parse, preview, sourceMap, variableDescription });
+  return Object.freeze({ closeDisplayLoop, keypad, parse, preview, sourceMap, variableDescription });
 });

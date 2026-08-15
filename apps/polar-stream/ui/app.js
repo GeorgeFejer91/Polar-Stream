@@ -17,6 +17,10 @@
   let metricPreviewSequence = 0;
   let browserRecorderCapacityNotified = false;
   let browserLifecycleWarningPending = false;
+  let formulaPreviewAnimationId = 0;
+  let formulaPreviewAnimationResult = null;
+  let formulaPreviewAnimationStartedAt = 0;
+  let formulaPreviewLastDrawAt = 0;
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
@@ -352,9 +356,9 @@
 
   function renderRuntimeContext({ simulated = false, transport = null } = {}) {
     if (simulated) {
-      elements["runtime-path-label"].textContent = "Recorded H10 preview data";
-      elements["pipeline-title"].textContent = "Recorded preview stays local";
-      elements["pipeline-detail"].textContent = "The canonical anonymized ECG and ACC recording drives this interface; no BLE, LSL, or OSC connection is opened.";
+      elements["runtime-path-label"].textContent = "Seamless recorded H10 loop";
+      elements["pipeline-title"].textContent = "Recorded preview loops locally";
+      elements["pipeline-detail"].textContent = "The canonical anonymized ECG and ACC recording repeats as one continuous preview signal; no BLE, LSL, or OSC connection is opened.";
       return;
     }
     if (isInterfaceRenderer) {
@@ -602,6 +606,7 @@
     });
     elements["save-custom-formula"].addEventListener("click", () => void saveCustomFormula());
     elements["delete-custom-formula"].addEventListener("click", deleteCustomFormula);
+    elements["formula-dialog"].addEventListener("close", () => stopFormulaPreviewAnimation());
     elements["metric-back-button"].addEventListener("click", () => {
       setMetricLibraryView("browse");
       window.requestAnimationFrame(() => {
@@ -671,12 +676,16 @@
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
         cancelScheduledRender();
+        stopFormulaPreviewAnimation({ clear: false });
         if (runtime.isBrowser && app.currentInputKind === "web-bluetooth") {
           browserLifecycleWarningPending = true;
           addActivity("Tab hidden · Android may suspend browser Bluetooth capture");
         }
       } else {
         requestRender();
+        if (formulaPreviewAnimationResult && elements["formula-dialog"].open) {
+          setFormulaPreviewResult(formulaPreviewAnimationResult);
+        }
         if (browserLifecycleWarningPending) {
           browserLifecycleWarningPending = false;
           toast("Chrome may have paused or discarded data while this tab was hidden. Check sensor timestamps for gaps.", true);
@@ -989,12 +998,12 @@
     elements["connection-detail"].textContent = app.connected ? event.message : "Scan for a nearby chest strap.";
     elements["battery-value"].textContent = event.batteryPercent == null ? "—" : `${event.batteryPercent}%`;
     elements["input-state"].textContent = app.connected
-      ? simulated ? "Recorded preview live" : webBluetooth ? "Browser BLE live" : "Streaming"
+      ? simulated ? "Recorded preview looping" : webBluetooth ? "Browser BLE live" : "Streaming"
       : runtime.isBrowser ? "Browser ready" : "Idle";
     setTopStatus(
       app.connected
         ? simulated
-          ? "Recorded H10 preview · streams live"
+          ? "Recorded H10 preview · seamless loop live"
           : webBluetooth ? "H10 connected directly to this browser tab" : "Sensor connected · streams live"
         : runtime.isBrowser ? "Browser inputs ready" : "Ready to connect",
       app.connected ? "connected" : "idle",
@@ -1246,7 +1255,12 @@
           windowSeconds: settings.windowSeconds,
         });
         const values = result.output.map((sample) => sample.value);
-        if (values.length) return previewPayload([{ label: "Formula output", color: stored.channels[0].color, values }], result.output.at(-1).time - result.output[0].time);
+        if (values.length) return previewPayload([{
+          label: "Formula output",
+          color: stored.channels[0].color,
+          values,
+          step: result.outputStep,
+        }], result.output.at(-1).time - result.output[0].time);
       } catch {
         // The checked-in recorded derivation remains available while a draft
         // setting or formula is temporarily incomplete.
@@ -1257,6 +1271,7 @@
       label: channel.label,
       color: channel.color,
       values: transformPreviewValues(channel.values || [], stored.durationSeconds, settings),
+      step: metric.id === "breathing_phase",
     }));
     const duration = Math.min(Number(stored.durationSeconds) || 0, Number(settings.displayWindowSeconds) || Number(stored.durationSeconds) || 0);
     return previewPayload(channels, duration);
@@ -1299,7 +1314,11 @@
   }
 
   function previewPayload(channels, durationSeconds) {
-    const all = channels.flatMap((channel) => channel.values).filter(Number.isFinite);
+    const loopedChannels = channels.map((channel) => ({
+      ...channel,
+      values: closeMetricPreviewValues(channel.values, channel.step),
+    }));
+    const all = loopedChannels.flatMap((channel) => channel.values).filter(Number.isFinite);
     if (!all.length) return { channels: [], minimum: 0, maximum: 0, durationSeconds: 0 };
     let minimum = Math.min(...all);
     let maximum = Math.max(...all);
@@ -1308,11 +1327,23 @@
       maximum += 1;
     }
     return {
-      channels: channels.map((channel) => ({ ...channel, path: previewPath(channel.values, minimum, maximum, 240, 72) })),
+      channels: loopedChannels.map((channel) => ({
+        ...channel,
+        path: previewPath(channel.values, minimum, maximum, 240, 72, channel.step),
+      })),
       minimum,
       maximum,
       durationSeconds: Math.max(0.1, Number(durationSeconds) || 0).toLocaleString(undefined, { maximumFractionDigits: 1 }),
     };
+  }
+
+  function closeMetricPreviewValues(values, stepped = false) {
+    if (!stepped) {
+      return previewFixtureApi.circularizeSignal(values, Math.max(4, Math.round(values.length * 0.14)));
+    }
+    const result = Array.from(values, Number);
+    if (result.length > 1) result[result.length - 1] = result[0];
+    return result;
   }
 
   function previewPath(values, minimum, maximum, width = 240, height = 72, step = false) {
@@ -1346,14 +1377,14 @@
     section.className = "metric-preview-panel";
     const header = document.createElement("div");
     const title = document.createElement("h4");
-    title.textContent = "Recorded outcome preview";
+    title.textContent = "Seamless recorded outcome preview";
     const provenance = document.createElement("span");
     provenance.className = "metric-preview-provenance";
     provenance.textContent = `${metricPreviews?.source?.library || "Recorded Polar H10"} · ${metricPreviews?.source?.version || "canonical fixture"}`;
     header.append(title, provenance);
     const note = document.createElement("p");
     note.className = "metric-preview-note";
-    note.textContent = "The preview is derived from the anonymized 60-second ECG/ACC recording. It shows how the selected settings transform that recording, not expected personal values or validation accuracy.";
+    note.textContent = "The preview continuously loops the anonymized 60-second ECG/ACC recording with a presentation-only seam. It shows how the selected settings transform that recording, not expected personal values or validation accuracy.";
     section.append(header, createMetricPreview(metric, { animated: true }), note);
     return section;
   }
@@ -1454,7 +1485,7 @@
       state.textContent = app.outputs.has(metric.id)
         ? "ADDED"
         : support.supported ? "›" : "DESKTOP";
-      const preview = createMetricPreview(metric, { compact: true });
+      const preview = createMetricPreview(metric, { compact: true, animated: true });
       option.addEventListener("click", () => {
         app.selectedMetricId = metric.id;
         app.libraryMetricDraft = structuredClone(metricOptionFor(metric.id, { forSelection: true }));
@@ -1965,7 +1996,7 @@
     const status = elements["formula-validation-status"];
     try {
       const result = formulaPreview.preview(previewRecording, formula, { displaySeconds: 12 });
-      drawFormulaPreview(elements["formula-preview-canvas"], result);
+      setFormulaPreviewResult(result);
       elements["formula-preview-current"].textContent = `${formatValue(result.current, 3)} ${formula.unit}`;
       elements["formula-preview-note"].textContent = result.note;
       status.textContent = `Checking native formula · variables: ${formulaSources[formula.source].variables}`;
@@ -1975,7 +2006,7 @@
       status.textContent = `Valid · variables ${validation.allowedVariables.join(", ")}${stateCost ? ` · ${stateCost.toLocaleString()} retained samples` : ""}`;
       elements["save-custom-formula"].disabled = false;
     } catch (error) {
-      drawFormulaPreview(elements["formula-preview-canvas"], null);
+      setFormulaPreviewResult(null);
       elements["formula-preview-current"].textContent = "—";
       elements["formula-preview-note"].textContent = error.message || runtime.formatError(error);
       status.textContent = `Fix formula · ${error.message || runtime.formatError(error)}`;
@@ -1983,12 +2014,52 @@
     }
   }
 
-  function drawFormulaPreview(canvas, result) {
+  function setFormulaPreviewResult(result) {
+    stopFormulaPreviewAnimation({ clear: false });
+    formulaPreviewAnimationResult = result;
+    formulaPreviewAnimationStartedAt = performance.now();
+    formulaPreviewLastDrawAt = 0;
+    const canvas = elements["formula-preview-canvas"];
+    const animate = Boolean(
+      result
+      && elements["formula-dialog"].open
+      && !document.hidden
+      && !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+    canvas.dataset.looping = String(animate);
+    drawFormulaPreview(canvas, result, 0);
+    if (animate) formulaPreviewAnimationId = window.requestAnimationFrame(animateFormulaPreview);
+  }
+
+  function animateFormulaPreview(now) {
+    if (!formulaPreviewAnimationResult || document.hidden || !elements["formula-dialog"].open) {
+      formulaPreviewAnimationId = 0;
+      elements["formula-preview-canvas"].dataset.looping = "false";
+      return;
+    }
+    if (now - formulaPreviewLastDrawAt >= renderIntervalMs) {
+      const phase = ((now - formulaPreviewAnimationStartedAt) % 8000) / 8000;
+      drawFormulaPreview(elements["formula-preview-canvas"], formulaPreviewAnimationResult, phase);
+      formulaPreviewLastDrawAt = now;
+    }
+    formulaPreviewAnimationId = window.requestAnimationFrame(animateFormulaPreview);
+  }
+
+  function stopFormulaPreviewAnimation({ clear = true } = {}) {
+    if (formulaPreviewAnimationId) window.cancelAnimationFrame(formulaPreviewAnimationId);
+    formulaPreviewAnimationId = 0;
+    elements["formula-preview-canvas"].dataset.looping = "false";
+    if (clear) formulaPreviewAnimationResult = null;
+  }
+
+  function drawFormulaPreview(canvas, result, phase = 0) {
     const width = Math.max(1, canvas.clientWidth);
     const height = Math.max(1, canvas.clientHeight);
     const ratio = Math.min(2, window.devicePixelRatio || 1);
-    canvas.width = Math.round(width * ratio);
-    canvas.height = Math.round(height * ratio);
+    const pixelWidth = Math.round(width * ratio);
+    const pixelHeight = Math.round(height * ratio);
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
     const context = canvas.getContext("2d");
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
@@ -2000,11 +2071,14 @@
       context.stroke();
     }
     if (!result) return;
-    drawFormulaSeries(context, result.input, width, height, "#9aa8a0");
-    drawFormulaSeries(context, result.output, width, height, "#168259");
+    const offset = -Math.max(0, Math.min(1, phase)) * width;
+    for (const copyOffset of [offset, offset + width]) {
+      drawFormulaSeries(context, result.input, width, height, "#9aa8a0", copyOffset);
+      drawFormulaSeries(context, result.output, width, height, "#168259", copyOffset, result.outputStep);
+    }
   }
 
-  function drawFormulaSeries(context, samples, width, height, color) {
+  function drawFormulaSeries(context, samples, width, height, color, offsetX = 0, stepped = false) {
     const clean = samples.filter((sample) => Number.isFinite(sample.value));
     if (!clean.length) return;
     let low = Math.min(...clean.map((sample) => sample.value));
@@ -2013,13 +2087,25 @@
     const first = clean[0].time;
     const duration = Math.max(Number.EPSILON, clean.at(-1).time - first);
     const stride = Math.max(1, Math.floor(clean.length / Math.max(1, width * 1.5)));
+    const indices = [];
+    for (let index = 0; index < clean.length; index += stride) indices.push(index);
+    if (indices.at(-1) !== clean.length - 1) indices.push(clean.length - 1);
     context.beginPath();
-    for (let index = 0; index < clean.length; index += stride) {
+    indices.forEach((index, drawIndex) => {
       const sample = clean[index];
-      const x = (sample.time - first) / duration * width;
+      const x = offsetX + (sample.time - first) / duration * width;
       const y = height - 5 - (sample.value - low) / (high - low) * (height - 10);
-      if (!index) context.moveTo(x, y); else context.lineTo(x, y);
-    }
+      if (!drawIndex) {
+        context.moveTo(x, y);
+      } else if (stepped) {
+        const previous = clean[indices[drawIndex - 1]];
+        const previousY = height - 5 - (previous.value - low) / (high - low) * (height - 10);
+        context.lineTo(x, previousY);
+        context.lineTo(x, y);
+      } else {
+        context.lineTo(x, y);
+      }
+    });
     context.strokeStyle = color;
     context.lineWidth = color === "#168259" ? 1.7 : 1;
     context.stroke();

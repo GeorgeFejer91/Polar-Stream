@@ -26,7 +26,9 @@ The same files in `apps/polar-stream/ui/` also form the GitHub Pages browser
 demo. Runtime behavior is selected once through the frontend runtime adapter:
 Tauri can use native IPC for a real H10, while both Tauri and Pages can replay
 the selectable canonical anonymized 60-second H10 ECG/ACC recording through the
-same event contract. Pages also offers an explicitly experimental Web Bluetooth adapter
+same event contract as a seamless circular presentation. A bounded endpoint
+correction is confined to recorded-preview playback; it never alters live H10
+input or authoritative native output. Pages also offers an explicitly experimental Web Bluetooth adapter
 for direct H10 ECG/ACC/HR/RR input in supported secure Chromium contexts. A
 Pages session has no LSL/OSC publisher or paired mode: the runtime is
 intentionally self-contained and does not call a localhost companion, native
@@ -80,7 +82,9 @@ operational contract for that ordering.
   installed-app-only error with the latest-release download link. Browser
   recording must remain bounded and surface capacity/disconnect stops visibly.
 - The canonical recorded preview input is also available offline in the installed app so the
-  interface remains explorable without a Polar device. It must not enter or
+  interface remains explorable without a Polar device. Its visual and browser-local
+  preview streams loop continuously, with categorical classes retained as steps.
+  It must not enter or
   weaken the authoritative native acquisition/publication path.
 - GitHub Pages must deploy the canonical UI after successful changes to `main`.
   Desktop and browser parity, plus narrow touch layouts down to 320 CSS pixels,
