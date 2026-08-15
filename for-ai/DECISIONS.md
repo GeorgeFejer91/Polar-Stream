@@ -1,5 +1,20 @@
 # Decision log
 
+## 2026-08-15 — Recorded previews form continuous circular presentation signals
+
+The hardware-free 60-second recording repeats without an empty interval or a
+visible end-to-start jump. Recorded-input playback applies a smooth, bounded
+1.2-second endpoint correction to ECG, all three ACC axes, HR and RR; the
+checked-in fixture remains unchanged. This conditioning is identified as
+recorded-preview behavior and cannot enter live H10 acquisition, native raw
+publication, or physical-device claims.
+
+Compact and detail metric SVGs tile closed paths, and Formula Lab continuously
+scrolls two closed copies of its recorded before/after trace. Categorical
+outputs such as breathing phase remain integer-stepped rather than acquiring
+invented intermediate values. Reduced-motion users receive the same closed
+trace as a static view instead of forced animation.
+
 ## 2026-08-15 — Completed edits synchronize source, desktop install, and live Pages
 
 The user-visible application has three delivery surfaces: canonical source,

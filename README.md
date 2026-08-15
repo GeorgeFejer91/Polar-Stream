@@ -14,7 +14,8 @@ single module to the enabled destinations.
 
 When the output library is open, every row contains a thumbnail derived from the
 canonical anonymized 60-second real Polar H10 ECG/ACC recording. Selecting one
-row opens a larger outcome preview; display window, normalization, breathing
+row opens a larger outcome preview. Both sizes run as seamless circular traces;
+Formula Lab uses the same continuously scrolling presentation. Display window, normalization, breathing
 axes, smoothing, sensitivity and calibration controls update that preview before
 the user saves the single output. The recording illustrates output form and
 setting effects—it is not a participant norm, validation result, or diagnostic
@@ -85,7 +86,10 @@ reliable smartphone background/screen-off workflow requires a future native
 Android build with a foreground service, not the GitHub Pages site.
 
 Choose **Recorded Polar H10 preview** to replay the checked-in, anonymized
-60-second real ECG/ACC recording without Bluetooth hardware. The same input is
+60-second real ECG/ACC recording without Bluetooth hardware. Its last 1.2 seconds
+receive a smooth endpoint correction so the presentation and browser-local
+preview outputs repeat without a false gap or sudden end-to-start jump; the
+checked-in recording itself is unchanged. The same input is
 available offline in the installed desktop app for interface exploration. It is
 labeled recorded throughout, is not algorithm validation, and by itself does
 not open BLE, LSL, or OSC connections.

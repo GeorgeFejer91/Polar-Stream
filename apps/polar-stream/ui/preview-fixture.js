@@ -10,6 +10,7 @@
   const ecgRateHz = 130;
   const accRateHz = 200;
   const maxDurationMs = 10 * 60 * 1000;
+  const defaultSeamDurationMs = 1200;
 
   function validateFixture(value) {
     if (!value || typeof value !== "object") fail("The preview fixture must be a JSON object.");
@@ -62,6 +63,20 @@
       this.schedule = options.schedule || ((callback) => setInterval(callback, 40));
       this.cancel = options.cancel || ((timer) => clearInterval(timer));
       this.onLoop = options.onLoop || (() => {});
+      this.seamDurationMs = seamDuration(options.seamDurationMs, this.fixture.durationMs);
+      this.ecgValues = circularizeSignal(
+        this.fixture.ecg.microvolts,
+        this.seamDurationMs * this.fixture.ecg.sampleRateHz / 1000,
+      );
+      this.accelerometerSamples = circularizeAxes(
+        this.fixture.accelerometer.samples,
+        this.seamDurationMs * this.fixture.accelerometer.sampleRateHz / 1000,
+      );
+      this.metricEvents = circularizeMetricEvents(
+        this.fixture.metricEvents || [],
+        this.seamDurationMs,
+        this.fixture.durationMs,
+      );
       this.timer = null;
       this.startedAt = 0;
       this.loopIndex = 0;
@@ -115,11 +130,13 @@
     emitThrough(ecgTarget, accTarget, loopTimeMs) {
       while (this.ecgCursor < ecgTarget) {
         const end = Math.min(ecgTarget, this.ecgCursor + 260);
-        const microvolts = this.fixture.ecg.microvolts.slice(this.ecgCursor, end);
+        const microvolts = this.ecgValues.slice(this.ecgCursor, end);
         this.emit({
           kind: "ecg",
           sensorTimestampNs: this.timestampNs(this.ecgCursor, this.fixture.ecg.sampleRateHz),
           microvolts,
+          recordedPreviewLoop: this.loopIndex,
+          seamlessPreview: this.seamDurationMs > 0,
           estimatedLatencyMs: Math.round(microvolts.length * 1000 / this.fixture.ecg.sampleRateHz),
           samplesPerPacket: microvolts.length,
         });
@@ -127,24 +144,28 @@
       }
       while (this.accCursor < accTarget) {
         const end = Math.min(accTarget, this.accCursor + 400);
-        const samples = this.fixture.accelerometer.samples
+        const samples = this.accelerometerSamples
           .slice(this.accCursor, end)
           .map(([xMg, yMg, zMg]) => ({ xMg, yMg, zMg }));
         this.emit({
           kind: "accelerometer",
           sensorTimestampNs: this.timestampNs(this.accCursor, this.fixture.accelerometer.sampleRateHz),
           samples,
+          recordedPreviewLoop: this.loopIndex,
+          seamlessPreview: this.seamDurationMs > 0,
         });
         this.accCursor = end;
       }
-      while (this.metricCursor < this.fixture.metricEvents.length) {
-        const event = this.fixture.metricEvents[this.metricCursor];
+      while (this.metricCursor < this.metricEvents.length) {
+        const event = this.metricEvents[this.metricCursor];
         if (event.offsetMs > loopTimeMs) break;
         this.emit({
           kind: "metrics",
           heartRateBpm: event.heartRateBpm,
           rrIntervalsMs: event.rrIntervalsMs,
           rmssdMs: event.rmssdMs,
+          recordedPreviewLoop: this.loopIndex,
+          seamlessPreview: this.seamDurationMs > 0,
         });
         this.metricCursor += 1;
       }
@@ -154,6 +175,63 @@
       const loopOffsetMs = this.loopIndex * this.fixture.durationMs;
       return Math.round((loopOffsetMs + sampleIndex * 1000 / sampleRateHz) * 1_000_000);
     }
+  }
+
+  function seamDuration(value, durationMs) {
+    const requested = value == null ? defaultSeamDurationMs : Number(value);
+    if (!Number.isFinite(requested) || requested < 0) fail("Preview seam duration must be a non-negative number.");
+    return Math.min(requested, durationMs / 4);
+  }
+
+  function circularizeSignal(values, seamSamples) {
+    const result = Array.from(values || [], Number);
+    const count = Math.min(result.length, Math.max(0, Math.round(Number(seamSamples) || 0)));
+    if (count < 2) return result;
+    const start = result.length - count;
+    const delta = result.at(-1) - result[0];
+    for (let index = 0; index < count; index += 1) {
+      const progress = index / (count - 1);
+      const smooth = progress * progress * (3 - 2 * progress);
+      result[start + index] -= delta * smooth;
+    }
+    result[result.length - 1] = result[0];
+    return result;
+  }
+
+  function circularizeAxes(samples, seamSamples) {
+    if (!samples.length) return [];
+    const axes = [0, 1, 2].map((axis) => circularizeSignal(samples.map((sample) => sample[axis]), seamSamples));
+    return samples.map((_, index) => axes.map((axis) => axis[index]));
+  }
+
+  function circularizeMetricEvents(events, seamDurationMs, durationMs) {
+    const result = events.map((event) => ({ ...event, rrIntervalsMs: [...event.rrIntervalsMs] }));
+    if (result.length < 2 || seamDurationMs <= 0) return result;
+    const firstTailEvent = result.findIndex((event) => event.offsetMs >= durationMs - seamDurationMs);
+    const seamEvents = firstTailEvent < 0 ? 2 : Math.max(2, result.length - firstTailEvent);
+    const heartRate = circularizeSignal(result.map((event) => event.heartRateBpm), seamEvents);
+    result.forEach((event, index) => { event.heartRateBpm = heartRate[index]; });
+
+    const rmssdLocations = result
+      .map((event, eventIndex) => ({ eventIndex, value: event.rmssdMs }))
+      .filter((entry) => Number.isFinite(entry.value));
+    if (rmssdLocations.length >= 2) {
+      const seamValues = Math.max(2, Math.round(rmssdLocations.length * seamDurationMs / durationMs));
+      const rmssdValues = circularizeSignal(rmssdLocations.map((entry) => entry.value), seamValues);
+      rmssdLocations.forEach((entry, index) => { result[entry.eventIndex].rmssdMs = rmssdValues[index]; });
+    }
+
+    const rrLocations = result.flatMap((event, eventIndex) => event.rrIntervalsMs.map((value, intervalIndex) => ({
+      eventIndex, intervalIndex, value,
+    })));
+    if (rrLocations.length >= 2) {
+      const seamIntervals = Math.max(2, Math.round(rrLocations.length * seamDurationMs / durationMs));
+      const rrValues = circularizeSignal(rrLocations.map((entry) => entry.value), seamIntervals);
+      rrLocations.forEach((entry, index) => {
+        result[entry.eventIndex].rrIntervalsMs[entry.intervalIndex] = rrValues[index];
+      });
+    }
+    return result;
   }
 
   function requireInteger(value, label, minimum, maximum) {
@@ -174,5 +252,12 @@
     throw new Error(message);
   }
 
-  return Object.freeze({ validateFixture, LoopPlayer, schemaVersion, sourceMarker });
+  return Object.freeze({
+    validateFixture,
+    LoopPlayer,
+    circularizeSignal,
+    defaultSeamDurationMs,
+    schemaVersion,
+    sourceMarker,
+  });
 });

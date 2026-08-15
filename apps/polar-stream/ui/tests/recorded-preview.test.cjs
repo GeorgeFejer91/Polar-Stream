@@ -28,6 +28,36 @@ test("canonical preview fixture is a complete anonymized real H10 recording", ()
   }
 });
 
+test("recorded playback crosses its circular seam without a value or time break", () => {
+  let now = 0;
+  let scheduled = null;
+  const emitted = [];
+  const player = new fixtureApi.LoopPlayer(fixture, (event) => emitted.push(event), {
+    now: () => now,
+    schedule: (callback) => { scheduled = callback; return 1; },
+    cancel: () => {},
+  });
+  player.start();
+  now = fixture.durationMs - 1;
+  scheduled();
+  now = fixture.durationMs + 8;
+  scheduled();
+  player.stop();
+
+  const ecg = emitted.filter((event) => event.kind === "ecg");
+  const lastEcg = ecg.filter((event) => event.recordedPreviewLoop === 0).at(-1);
+  const firstRepeatedEcg = ecg.find((event) => event.recordedPreviewLoop === 1);
+  assert.equal(lastEcg.microvolts.at(-1), firstRepeatedEcg.microvolts[0]);
+  assert.equal(firstRepeatedEcg.sensorTimestampNs - lastEcg.sensorTimestampNs, Math.round(1_000_000_000 / fixture.ecg.sampleRateHz));
+  assert.equal(firstRepeatedEcg.seamlessPreview, true);
+
+  const acc = emitted.filter((event) => event.kind === "accelerometer");
+  const lastAcc = acc.filter((event) => event.recordedPreviewLoop === 0).at(-1).samples.at(-1);
+  const firstRepeatedAcc = acc.find((event) => event.recordedPreviewLoop === 1).samples[0];
+  assert.deepEqual(lastAcc, firstRepeatedAcc);
+  assert.notEqual(fixture.ecg.microvolts.at(-1), fixture.ecg.microvolts[0], "the canonical recording was unexpectedly modified");
+});
+
 test("every catalog metric has a recorded numeric preview and mathematical definition", () => {
   assert.equal(previews.source.model, fixture.source);
   assert.equal(JSON.stringify(Object.keys(previews.metrics)), JSON.stringify(Array.from(catalog, (metric) => metric.id)));
@@ -56,7 +86,22 @@ test("formula templates execute against the same recorded fixture", () => {
     });
     assert.ok(result.output.length > 0, `${metric.id} template produced no output`);
     assert.ok(Number.isFinite(result.current), `${metric.id} template produced no current value`);
+    assert.equal(result.output[0].value, result.output.at(-1).value, `${metric.id} formula preview is not circular`);
   }
+});
+
+test("categorical formula previews keep stepped integer classes at the loop seam", () => {
+  const result = formulaPreview.preview(fixture, {
+    id: "preview-phase",
+    name: "phase",
+    source: "accelerometer",
+    expression: "breathing_phase(x, y, z, true, false, true, 0.75, 0.6, false)",
+    unit: "class",
+    enabled: true,
+  });
+  assert.equal(result.outputStep, true);
+  assert.ok(result.output.every((sample) => Number.isInteger(sample.value)));
+  assert.equal(result.output[0].value, result.output.at(-1).value);
 });
 
 test("window and normalization settings visibly change recorded formula output", () => {

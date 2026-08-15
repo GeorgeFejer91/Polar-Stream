@@ -86,7 +86,9 @@ typed Tauri IPC/channel path. A selectable `recorded-h10-preview` module is
 available in both Tauri and Pages and loops the anonymized 60-second real H10
 fixture in `ui/data/preview-recording.json` through the same connection, ECG,
 accelerometer, HR/RR, and derived-output event shapes. Recorded preview data
-never crosses into the Rust acquisition path and is visibly labeled recorded.
+uses a bounded 1.2-second endpoint correction to form a continuous circular
+presentation, never crosses into the Rust acquisition path, and is visibly
+labeled recorded. Live H10 input and native raw publication are never seam-conditioned.
 
 On GitHub Pages only, `ui/polar-web-bluetooth.js` adds a second real-input
 adapter. A user gesture opens the browser chooser filtered to `Polar H10`, then
@@ -245,7 +247,9 @@ one recording is not evidence of accuracy, expected population ranges, or
 clinical validity.
 
 The recorded runtime adapter loops the same raw fixture and replays its checked-in
-derived series. This demonstrates the shared runtime event contract and lets
+derived series. The runtime conditions only the recorded loop boundary, while
+metric and Formula Lab charts tile closed paths; discrete classes remain stepped.
+This demonstrates the shared runtime event contract and lets
 users inspect the app without hardware while keeping recorded input visibly
 distinct from a currently connected physical sensor.
 

@@ -10,7 +10,7 @@
     id: "recorded-h10-preview",
     name: "Recorded Polar H10 preview",
     kind: "mock",
-    detail: "Anonymized 60-second ECG + ACC recording · no sensor required",
+    detail: "Seamless loop of an anonymized 60-second ECG + ACC recording · no sensor required",
     sourceLabel: "RECORDED",
     rssi: null,
   });
@@ -134,7 +134,7 @@
       simulated: true,
       deviceName: mockDevice.name,
       batteryPercent: null,
-      message: `Anonymized ${data.durationMs / 1000}-second Polar H10 recording streaming locally`,
+      message: `Anonymized ${data.durationMs / 1000}-second Polar H10 recording streaming as a seamless local loop`,
     });
     demo.player = new window.PolarPreviewFixture.LoopPlayer(data, (event) => {
       onEvent(event);
@@ -157,7 +157,7 @@
         })
         .filter(Boolean);
       if (values.length) onEvent({ kind: "metrics", values });
-    });
+    }, { seamDurationMs: window.PolarPreviewFixture.defaultSeamDurationMs });
     demo.player.start();
   }
 

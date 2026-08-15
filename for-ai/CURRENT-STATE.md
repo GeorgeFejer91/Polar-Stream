@@ -22,7 +22,9 @@ Last verified: 2026-08-15
   and explicitly experimental metric modules.
 - Three-panel Tauri UI with remembered native preferences.
 - Deterministic metric previews derived from the canonical anonymized 60-second
-  real H10 ECG/ACC recording, with its fingerprint checked in the asset.
+  real H10 ECG/ACC recording, with its fingerprint checked in the asset. Compact,
+  detail, and Formula Lab traces run as closed continuous loops; categorical
+  outputs remain stepped.
 - A one-at-a-time output picker exposes all 47 catalog metrics across ECG and
   ACC families. Every metric has recorded preview coverage, a concise scientific
   explainer, citation, and mathematical definition.
@@ -58,8 +60,9 @@ Last verified: 2026-08-15
   detail view with back navigation and a safe-area-aware save action.
 - A selectable recorded-preview input replays the canonical anonymized ECG/ACC
   fixture and its derived preview values through the shared runtime event
-  contract in both Pages and the offline Tauri app. No generated-signal fallback
-  remains in the shipped UI.
+  contract in both Pages and the offline Tauri app. Its bounded seam correction
+  prevents an end-to-start jump without changing the source fixture or any live
+  H10/native path. No generated-signal fallback remains in the shipped UI.
 - GitHub Pages offers an experimental Web Bluetooth input in supported secure
   Chromium contexts. It requests a Polar H10, writes the canonical PMD ECG/ACC
   start commands, and decodes ECG, uncompressed/variable-delta ACC, HR/RR, and
