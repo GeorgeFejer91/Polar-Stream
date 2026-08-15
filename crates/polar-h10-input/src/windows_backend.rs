@@ -9,7 +9,7 @@ use std::{
     future::IntoFuture,
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -57,6 +57,7 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 const CHARACTERISTIC_ATTEMPTS: usize = 3;
 const RAW_NOTIFICATION_CAPACITY: usize = 128;
 const FIRST_FRAME_BUFFER_CAPACITY: usize = 64;
+const SCAN_DIAGNOSTICS_ENV: &str = "POLAR_STREAM_H10_SCAN_DIAGNOSTICS";
 
 #[derive(Clone)]
 struct ScanObservation {
@@ -134,6 +135,36 @@ fn watcher_needs_stop(status: BluetoothLEAdvertisementWatcherStatus) -> bool {
     status == BluetoothLEAdvertisementWatcherStatus::Started
 }
 
+fn watcher_status_name(status: BluetoothLEAdvertisementWatcherStatus) -> &'static str {
+    if status == BluetoothLEAdvertisementWatcherStatus::Created {
+        "created"
+    } else if status == BluetoothLEAdvertisementWatcherStatus::Started {
+        "started"
+    } else if status == BluetoothLEAdvertisementWatcherStatus::Stopping {
+        "stopping"
+    } else if status == BluetoothLEAdvertisementWatcherStatus::Stopped {
+        "stopped"
+    } else if status == BluetoothLEAdvertisementWatcherStatus::Aborted {
+        "aborted"
+    } else {
+        "unknown"
+    }
+}
+
+fn report_scan_status(
+    diagnostics_enabled: bool,
+    transition: &str,
+    watcher: &BluetoothLEAdvertisementWatcher,
+) {
+    if diagnostics_enabled {
+        let status = watcher
+            .Status()
+            .map(watcher_status_name)
+            .unwrap_or("unavailable");
+        eprintln!("POLAR_H10_SCAN_DIAGNOSTIC transition={transition} status={status}");
+    }
+}
+
 impl Drop for AdvertisementWatcherGuard {
     fn drop(&mut self) {
         if let Some(token) = self.received_token.take() {
@@ -152,16 +183,22 @@ pub(super) async fn scan() -> Result<Vec<DeviceSummary>, String> {
 }
 
 fn scan_blocking() -> Result<Vec<DeviceSummary>, String> {
+    let diagnostics_enabled = std::env::var_os(SCAN_DIAGNOSTICS_ENV).is_some();
     let watcher = BluetoothLEAdvertisementWatcher::new()
         .map_err(|error| stage_error("scan initialization", error))?;
+    report_scan_status(diagnostics_enabled, "created", &watcher);
     watcher
         .SetScanningMode(BluetoothLEScanningMode::Active)
         .map_err(|error| stage_error("scan mode", error))?;
 
     let observations = Arc::new(Mutex::new(ScanAccumulator::default()));
     let overflowed = Arc::new(AtomicBool::new(false));
+    let advertisement_count = diagnostics_enabled.then(|| Arc::new(AtomicUsize::new(0)));
+    let accepted_observation_count = diagnostics_enabled.then(|| Arc::new(AtomicUsize::new(0)));
     let callback_observations = observations.clone();
     let callback_overflowed = overflowed.clone();
+    let callback_advertisement_count = advertisement_count.clone();
+    let callback_accepted_observation_count = accepted_observation_count.clone();
     let handler = TypedEventHandler::<
         BluetoothLEAdvertisementWatcher,
         BluetoothLEAdvertisementReceivedEventArgs,
@@ -169,6 +206,9 @@ fn scan_blocking() -> Result<Vec<DeviceSummary>, String> {
         move |_, args: Ref<BluetoothLEAdvertisementReceivedEventArgs>| {
             let result = (|| {
                 let args = args.ok()?;
+                if let Some(count) = &callback_advertisement_count {
+                    count.fetch_add(1, Ordering::Relaxed);
+                }
                 let address = args.BluetoothAddress()?;
                 let rssi = args.RawSignalStrengthInDBm()?;
                 let advertisement = args.Advertisement()?;
@@ -186,6 +226,10 @@ fn scan_blocking() -> Result<Vec<DeviceSummary>, String> {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if !observations.record(address, name, rssi, advertised_polar_service) {
                     callback_overflowed.store(true, Ordering::Release);
+                } else if observations.devices.contains_key(&address)
+                    && let Some(count) = &callback_accepted_observation_count
+                {
+                    count.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok::<(), windows::core::Error>(())
             })();
@@ -207,11 +251,14 @@ fn scan_blocking() -> Result<Vec<DeviceSummary>, String> {
         .watcher
         .Start()
         .map_err(|error| stage_error("scan start", error))?;
+    report_scan_status(diagnostics_enabled, "started", &guard.watcher);
     std::thread::sleep(SCAN_DURATION);
+    report_scan_status(diagnostics_enabled, "before-stop", &guard.watcher);
     guard
         .watcher
         .Stop()
         .map_err(|error| stage_error("scan stop", error))?;
+    report_scan_status(diagnostics_enabled, "after-stop", &guard.watcher);
     if let Some(token) = guard.received_token.take() {
         guard
             .watcher
@@ -230,7 +277,24 @@ fn scan_blocking() -> Result<Vec<DeviceSummary>, String> {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::mem::take(&mut *observations)
     };
-    Ok(observations.finish())
+    let devices = observations.finish();
+    if diagnostics_enabled {
+        let accepted = accepted_observation_count
+            .as_deref()
+            .map(|count| count.load(Ordering::Relaxed))
+            .unwrap_or_default();
+        eprintln!(
+            "POLAR_H10_SCAN_DIAGNOSTIC advertisements={} accepted_observations={} unique_candidates={} coalesced_repeats={}",
+            advertisement_count
+                .as_deref()
+                .map(|count| count.load(Ordering::Relaxed))
+                .unwrap_or_default(),
+            accepted,
+            devices.len(),
+            accepted.saturating_sub(devices.len())
+        );
+    }
+    Ok(devices)
 }
 
 pub(super) struct PreparedConnection {
@@ -1290,6 +1354,26 @@ mod tests {
         assert!(!watcher_needs_stop(
             BluetoothLEAdvertisementWatcherStatus::Aborted
         ));
+        assert_eq!(
+            watcher_status_name(BluetoothLEAdvertisementWatcherStatus::Created),
+            "created"
+        );
+        assert_eq!(
+            watcher_status_name(BluetoothLEAdvertisementWatcherStatus::Started),
+            "started"
+        );
+        assert_eq!(
+            watcher_status_name(BluetoothLEAdvertisementWatcherStatus::Stopping),
+            "stopping"
+        );
+        assert_eq!(
+            watcher_status_name(BluetoothLEAdvertisementWatcherStatus::Stopped),
+            "stopped"
+        );
+        assert_eq!(
+            watcher_status_name(BluetoothLEAdvertisementWatcherStatus::Aborted),
+            "aborted"
+        );
     }
 
     fn ecg_event() -> InputEvent {
