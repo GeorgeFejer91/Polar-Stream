@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-16 — Match the passing probe's WinRT completion projection
+
+The attended `pmd-only-retain-successful-gatt-operations` run was
+reference-positive with one exact H10 and a 100% battery reading. The candidate
+again completed device/session/PMD discovery, negotiated a 232-byte PDU,
+committed both PMD CCCDs, attached both handlers, and received both ECG control
+responses, but PMD-data callbacks remained zero through the first-frame
+timeout. Explicit success-time operation `Close()` is therefore eliminated.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-winrt-when-completion`. Relative to
+the failed unclosed baseline, PMD CCCD/control operations use the physically
+passing probe's `windows-future` `.when` completion callback rather than the
+`IntoFuture` projection. The result still crosses a bounded Tokio oneshot and
+the existing per-stage owner retains timeout cancellation, failure cleanup, and
+final teardown. The default product path and every non-PMD operation remain
+unchanged. Publication and physical acceptance remain held.
+
 ## 2026-08-16 — Leave successful PMD GATT operations unclosed as the next differential
 
 The attended `pmd-only-differential` run was reference-positive, selected the

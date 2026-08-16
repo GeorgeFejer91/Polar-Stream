@@ -102,9 +102,14 @@ is therefore eliminated. The next attended verifier uses
 `pmd-only-retain-successful-gatt-operations`: it retains the HR-free baseline
 and additionally omits success-time `Close()` only for PMD CCCD/control-write
 WinRT operations. Failed, timed-out, cancelled, rollback, and final cleanup
-paths still cancel/close. An absent variable preserves the normal
-reference-compatible product path; any other value rejects before device
-setup. These are diagnostic profiles, not supported user configuration.
+paths still cancel/close. The attended run still received both control
+responses but no PMD-data callback, eliminating explicit success-time close.
+The next verifier uses `pmd-only-winrt-when-completion`, changing only the PMD
+CCCD/control completion projection to the passing probe's `windows-future`
+`.when` callback while preserving the same deadlines and cleanup. An absent
+variable preserves the normal reference-compatible product path; any other
+value rejects before device setup. These are diagnostic profiles, not supported
+user configuration.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while

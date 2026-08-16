@@ -298,9 +298,15 @@ rate branch. The next exact candidate is
 it additionally leaves successful PMD CCCD/control-write WinRT operations
 without an explicit `Close()` immediately after completion. Timeout,
 cancellation, native-error,
-rollback, and final session cleanup remain unchanged. The normal path remains
-unchanged when the variable is absent, and every other value rejects. Physical
-product and official-inlet acceptance remain open until the next attended run.
+rollback, and final session cleanup remain unchanged. That candidate also
+received both control responses but zero PMD-data callbacks, eliminating
+success-time explicit close. The next exact candidate is
+`pmd-only-winrt-when-completion`: relative to the failed unclosed baseline it
+uses the passing probe's `windows-future` `.when` completion callback for PMD
+CCCD/control operations while retaining the same Tokio deadlines and cleanup
+owner. The normal path remains unchanged when the variable is absent, and every
+other value rejects. Physical product and official-inlet acceptance remain open
+until the next attended run.
 
 ## Stable discovery names
 

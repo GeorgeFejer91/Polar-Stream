@@ -44,6 +44,7 @@ use windows::{
     Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
     core::{GUID, Ref},
 };
+use windows_future::IAsyncOperation;
 
 use super::{
     BATTERY_LEVEL, DeviceSummary, HEART_RATE_MEASUREMENT, HEART_RATE_SERVICE, InputEvent,
@@ -74,6 +75,7 @@ const SESSION_DIAGNOSTICS_ENV: &str = "POLAR_STREAM_H10_SESSION_DIAGNOSTICS";
 const SESSION_PROFILE_ENV: &str = "POLAR_STREAM_H10_SESSION_PROFILE";
 const PMD_ONLY_PROFILE: &str = "pmd-only-differential";
 const PMD_RETAIN_SUCCESS_PROFILE: &str = "pmd-only-retain-successful-gatt-operations";
+const PMD_WHEN_COMPLETION_PROFILE: &str = "pmd-only-winrt-when-completion";
 const PROPERTY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(6);
 const PROPERTY_CONFIRMATION_CONCURRENCY: usize = 8;
@@ -83,6 +85,7 @@ enum SessionProfile {
     ReferenceCompatible,
     PmdOnlyDifferential,
     PmdOnlyRetainSuccessfulGattOperations,
+    PmdOnlyWinrtWhenCompletion,
 }
 
 impl SessionProfile {
@@ -93,8 +96,11 @@ impl SessionProfile {
             Some(value) if value == OsStr::new(PMD_RETAIN_SUCCESS_PROFILE) => {
                 Ok(Self::PmdOnlyRetainSuccessfulGattOperations)
             }
+            Some(value) if value == OsStr::new(PMD_WHEN_COMPLETION_PROFILE) => {
+                Ok(Self::PmdOnlyWinrtWhenCompletion)
+            }
             Some(_) => Err(format!(
-                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE} or {PMD_RETAIN_SUCCESS_PROFILE} when set"
+                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, or {PMD_WHEN_COMPLETION_PROFILE} when set"
             )),
         }
     }
@@ -109,7 +115,14 @@ impl SessionProfile {
     }
 
     const fn close_successful_gatt_operations(self) -> bool {
-        !matches!(self, Self::PmdOnlyRetainSuccessfulGattOperations)
+        !matches!(
+            self,
+            Self::PmdOnlyRetainSuccessfulGattOperations | Self::PmdOnlyWinrtWhenCompletion
+        )
+    }
+
+    const fn use_winrt_when_completion(self) -> bool {
+        matches!(self, Self::PmdOnlyWinrtWhenCompletion)
     }
 
     const fn name(self) -> &'static str {
@@ -117,6 +130,7 @@ impl SessionProfile {
             Self::ReferenceCompatible => "reference-compatible",
             Self::PmdOnlyDifferential => PMD_ONLY_PROFILE,
             Self::PmdOnlyRetainSuccessfulGattOperations => PMD_RETAIN_SUCCESS_PROFILE,
+            Self::PmdOnlyWinrtWhenCompletion => PMD_WHEN_COMPLETION_PROFILE,
         }
     }
 }
@@ -1178,6 +1192,7 @@ struct WinrtSession {
     subscriptions: Vec<Subscription>,
     cleanup: SessionCleanup,
     close_successful_gatt_operations: bool,
+    use_winrt_when_completion: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1251,6 +1266,7 @@ impl OpeningSession {
         mut self,
         handles: DiscoveredHandles,
         close_successful_gatt_operations: bool,
+        use_winrt_when_completion: bool,
     ) -> WinrtSession {
         WinrtSession {
             device: self
@@ -1272,6 +1288,7 @@ impl OpeningSession {
             subscriptions: Vec::new(),
             cleanup: SessionCleanup::default(),
             close_successful_gatt_operations,
+            use_winrt_when_completion,
         }
     }
 }
@@ -1403,6 +1420,55 @@ where
             operation,
             cancel,
             close,
+            close_after_success,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+async fn await_winrt_stage_when<T>(
+    call: WinrtStageCall,
+    operation: windows::core::Result<IAsyncOperation<T>>,
+    close_after_success: bool,
+    cancelled: &mut watch::Receiver<bool>,
+) -> Result<T, String>
+where
+    T: windows::core::RuntimeType + Send + 'static,
+{
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(error) => {
+            call.reporter
+                .record_immediate(call.stage, call.attempt, StageResultClass::NativeError);
+            return Err(format!(
+                "Windows WinRT {} failed: {error}",
+                call.stage.name()
+            ));
+        }
+    };
+    let control_operation = operation.clone();
+    let (completion_tx, completion_rx) = oneshot::channel();
+    run_controlled_stage(
+        call.reporter,
+        call.stage,
+        call.attempt,
+        call.timeout,
+        cancelled,
+        async move {
+            operation
+                .when(move |result| {
+                    let _ = completion_tx.send(result.map_err(|error| error.to_string()));
+                })
+                .map_err(|error| error.to_string())?;
+            completion_rx
+                .await
+                .map_err(|_| "Windows WinRT completion callback closed".to_string())?
+        },
+        WinrtStageControl {
+            operation: control_operation,
+            cancel: |operation: &IAsyncOperation<T>| operation.Cancel(),
+            close: |operation: &IAsyncOperation<T>| operation.Close(),
             close_after_success,
         },
     )
@@ -1587,6 +1653,7 @@ impl WinrtSession {
                 battery: None,
             },
             profile.close_successful_gatt_operations(),
+            profile.use_winrt_when_completion(),
         ))
     }
 
@@ -1688,15 +1755,28 @@ impl WinrtSession {
         let mode = select_subscription_mode(property_shape);
         diagnostics.record_properties(source, property_shape, mode);
         diagnostics.report("properties-read");
-        let status = await_winrt_stage_with_success_close(
-            WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT),
-            characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(mode.cccd()),
-            |operation| operation.Cancel(),
-            |operation| operation.Close(),
-            self.close_successful_gatt_operations,
-            cancelled,
-        )
-        .await;
+        let call = WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT);
+        let operation =
+            characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(mode.cccd());
+        let status = if self.use_winrt_when_completion {
+            await_winrt_stage_when(
+                call,
+                operation,
+                self.close_successful_gatt_operations,
+                cancelled,
+            )
+            .await
+        } else {
+            await_winrt_stage_with_success_close(
+                call,
+                operation,
+                |operation| operation.Cancel(),
+                |operation| operation.Close(),
+                self.close_successful_gatt_operations,
+                cancelled,
+            )
+            .await
+        };
         match status {
             Ok(GattCommunicationStatus::Success) => {
                 activation.commit_cccd().map_err(|error| {
@@ -1794,15 +1874,26 @@ impl WinrtSession {
             let buffer = writer.DetachBuffer()?;
             self.control.WriteValueWithResultAsync(&buffer)
         })();
-        let result = await_winrt_stage_with_success_close(
-            WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT),
-            operation,
-            |operation| operation.Cancel(),
-            |operation| operation.Close(),
-            self.close_successful_gatt_operations,
-            cancelled,
-        )
-        .await?;
+        let call = WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT);
+        let result = if self.use_winrt_when_completion {
+            await_winrt_stage_when(
+                call,
+                operation,
+                self.close_successful_gatt_operations,
+                cancelled,
+            )
+            .await?
+        } else {
+            await_winrt_stage_with_success_close(
+                call,
+                operation,
+                |operation| operation.Cancel(),
+                |operation| operation.Close(),
+                self.close_successful_gatt_operations,
+                cancelled,
+            )
+            .await?
+        };
         let status = result
             .Status()
             .map_err(|error| stage_error(stage.name(), error))?;
@@ -1967,10 +2058,11 @@ pub(super) async fn prepare(
     let diagnostics_enabled = std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some();
     if diagnostics_enabled {
         eprintln!(
-            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={}",
+            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={} winrt-when-completion={}",
             profile.name(),
             profile.heart_rate_enabled(),
-            profile.close_successful_gatt_operations()
+            profile.close_successful_gatt_operations(),
+            profile.use_winrt_when_completion()
         );
     }
     let reporter = StageReporter::new(
@@ -2839,12 +2931,14 @@ mod tests {
         assert_eq!(reference.name(), "reference-compatible");
         assert!(reference.heart_rate_enabled());
         assert!(reference.close_successful_gatt_operations());
+        assert!(!reference.use_winrt_when_completion());
 
         let pmd_only = SessionProfile::parse(Some(OsStr::new(PMD_ONLY_PROFILE))).unwrap();
         assert_eq!(pmd_only, SessionProfile::PmdOnlyDifferential);
         assert_eq!(pmd_only.name(), PMD_ONLY_PROFILE);
         assert!(!pmd_only.heart_rate_enabled());
         assert!(pmd_only.close_successful_gatt_operations());
+        assert!(!pmd_only.use_winrt_when_completion());
 
         let retained = SessionProfile::parse(Some(OsStr::new(PMD_RETAIN_SUCCESS_PROFILE))).unwrap();
         assert_eq!(
@@ -2854,11 +2948,20 @@ mod tests {
         assert_eq!(retained.name(), PMD_RETAIN_SUCCESS_PROFILE);
         assert!(!retained.heart_rate_enabled());
         assert!(!retained.close_successful_gatt_operations());
+        assert!(!retained.use_winrt_when_completion());
+
+        let when = SessionProfile::parse(Some(OsStr::new(PMD_WHEN_COMPLETION_PROFILE))).unwrap();
+        assert_eq!(when, SessionProfile::PmdOnlyWinrtWhenCompletion);
+        assert_eq!(when.name(), PMD_WHEN_COMPLETION_PROFILE);
+        assert!(!when.heart_rate_enabled());
+        assert!(!when.close_successful_gatt_operations());
+        assert!(when.use_winrt_when_completion());
 
         let error = SessionProfile::parse(Some(OsStr::new("pmd-only"))).unwrap_err();
         assert!(error.contains(SESSION_PROFILE_ENV));
         assert!(error.contains(PMD_ONLY_PROFILE));
         assert!(error.contains(PMD_RETAIN_SUCCESS_PROFILE));
+        assert!(error.contains(PMD_WHEN_COMPLETION_PROFILE));
     }
 
     fn evidence(
