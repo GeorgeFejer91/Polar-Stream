@@ -171,11 +171,16 @@ Last verified: 2026-08-16
   actual event handler, exactly matching the passing reference's one-write then
   one-handler projection; an attended run again received both exact PMD control
   responses but zero PMD data callbacks. A standalone identifier-free Windows
-  PMD probe now isolates the remaining projection boundary from discovery,
-  Tauri, Tokio, LSL, heart rate, UI, and application queues. It is host-tested
-  only and requires a reference-positive attended run. Physical sensor
-  acquisition and official-inlet delivery remain open. Retain the publication
-  and release hold until one Polar Stream run supplies the complete evidence.
+  PMD probe isolates the remaining projection boundary from discovery, Tauri,
+  Tokio, LSL, heart rate, UI, and application queues. In one reference-positive
+  attended epoch it received a 73-sample ECG frame and a 36-sample three-axis
+  ACC frame after all exact PMD responses. The full Polar Stream verifier in
+  that same lease still received both ECG control responses but zero PMD-data
+  callbacks before its first-frame timeout. The remaining defect is therefore
+  confined to an extra production-session behavior rather than the H10, PMD
+  commands, scanner, Rusty LSL, or generic `windows-rs` event delivery. Official
+  inlet delivery remains open. Retain the publication and release hold until
+  one full Polar Stream run supplies the complete evidence.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also

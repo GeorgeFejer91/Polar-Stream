@@ -1,5 +1,32 @@
 # Decision log
 
+## 2026-08-16 — Minimal Windows PMD projection passes on the physical H10
+
+With the Bluetooth headset and nearby 2.4 GHz mouse receiver disconnected, one
+attended lease produced a reference-positive H10 observation followed by a
+complete standalone-probe pass. The probe received all three exact control
+responses, one 73-sample ECG frame, and one 36-sample three-axis ACC frame. This
+physically proves that the H10, negotiated link, PMD commands, direct
+`TypedEventHandler` projection, `windows-future` completion callbacks, and
+standard-library handoff can deliver both streams on this Windows host. The RF
+condition improved this epoch but one comparison does not establish either
+disconnected peripheral as the sole cause of earlier advertisement misses.
+
+The full Polar Stream verifier then ran in the same lease. It selected the exact
+H10, retained a connected 232-byte-PDU session, initialized both Rusty outlets,
+completed service/characteristic discovery and all three subscriptions, and
+received the exact ECG settings/start responses. Its PMD-data callback count
+nevertheless remained zero through the first-ECG timeout, so official inlets
+were never opened. This is a production input-session failure before Rusty LSL,
+not a device, scanner, protocol-command, or generic `windows-rs` callback
+failure.
+
+The next source work must compare the passing probe and product path one
+behavior at a time. The bounded candidates are heart-rate exclusion, successful
+WinRT-operation lifetime/projection, and the PMD callback-to-queue handoff; do
+not change discovery or Rusty LSL. Publication remains held until the full
+source-to-official-inlet chain passes.
+
 ## 2026-08-16 — Isolate the remaining PMD event boundary from the application
 
 The directly retained one-write/one-handler candidate was physically
