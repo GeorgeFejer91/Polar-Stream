@@ -63,9 +63,11 @@ items into the dated history instead of silently deleting them.
   loss/reorder/rate evidence, and clean process/socket shutdown. The direct
   Windows WinRT scanner now has same-epoch reference-positive physical selection
   evidence plus physical success through CCCD subscription and both GATT start
-  writes. The next attended run must exercise the new response-gated PMD
-  settings → ECG → ACC sequence and continue only if both sensor frames advance.
-  Rusty outlets and official inlets remain unaccepted; the separate
+  writes. A standalone Windows PMD probe removes scanning, Tauri, Tokio, LSL,
+  heart rate, UI, and application queues from the next differential. Its next
+  attended run must follow a reference-positive observation and prove PMD
+  settings → ECG → ACC through both first frames before the full candidate is
+  exercised. Rusty outlets and official inlets remain unaccepted; the separate
   reference-doctor passes are not acceptance.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that

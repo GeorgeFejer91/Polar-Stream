@@ -1,5 +1,30 @@
 # Decision log
 
+## 2026-08-16 — Isolate the remaining PMD event boundary from the application
+
+The directly retained one-write/one-handler candidate was physically
+reference-positive, selected and connected the exact H10 with a 232-byte PDU,
+and received both successful PMD control responses, but still received zero PMD
+data callbacks. Descriptor readback and handler-wrapper ownership are therefore
+no longer active hypotheses.
+
+The next differential is a standalone Windows-only PMD probe in
+`polar-h10-input`. It accepts a private Bluetooth address without scanning or
+emitting it, initializes one MTA, uses `windows-future` completion callbacks and
+standard-library channels, resolves only PMD control/data, requests ECG at
+130 Hz and ACC at 200 Hz, and requires exact control responses plus one decoded
+frame from each stream. It deliberately excludes Tauri, Tokio, LSL, heart rate,
+UI state, and application queues. Every operation and frame wait is bounded;
+timeouts request cancellation, event handlers and CCCDs are removed in reverse
+order, and cleanup is guarded exactly once.
+
+The behavioral comparison remains the public `MesmerPrism/PolarH10` Windows
+path at `3777ccf6970d2a0457d0a4be99e6c15645818db0`; no implementation source was
+copied. Host tests prove parsing, response validation, completion outcomes,
+cancellation, and cleanup gating only. An attended same-lease reference-positive
+device run is required before this probe can diagnose or clear the remaining
+physical projection boundary, and it does not change the publication hold.
+
 ## 2026-08-16 — Subscription projection matches the passing Windows reference
 
 The attended dedicated-apartment candidate was reference-positive, connected

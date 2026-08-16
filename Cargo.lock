@@ -2762,6 +2762,7 @@ dependencies = [
  "tokio",
  "uuid",
  "windows 0.62.2",
+ "windows-future 0.3.2",
 ]
 
 [[package]]

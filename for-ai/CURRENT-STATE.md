@@ -167,11 +167,15 @@ Last verified: 2026-08-16
   while PMD control and heart-rate events advanced, but PMD data entered zero
   callbacks. Confining all WinRT work to one explicit MTA/current-thread owner
   produced the same physical result, ruling out runtime-worker migration. The
-  next host candidate removes the extra descriptor readback and retains the
+  subsequent candidate removed the extra descriptor readback and retained the
   actual event handler, exactly matching the passing reference's one-write then
-  one-handler projection. Physical sensor acquisition and official-inlet
-  delivery remain open. Retain the publication and release hold until one Polar
-  Stream run supplies the complete evidence.
+  one-handler projection; an attended run again received both exact PMD control
+  responses but zero PMD data callbacks. A standalone identifier-free Windows
+  PMD probe now isolates the remaining projection boundary from discovery,
+  Tauri, Tokio, LSL, heart rate, UI, and application queues. It is host-tested
+  only and requires a reference-positive attended run. Physical sensor
+  acquisition and official-inlet delivery remain open. Retain the publication
+  and release hold until one Polar Stream run supplies the complete evidence.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also
