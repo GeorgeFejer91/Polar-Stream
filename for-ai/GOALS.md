@@ -68,9 +68,11 @@ items into the dated history instead of silently deleting them.
   reference-positive attended run proved PMD settings → ECG → ACC through both
   first frames in that probe, while the full product path in the same lease
   still timed out with zero PMD-data callbacks. Reconcile the product session
-  with the passing minimal lifecycle one difference at a time, then repeat the
-  full physical source and official-inlet gate. Rusty outlets and official
-  inlets remain unaccepted; the probe pass is not product acceptance.
+  with the passing minimal lifecycle one difference at a time. The prepared
+  next candidate skips only optional heart-rate discovery/subscription under a
+  closed verifier-only session profile; run it through the full physical source
+  and official-inlet gate. Rusty outlets and official inlets remain unaccepted;
+  the probe pass is not product acceptance.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that
   decision and physical/cross-platform gates close.

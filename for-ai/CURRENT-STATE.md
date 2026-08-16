@@ -179,8 +179,11 @@ Last verified: 2026-08-16
   callbacks before its first-frame timeout. The remaining defect is therefore
   confined to an extra production-session behavior rather than the H10, PMD
   commands, scanner, Rusty LSL, or generic `windows-rs` event delivery. Official
-  inlet delivery remains open. Retain the publication and release hold until
-  one full Polar Stream run supplies the complete evidence.
+  inlet delivery remains open. The next verifier uses a closed, opt-in PMD-only
+  session profile that skips only heart-rate discovery/subscription; the normal
+  product profile and every other production behavior remain unchanged. Retain
+  the publication and release hold until one full Polar Stream run supplies the
+  complete evidence.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also

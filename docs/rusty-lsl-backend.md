@@ -94,6 +94,15 @@ It never records addresses, names, payload bytes or sizes, manufacturer data, or
 stable device identities. PMD settings and start responses are separate stages
 from their GATT writes and first frames.
 
+The current attended differential additionally sets
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential`. This closed,
+verifier-only profile skips optional heart-rate discovery and subscription but
+retains the same scanner, device/session ownership, PMD discovery, control/data
+subscriptions, response gates, queues, cleanup, outlets, and official inlets.
+An absent variable preserves the normal reference-compatible product path; any
+other value rejects before device setup. This is a one-variable diagnostic, not
+a supported user configuration or a claim that heart rate caused the failure.
+
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
 Polar Stream's old `btleplug` GATT connection path stopped at connect,
@@ -143,16 +152,13 @@ attended reference-positive run of that exact candidate still produced PMD
 control and heart-rate callbacks but zero PMD-data callbacks, ruling out
 runtime-worker migration.
 
-The next host candidate matches the passing reference's projection more
-literally: one successful CCCD write is followed immediately by registration
-and direct retention of the actual `TypedEventHandler`. It removes the
-interposed descriptor readback and `AgileReference` while retaining the same
-characteristic, response gates, deadlines, queues, cancellation, and rollback.
-A typed activation guard and deterministic damaged-order/duplicate tests bind
-that sequence. Prior exact readback remains historical diagnostic evidence, not
-an acquisition requirement. This candidate is not device acceptance until the
-next attended same-epoch run reaches both sensor streams and both official
-inlets.
+The direct-handler candidate and the standalone PMD probe closed the generic
+projection question: the minimal probe physically received ECG and ACC while
+the full product path in the same lease still received zero PMD-data callbacks.
+The next candidate therefore uses the closed PMD-only verifier profile above to
+remove only optional heart-rate discovery/subscription from the full product
+session. It is not device acceptance until an attended same-epoch run reaches
+both sensor streams and both official inlets.
 
 The typed trace proved address/device acquisition, persistent session setup,
 service/characteristic access, all three CCCDs, and the ECG settings/start

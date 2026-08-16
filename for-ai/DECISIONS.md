@@ -1,5 +1,24 @@
 # Decision log
 
+## 2026-08-16 — PMD-only production differential changes one optional branch
+
+The next full-product candidate uses the exact closed environment value
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential`. It skips optional
+heart-rate service/characteristic discovery and notification subscription, then
+uses the unchanged production scanner, address/device/session acquisition, PMD
+service/characteristics, control/data subscriptions, response and first-frame
+gates, callback queue, cleanup, Rusty outlets, and official-inlet verifier. The
+physical verifier sets the value explicitly; absence preserves the normal
+reference-compatible product lifecycle, and any other value rejects before
+device setup.
+
+This is a diagnostic candidate, not a supported user preference and not a
+conclusion that heart rate caused the failure. It is intentionally the smallest
+full-product difference from the physically passing minimal PMD probe. Host
+tests bind the closed vocabulary, default behavior, verifier routing, and
+identifier-free profile diagnostic. Publication remains held until the attended
+source-to-official-inlet gate passes.
+
 ## 2026-08-16 — Minimal Windows PMD projection passes on the physical H10
 
 With the Bluetooth headset and nearby 2.4 GHz mouse receiver disconnected, one

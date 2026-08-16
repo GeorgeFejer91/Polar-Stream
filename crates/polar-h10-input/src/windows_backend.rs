@@ -6,6 +6,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    ffi::OsStr,
     future::IntoFuture,
     marker::PhantomData,
     rc::Rc,
@@ -70,9 +71,45 @@ const RAW_NOTIFICATION_CAPACITY: usize = 128;
 const FIRST_FRAME_BUFFER_CAPACITY: usize = 64;
 const SCAN_DIAGNOSTICS_ENV: &str = "POLAR_STREAM_H10_SCAN_DIAGNOSTICS";
 const SESSION_DIAGNOSTICS_ENV: &str = "POLAR_STREAM_H10_SESSION_DIAGNOSTICS";
+const SESSION_PROFILE_ENV: &str = "POLAR_STREAM_H10_SESSION_PROFILE";
+const PMD_ONLY_PROFILE: &str = "pmd-only-differential";
 const PROPERTY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(6);
 const PROPERTY_CONFIRMATION_CONCURRENCY: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionProfile {
+    ReferenceCompatible,
+    PmdOnlyDifferential,
+}
+
+impl SessionProfile {
+    fn parse(value: Option<&OsStr>) -> Result<Self, String> {
+        match value {
+            None => Ok(Self::ReferenceCompatible),
+            Some(value) if value == OsStr::new(PMD_ONLY_PROFILE) => Ok(Self::PmdOnlyDifferential),
+            Some(_) => Err(format!(
+                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE} when set"
+            )),
+        }
+    }
+
+    fn from_environment() -> Result<Self, String> {
+        let value = std::env::var_os(SESSION_PROFILE_ENV);
+        Self::parse(value.as_deref())
+    }
+
+    const fn heart_rate_enabled(self) -> bool {
+        matches!(self, Self::ReferenceCompatible)
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ReferenceCompatible => "reference-compatible",
+            Self::PmdOnlyDifferential => PMD_ONLY_PROFILE,
+        }
+    }
+}
 
 #[derive(Clone)]
 struct ScanObservation {
@@ -1361,6 +1398,7 @@ where
 impl WinrtSession {
     async fn open(
         device_id: &str,
+        profile: SessionProfile,
         reporter: StageReporter,
         cancelled: &mut watch::Receiver<bool>,
     ) -> Result<Self, String> {
@@ -1421,38 +1459,45 @@ impl WinrtSession {
             }
         }
 
-        // Match the black-box lifecycle of the exact published Windows
-        // reference: let its persistent session settle, resolve optional heart
-        // rate first, then acquire the required PMD handles. Battery discovery
+        // The normal profile matches the black-box lifecycle of the exact
+        // published Windows reference: settle the persistent session and
+        // resolve optional heart rate before required PMD. The verifier-only
+        // PMD differential skips that optional branch so its next physical run
+        // changes exactly one production-session behavior. Battery discovery
         // remains outside required sensor qualification. Throughput
         // optimization is requested only after both first frames.
         let opening = OpeningSession::new(device, gatt_session, None);
-        let heart_rate_service = optional_service(
-            opening.device(),
-            HEART_RATE_SERVICE,
-            SessionStage::HeartRateServiceDiscovery,
-            reporter,
-            cancelled,
-        )
-        .await;
-        ensure_active(cancelled, "heart-rate service discovery")?;
-        let heart_rate = if let Some(service) = &heart_rate_service {
-            optional_characteristic(
-                service,
-                HEART_RATE_MEASUREMENT,
-                CharacteristicStages {
-                    access: SessionStage::HeartRateAccess,
-                    uncached: SessionStage::HeartRateDiscoveryUncached,
-                    cached: SessionStage::HeartRateDiscoveryCached,
-                },
+        let (heart_rate_service, heart_rate) = if profile.heart_rate_enabled() {
+            let service = optional_service(
+                opening.device(),
+                HEART_RATE_SERVICE,
+                SessionStage::HeartRateServiceDiscovery,
                 reporter,
                 cancelled,
             )
-            .await
+            .await;
+            ensure_active(cancelled, "heart-rate service discovery")?;
+            let characteristic = if let Some(service) = &service {
+                optional_characteristic(
+                    service,
+                    HEART_RATE_MEASUREMENT,
+                    CharacteristicStages {
+                        access: SessionStage::HeartRateAccess,
+                        uncached: SessionStage::HeartRateDiscoveryUncached,
+                        cached: SessionStage::HeartRateDiscoveryCached,
+                    },
+                    reporter,
+                    cancelled,
+                )
+                .await
+            } else {
+                None
+            };
+            ensure_active(cancelled, "heart-rate characteristic discovery")?;
+            (service, characteristic)
         } else {
-            None
+            (None, None)
         };
-        ensure_active(cancelled, "heart-rate characteristic discovery")?;
 
         let pmd_service = required_service(
             opening.device(),
@@ -1875,7 +1920,15 @@ pub(super) async fn prepare(
     event_tx: mpsc::Sender<InputEvent>,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<PreparedConnection, String> {
+    let profile = SessionProfile::from_environment()?;
     let diagnostics_enabled = std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some();
+    if diagnostics_enabled {
+        eprintln!(
+            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={}",
+            profile.name(),
+            profile.heart_rate_enabled()
+        );
+    }
     let reporter = StageReporter::new(
         diagnostics_enabled,
         Some(tokio::time::Instant::now() + SESSION_SETUP_TIMEOUT),
@@ -1883,7 +1936,7 @@ pub(super) async fn prepare(
     let notification_diagnostics = Arc::new(NotificationDiagnostics::new(diagnostics_enabled));
     let (raw_tx, mut raw_rx) = mpsc::channel(RAW_NOTIFICATION_CAPACITY);
     let (fault_tx, mut fault_rx) = watch::channel(None::<String>);
-    let mut session = WinrtSession::open(device_id, reporter, cancelled).await?;
+    let mut session = WinrtSession::open(device_id, profile, reporter, cancelled).await?;
     session.report_link_diagnostic("after-discovery");
     let mut gate = FirstFrameGate::default();
     let mut frame_stages = FirstFrameStages::new(reporter);
@@ -2734,6 +2787,23 @@ fn stage_error(stage: &str, error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use polar_h10_core::AccSample;
+
+    #[test]
+    fn session_profile_is_closed_and_pmd_only_changes_only_heart_rate_routing() {
+        let reference = SessionProfile::parse(None).unwrap();
+        assert_eq!(reference, SessionProfile::ReferenceCompatible);
+        assert_eq!(reference.name(), "reference-compatible");
+        assert!(reference.heart_rate_enabled());
+
+        let pmd_only = SessionProfile::parse(Some(OsStr::new(PMD_ONLY_PROFILE))).unwrap();
+        assert_eq!(pmd_only, SessionProfile::PmdOnlyDifferential);
+        assert_eq!(pmd_only.name(), PMD_ONLY_PROFILE);
+        assert!(!pmd_only.heart_rate_enabled());
+
+        let error = SessionProfile::parse(Some(OsStr::new("pmd-only"))).unwrap_err();
+        assert!(error.contains(SESSION_PROFILE_ENV));
+        assert!(error.contains(PMD_ONLY_PROFILE));
+    }
 
     fn evidence(
         name: Option<&str>,

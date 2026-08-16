@@ -286,14 +286,16 @@ start response, while PMD control and heart-rate callbacks advanced and PMD
  the entire WinRT lifecycle to the explicit apartment owner above produced the
  same physical outcome, ruling out runtime-worker migration.
 
-The current host candidate now closes the last projection-level subscription
-difference: exactly one successful CCCD write is immediately followed by one
-directly retained `TypedEventHandler`, matching the passing reference without
-an interposed descriptor readback or `AgileReference`. A typed activation guard
-rejects handler-before-write and duplicate activation, and failure after the
-CCCD commit rolls it back. Previous exact CCCD readback remains historical
-diagnostic evidence; it is not repeated in the acquisition path. Physical ECG,
-ACC, Rusty outlet, and official-inlet acceptance remain open until the next
+The direct-handler candidate and a standalone minimal PMD probe closed the
+generic projection-level question. The probe physically received ECG and ACC;
+the full product verifier in the same lease still received both ECG control
+responses but zero PMD-data callbacks. The next candidate is therefore the
+closed verifier-only session profile
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential`. It skips only optional
+heart-rate discovery/subscription while retaining the production scanner,
+session, PMD operations, queues, Rusty outlets, and official inlets. The normal
+path is unchanged when the variable is absent, and every other value rejects.
+Physical product and official-inlet acceptance remain open until the next
 attended run.
 
 ## Stable discovery names

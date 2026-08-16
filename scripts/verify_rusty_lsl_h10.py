@@ -22,6 +22,8 @@ SCAN_SELECTION_TIMEOUT_SECONDS = 30.0
 POST_SELECTION_SOURCE_READY_TIMEOUT_SECONDS = 60.0
 SCAN_DIAGNOSTICS_ENV = "POLAR_STREAM_H10_SCAN_DIAGNOSTICS"
 SESSION_DIAGNOSTICS_ENV = "POLAR_STREAM_H10_SESSION_DIAGNOSTICS"
+SESSION_PROFILE_ENV = "POLAR_STREAM_H10_SESSION_PROFILE"
+PMD_ONLY_PROFILE = "pmd-only-differential"
 EXPECTED = {
     "ecg": (f"{BASE}_rawECG", "ECG", 1, 130.0, f"polar-h10-{BASE}_rawECG"),
     "acc": (
@@ -38,6 +40,7 @@ def physical_source_environment() -> dict[str, str]:
     environment = os.environ.copy()
     environment[SCAN_DIAGNOSTICS_ENV] = "1"
     environment[SESSION_DIAGNOSTICS_ENV] = "1"
+    environment[SESSION_PROFILE_ENV] = PMD_ONLY_PROFILE
     return environment
 
 
