@@ -180,7 +180,10 @@ and handle closure. Other operating systems retain the cross-platform
 `btleplug` scan and connection path.
 
 Setup does not emit `Connected` until it has decoded both an ECG frame and a
-three-axis ACC frame. Every native async setup operation has its own deadline,
+three-axis ACC frame. After persistent-session creation, a cancellable 500 ms
+settle matches the proven Windows reference before heart-rate-first discovery.
+Battery discovery is deferred until both required sensor streams qualify.
+Every native async setup operation has its own deadline,
 cancel/close ownership, typed result class, and a shared 45-second setup budget
 that expires before the physical verifier's outer readiness deadline.
 Cancellation is checked during each operation, the raw-notification and
@@ -239,10 +242,11 @@ tests remain host evidence only; the physical Windows gate requires advancing
 The published reference opens the device and persistent session, waits 500 ms,
 optionally configures heart rate, then resolves PMD control/data and enables
 their notifications. Its known-working doctor requests ECG settings, observes
-the control/data phase for ECG, and only then starts ACC. Polar Stream retains
-its required-PMD-first discovery order, but now gates startup on the exact PMD
-settings response, ECG start response, first decoded ECG frame, ACC start
-response, and first decoded ACC frame. Malformed, rejected, missing, or
+the control/data phase for ECG, and only then starts ACC. Polar Stream now
+matches that settle and heart-rate-first discovery order while keeping optional
+battery discovery outside required sensor qualification. It gates startup on
+the exact PMD settings response, ECG start response, first decoded ECG frame,
+ACC start response, and first decoded ACC frame. Malformed, rejected, missing, or
 out-of-order control responses fail closed. Both routes use uncached service
 discovery, `RequestAccessAsync` before characteristic lookup, bounded retries
 with cached fallback, and direct CCCD writes.
@@ -270,8 +274,10 @@ data callbacks remained at zero. Link readiness and MTU are therefore no longer
 candidate causes. Subscription setup now reads back every CCCD and retains an
 agile owner for every WinRT event delegate; mismatched/read-failed CCCDs roll
 back before the session can proceed. That hardening remains host evidence until
-the next attended run. Physical ECG, ACC, Rusty outlet, and official-inlet
-acceptance remain open.
+the next attended run. Because exact CCCD confirmation still produced no PMD
+data event, the remaining black-box lifecycle difference is closed by the
+reference-aligned settle, discovery order, and deferred battery work. Physical
+ECG, ACC, Rusty outlet, and official-inlet acceptance remain open.
 
 ## Stable discovery names
 

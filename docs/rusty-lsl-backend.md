@@ -148,11 +148,14 @@ recordings are committed, and neither the reference-doctor runs nor compilation
 may be substituted for the pending end-to-end acceptance.
 
 The comparison is explicit: the published reference inserts a 500 ms delay and
-configures optional heart rate before required PMD, while Polar Stream resolves
-required PMD before optional heart-rate/battery work. Their persistent-session,
+configures optional heart rate before required PMD. Polar Stream now uses that
+cancellable settle and heart-rate-first discovery order, and defers battery
+discovery until both required sensor streams qualify. Their persistent-session,
 uncached-service, service-access, retry/cached-fallback, and CCCD settings align.
-The adopted lesson is only the reference doctor's staged settings → ECG → ACC
-control/data sequence; no implementation source or fixed sleep is copied.
+The adopted lesson is the reference lifecycle and staged settings → ECG → ACC
+control/data sequence. No implementation source is copied; the bounded settle
+is an explicit, cancellable Windows compatibility stage rather than an
+unobserved delay.
 
 The browser application is outside this transport. Its same-origin
 `BroadcastChannel`, event API, and CSV recorder are not LSL and remain unable

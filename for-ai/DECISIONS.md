@@ -1,5 +1,22 @@
 # Decision log
 
+## 2026-08-16 — Windows qualification follows the proven reference lifecycle
+
+The exact CCCD-readback physical run confirmed PMD data was set to Notify and
+its delegate remained owned, yet no PMD data event entered while the link stayed
+connected at a 232-byte PDU and PMD control responses advanced. Repeating the
+same ordering cannot add evidence. The remaining black-box difference from the
+published, physically passing Windows reference is setup sequencing.
+
+After creating its persistent `GattSession`, Polar Stream now uses the
+reference's bounded 500 ms connection settle, discovers optional heart rate
+before required PMD, and defers optional battery discovery/read until both ECG
+and ACC have qualified. The settle is cancellable and typed; all service and
+characteristic calls retain their individual deadlines and cleanup. This is a
+behavioral lifecycle contract derived from the published reference, not copied
+implementation. It remains host evidence until a fresh attended run passes both
+sensor streams and the pinned official-consumer chain.
+
 ## 2026-08-16 — Notification admission verifies CCCD state and owns delegates
 
 A reference-positive physical epoch proved the selected H10 remained connected

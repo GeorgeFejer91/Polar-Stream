@@ -53,6 +53,7 @@ const SCAN_DURATION: Duration = Duration::from_secs(15);
 const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_SCANNED_DEVICES: usize = 256;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECTION_SETTLE: Duration = Duration::from_millis(500);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const GATT_TIMEOUT: Duration = Duration::from_secs(5);
 const PMD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1323,10 +1324,58 @@ impl WinrtSession {
         })
         .map_err(|error| error.to_string())?;
 
-        // Keep PMD qualification on Windows' system-managed connection timing,
-        // matching the exact reference that delivers physical ECG and ACC.
-        // Throughput optimization is requested only after both first frames.
+        let settle_span = reporter.enter(SessionStage::ConnectionSettle, 1);
+        if *cancelled.borrow() {
+            settle_span.finish(StageResultClass::Cancelled);
+            return Err("Windows WinRT connection-settle was cancelled".to_string());
+        }
+        tokio::select! {
+            () = tokio::time::sleep(CONNECTION_SETTLE) => {
+                settle_span.finish(StageResultClass::Success);
+            }
+            changed = cancelled.changed() => {
+                settle_span.finish(StageResultClass::Cancelled);
+                return Err(if changed.is_err() {
+                    "Windows WinRT connection-settle cancellation owner closed".to_string()
+                } else {
+                    "Windows WinRT connection-settle was cancelled".to_string()
+                });
+            }
+        }
+
+        // Match the black-box lifecycle of the exact published Windows
+        // reference: let its persistent session settle, resolve optional heart
+        // rate first, then acquire the required PMD handles. Battery discovery
+        // remains outside required sensor qualification. Throughput
+        // optimization is requested only after both first frames.
         let opening = OpeningSession::new(device, gatt_session, None);
+        let heart_rate_service = optional_service(
+            opening.device(),
+            HEART_RATE_SERVICE,
+            SessionStage::HeartRateServiceDiscovery,
+            reporter,
+            cancelled,
+        )
+        .await;
+        ensure_active(cancelled, "heart-rate service discovery")?;
+        let heart_rate = if let Some(service) = &heart_rate_service {
+            optional_characteristic(
+                service,
+                HEART_RATE_MEASUREMENT,
+                CharacteristicStages {
+                    access: SessionStage::HeartRateAccess,
+                    uncached: SessionStage::HeartRateDiscoveryUncached,
+                    cached: SessionStage::HeartRateDiscoveryCached,
+                },
+                reporter,
+                cancelled,
+            )
+            .await
+        } else {
+            None
+        };
+        ensure_active(cancelled, "heart-rate characteristic discovery")?;
+
         let pmd_service = required_service(
             opening.device(),
             PMD_SERVICE,
@@ -1366,67 +1415,14 @@ impl WinrtSession {
         .await?;
         ensure_active(cancelled, "PMD data discovery")?;
 
-        let heart_rate_service = optional_service(
-            opening.device(),
-            HEART_RATE_SERVICE,
-            SessionStage::HeartRateServiceDiscovery,
-            reporter,
-            cancelled,
-        )
-        .await;
-        ensure_active(cancelled, "heart-rate service discovery")?;
-        let heart_rate = if let Some(service) = &heart_rate_service {
-            optional_characteristic(
-                service,
-                HEART_RATE_MEASUREMENT,
-                CharacteristicStages {
-                    access: SessionStage::HeartRateAccess,
-                    uncached: SessionStage::HeartRateDiscoveryUncached,
-                    cached: SessionStage::HeartRateDiscoveryCached,
-                },
-                reporter,
-                cancelled,
-            )
-            .await
-        } else {
-            None
-        };
-        ensure_active(cancelled, "heart-rate characteristic discovery")?;
-        let battery_service = optional_service(
-            opening.device(),
-            uuid::Uuid::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb),
-            SessionStage::BatteryServiceDiscovery,
-            reporter,
-            cancelled,
-        )
-        .await;
-        ensure_active(cancelled, "battery service discovery")?;
-        let battery = if let Some(service) = &battery_service {
-            optional_characteristic(
-                service,
-                BATTERY_LEVEL,
-                CharacteristicStages {
-                    access: SessionStage::BatteryAccess,
-                    uncached: SessionStage::BatteryDiscoveryUncached,
-                    cached: SessionStage::BatteryDiscoveryCached,
-                },
-                reporter,
-                cancelled,
-            )
-            .await
-        } else {
-            None
-        };
-        ensure_active(cancelled, "battery characteristic discovery")?;
-
         Ok(opening.finish(DiscoveredHandles {
             pmd_service,
             heart_rate_service,
-            battery_service,
+            battery_service: None,
             control,
             pmd_data,
             heart_rate,
-            battery,
+            battery: None,
         }))
     }
 
@@ -1687,10 +1683,41 @@ impl WinrtSession {
     }
 
     async fn read_battery(
-        &self,
+        &mut self,
         reporter: StageReporter,
         cancelled: &mut watch::Receiver<bool>,
     ) -> Option<u8> {
+        if self.battery.is_none() {
+            let service = optional_service(
+                &self.device,
+                uuid::Uuid::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb),
+                SessionStage::BatteryServiceDiscovery,
+                reporter,
+                cancelled,
+            )
+            .await;
+            ensure_active(cancelled, "battery service discovery").ok()?;
+            let characteristic = if let Some(service) = &service {
+                optional_characteristic(
+                    service,
+                    BATTERY_LEVEL,
+                    CharacteristicStages {
+                        access: SessionStage::BatteryAccess,
+                        uncached: SessionStage::BatteryDiscoveryUncached,
+                        cached: SessionStage::BatteryDiscoveryCached,
+                    },
+                    reporter,
+                    cancelled,
+                )
+                .await
+            } else {
+                None
+            };
+            ensure_active(cancelled, "battery characteristic discovery").ok()?;
+            self.battery_service = service;
+            self.battery = characteristic;
+        }
+
         let characteristic = self.battery.as_ref()?;
         let result = await_winrt_stage(
             WinrtStageCall::new(reporter, SessionStage::BatteryRead, 1, GATT_TIMEOUT),

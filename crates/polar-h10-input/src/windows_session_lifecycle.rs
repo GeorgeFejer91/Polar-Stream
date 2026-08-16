@@ -11,6 +11,7 @@ pub(crate) enum SessionStage {
     AddressToDevice,
     GattSessionCreate,
     MaintainConnection,
+    ConnectionSettle,
     PreferredConnectionRequest,
     PmdServiceDiscovery,
     PmdControlAccess,
@@ -43,10 +44,11 @@ pub(crate) enum SessionStage {
 
 impl SessionStage {
     #[cfg(test)]
-    const ALL: [Self; 31] = [
+    const ALL: [Self; 32] = [
         Self::AddressToDevice,
         Self::GattSessionCreate,
         Self::MaintainConnection,
+        Self::ConnectionSettle,
         Self::PreferredConnectionRequest,
         Self::PmdServiceDiscovery,
         Self::PmdControlAccess,
@@ -82,6 +84,7 @@ impl SessionStage {
             Self::AddressToDevice => "address-to-device",
             Self::GattSessionCreate => "gatt-session-create",
             Self::MaintainConnection => "maintain-connection",
+            Self::ConnectionSettle => "connection-settle",
             Self::PreferredConnectionRequest => "preferred-connection-request",
             Self::PmdServiceDiscovery => "pmd-service-discovery-uncached",
             Self::PmdControlAccess => "pmd-control-service-access",
