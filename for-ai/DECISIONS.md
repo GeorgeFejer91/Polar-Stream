@@ -1,5 +1,28 @@
 # Decision log
 
+## 2026-08-16 — PMD startup is response-gated and qualifies ECG before ACC
+
+The first typed physical trace proved the selected H10 reached a persistent
+session, uncached PMD discovery, control/data notification subscription, and
+successful GATT writes for both start commands. Neither first ECG nor first ACC
+frame arrived. A successful WinRT write is transport evidence only; it does not
+prove that PMD accepted the command or that two commands were safely sequenced.
+
+The known-working published reference doctor requests ECG settings, observes
+the ECG control/data phase, and starts ACC afterward. Polar Stream adopts that
+behavioral contract without copying its implementation or blind fixed delays:
+request ECG settings → validate the exact successful response → start ECG →
+validate its response → decode the first ECG frame → start ACC → validate its
+response → decode the first ACC frame. Malformed, rejected, missing, duplicate
+or out-of-order control responses fail closed under individual deadlines.
+Early HR or sensor events remain bounded and buffered; callback/session cleanup
+remains exactly-once.
+
+This is host-tested repair evidence, not physical acceptance. The next attended
+run must pass both first-frame stages before Rusty outlets and pinned official
+inlets are admitted. Scanner admission and the already-passing GATT setup stages
+are not reopened by this change.
+
 ## 2026-08-16 — WinRT session setup owns typed stages before physical acceptance
 
 A same-lease differential physical run observed one exact H10 through the
@@ -9,8 +32,8 @@ qualify both first sensor frames before its outer readiness deadline. This is
 positive evidence for discovery and exact-model selection only. It is not ECG,
 ACC, Rusty outlet, official-inlet, or complete device-acceptance evidence.
 
-The existing session order remains unchanged while the first failing stage is
-diagnosed. Address-to-device acquisition, `GattSession` creation,
+At that checkpoint the existing session order remained unchanged while the
+first failing stage was diagnosed. Address-to-device acquisition, `GattSession` creation,
 maintain-connection, uncached service discovery, per-characteristic access and
 uncached/cached resolution, CCCD subscription, ECG/ACC start commands, and each
 first frame now have separate typed observations. Every WinRT async operation
@@ -21,9 +44,9 @@ tokens and session cleanup are claimed once.
 
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` emits only stage, attempt, transition,
 duration, and result class. It never emits an address, name, payload,
-manufacturer value, or stable device identity. The next physical run must stop
-at the first typed non-success stage and compare that ordering with the exact
-published reference behavior before any protocol or ordering change. The
+manufacturer value, or stable device identity. The subsequent physical run
+stopped at the first typed non-success stage and compared that ordering with the
+exact published reference behavior before the response-gated change above. The
 reference uses persistent `GattSession`, uncached service discovery,
 `RequestAccessAsync`, bounded uncached/cached characteristic lookup, direct
 CCCD subscription, and explicit cleanup; no reference source is copied.

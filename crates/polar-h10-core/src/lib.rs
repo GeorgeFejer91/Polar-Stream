@@ -5,6 +5,9 @@ use thiserror::Error;
 
 pub const ECG_MEASUREMENT: u8 = 0x00;
 pub const ACC_MEASUREMENT: u8 = 0x02;
+pub const PMD_GET_SETTINGS_OPCODE: u8 = 0x01;
+pub const PMD_START_STREAM_OPCODE: u8 = 0x02;
+pub const PMD_RESPONSE_FRAME: u8 = 0xf0;
 const PMD_HEADER_SIZE: usize = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -42,6 +45,13 @@ pub enum PmdFrame {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PmdControlResponse {
+    pub opcode: u8,
+    pub measurement: u8,
+    pub error_code: u8,
+}
+
 #[derive(Debug, Error, PartialEq)]
 pub enum ProtocolError {
     #[error("PMD frame is shorter than its 10-byte header")]
@@ -52,6 +62,10 @@ pub enum ProtocolError {
     InvalidAccelerometerLength,
     #[error("unsupported PMD measurement or frame type")]
     UnsupportedFrame,
+    #[error("PMD control response is shorter than its four-byte header")]
+    ControlResponseTooShort,
+    #[error("PMD control response has an invalid frame identifier")]
+    InvalidControlResponseFrame,
 }
 
 pub fn decode_heart_rate(bytes: &[u8]) -> HeartRateFrame {
@@ -103,6 +117,20 @@ pub fn decode_pmd(bytes: &[u8]) -> Result<PmdFrame, ProtocolError> {
         ACC_MEASUREMENT => decode_accelerometer(timestamp, frame_type, &bytes[10..]),
         _ => Err(ProtocolError::UnsupportedFrame),
     }
+}
+
+pub fn decode_pmd_control_response(bytes: &[u8]) -> Result<PmdControlResponse, ProtocolError> {
+    if bytes.len() < 4 {
+        return Err(ProtocolError::ControlResponseTooShort);
+    }
+    if bytes[0] != PMD_RESPONSE_FRAME {
+        return Err(ProtocolError::InvalidControlResponseFrame);
+    }
+    Ok(PmdControlResponse {
+        opcode: bytes[1],
+        measurement: bytes[2],
+        error_code: bytes[3],
+    })
 }
 
 fn decode_ecg(timestamp: u64, payload: &[u8]) -> Result<PmdFrame, ProtocolError> {
@@ -225,12 +253,23 @@ fn read_signed_bits(bytes: &[u8], bit_offset: &mut usize, width: usize) -> i32 {
 }
 
 pub fn start_ecg_command() -> [u8; 10] {
-    [0x02, ECG_MEASUREMENT, 0x00, 0x01, 130, 0, 0x01, 0x01, 14, 0]
+    [
+        PMD_START_STREAM_OPCODE,
+        ECG_MEASUREMENT,
+        0x00,
+        0x01,
+        130,
+        0,
+        0x01,
+        0x01,
+        14,
+        0,
+    ]
 }
 
 pub fn start_accelerometer_command() -> [u8; 14] {
     [
-        0x02,
+        PMD_START_STREAM_OPCODE,
         ACC_MEASUREMENT,
         0x02,
         0x01,
@@ -245,6 +284,10 @@ pub fn start_accelerometer_command() -> [u8; 14] {
         16,
         0,
     ]
+}
+
+pub fn request_settings_command(measurement: u8) -> [u8; 2] {
+    [PMD_GET_SETTINGS_OPCODE, measurement]
 }
 
 pub fn stop_command(measurement: u8) -> [u8; 2] {
@@ -379,12 +422,46 @@ mod tests {
 
     #[test]
     fn commands_match_h10_settings() {
-        assert_eq!(start_ecg_command()[..2], [0x02, ECG_MEASUREMENT]);
+        assert_eq!(
+            request_settings_command(ECG_MEASUREMENT),
+            [PMD_GET_SETTINGS_OPCODE, ECG_MEASUREMENT]
+        );
+        assert_eq!(
+            start_ecg_command()[..2],
+            [PMD_START_STREAM_OPCODE, ECG_MEASUREMENT]
+        );
         assert_eq!(
             start_accelerometer_command()[..6],
-            [0x02, ACC_MEASUREMENT, 0x02, 0x01, 8, 0]
+            [PMD_START_STREAM_OPCODE, ACC_MEASUREMENT, 0x02, 0x01, 8, 0]
         );
         assert_eq!(stop_command(ACC_MEASUREMENT), [0x03, ACC_MEASUREMENT]);
+    }
+
+    #[test]
+    fn control_responses_require_the_exact_header_shape() {
+        assert_eq!(
+            decode_pmd_control_response(&[
+                PMD_RESPONSE_FRAME,
+                PMD_START_STREAM_OPCODE,
+                ECG_MEASUREMENT,
+                0,
+                0xaa,
+            ])
+            .unwrap(),
+            PmdControlResponse {
+                opcode: PMD_START_STREAM_OPCODE,
+                measurement: ECG_MEASUREMENT,
+                error_code: 0,
+            }
+        );
+        assert_eq!(
+            decode_pmd_control_response(&[PMD_RESPONSE_FRAME, PMD_START_STREAM_OPCODE]),
+            Err(ProtocolError::ControlResponseTooShort)
+        );
+        assert_eq!(
+            decode_pmd_control_response(&[0, PMD_START_STREAM_OPCODE, ECG_MEASUREMENT, 0]),
+            Err(ProtocolError::InvalidControlResponseFrame)
+        );
     }
 
     #[test]

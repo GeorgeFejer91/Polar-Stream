@@ -13,8 +13,9 @@ use std::{
 
 use futures_util::{StreamExt, stream};
 use polar_h10_core::{
-    ACC_MEASUREMENT, ECG_MEASUREMENT, PmdFrame, decode_heart_rate, decode_pmd,
-    start_accelerometer_command, start_ecg_command, stop_command,
+    ACC_MEASUREMENT, ECG_MEASUREMENT, PMD_GET_SETTINGS_OPCODE, PMD_START_STREAM_OPCODE,
+    PmdControlResponse, PmdFrame, decode_heart_rate, decode_pmd, decode_pmd_control_response,
+    request_settings_command, start_accelerometer_command, start_ecg_command, stop_command,
 };
 use tokio::sync::{mpsc, watch};
 use windows::{
@@ -53,7 +54,8 @@ const MAX_SCANNED_DEVICES: usize = 256;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const GATT_TIMEOUT: Duration = Duration::from_secs(5);
-const FIRST_FRAMES_TIMEOUT: Duration = Duration::from_secs(12);
+const PMD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const FIRST_STREAM_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(45);
 const EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const CLEANUP_OPERATION_TIMEOUT: Duration = Duration::from_millis(500);
@@ -680,6 +682,27 @@ impl NotificationSource {
 struct RawNotification {
     source: NotificationSource,
     value: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ExpectedControlResponse {
+    opcode: u8,
+    measurement: u8,
+}
+
+impl ExpectedControlResponse {
+    const ECG_SETTINGS: Self = Self {
+        opcode: PMD_GET_SETTINGS_OPCODE,
+        measurement: ECG_MEASUREMENT,
+    };
+    const ECG_START: Self = Self {
+        opcode: PMD_START_STREAM_OPCODE,
+        measurement: ECG_MEASUREMENT,
+    };
+    const ACC_START: Self = Self {
+        opcode: PMD_START_STREAM_OPCODE,
+        measurement: ACC_MEASUREMENT,
+    };
 }
 
 struct NotificationSink {
@@ -1348,6 +1371,8 @@ pub(super) async fn prepare(
     let (raw_tx, mut raw_rx) = mpsc::channel(RAW_NOTIFICATION_CAPACITY);
     let (fault_tx, mut fault_rx) = watch::channel(None::<String>);
     let mut session = WinrtSession::open(device_id, reporter, cancelled).await?;
+    let mut gate = FirstFrameGate::default();
+    let mut frame_stages = FirstFrameStages::new(reporter);
 
     if let Err(error) = async {
         ensure_active(cancelled, "status publication")?;
@@ -1409,7 +1434,30 @@ pub(super) async fn prepare(
         send_status(
             &event_tx,
             "starting",
-            "Starting ECG at 130 Hz and three-axis accelerometer at 200 Hz…".to_string(),
+            "Qualifying ECG at 130 Hz before starting the three-axis accelerometer at 200 Hz…"
+                .to_string(),
+        )
+        .await?;
+        session
+            .write_control(
+                &request_settings_command(ECG_MEASUREMENT),
+                SessionStage::RequestEcgSettings,
+                reporter,
+                cancelled,
+            )
+            .await?;
+        SetupWaitContext {
+            raw_rx: &mut raw_rx,
+            fault_rx: &mut fault_rx,
+            cancelled: &mut *cancelled,
+            reporter,
+            gate: &mut gate,
+            frame_stages: &mut frame_stages,
+        }
+        .pmd_control_response(
+            SessionStage::EcgSettingsResponse,
+            ExpectedControlResponse::ECG_SETTINGS,
+            PMD_RESPONSE_TIMEOUT,
         )
         .await?;
         session
@@ -1420,7 +1468,31 @@ pub(super) async fn prepare(
                 cancelled,
             )
             .await?;
-        ensure_active(cancelled, "start ECG")?;
+        SetupWaitContext {
+            raw_rx: &mut raw_rx,
+            fault_rx: &mut fault_rx,
+            cancelled: &mut *cancelled,
+            reporter,
+            gate: &mut gate,
+            frame_stages: &mut frame_stages,
+        }
+        .pmd_control_response(
+            SessionStage::StartEcgResponse,
+            ExpectedControlResponse::ECG_START,
+            PMD_RESPONSE_TIMEOUT,
+        )
+        .await?;
+        SetupWaitContext {
+            raw_rx: &mut raw_rx,
+            fault_rx: &mut fault_rx,
+            cancelled: &mut *cancelled,
+            reporter,
+            gate: &mut gate,
+            frame_stages: &mut frame_stages,
+        }
+        .first_frame(FirstFrameKind::Ecg, FIRST_STREAM_FRAME_TIMEOUT)
+        .await?;
+        ensure_active(cancelled, "start accelerometer")?;
         session
             .write_control(
                 &start_accelerometer_command(),
@@ -1429,80 +1501,37 @@ pub(super) async fn prepare(
                 cancelled,
             )
             .await?;
-        ensure_active(cancelled, "start accelerometer")?;
+        SetupWaitContext {
+            raw_rx: &mut raw_rx,
+            fault_rx: &mut fault_rx,
+            cancelled: &mut *cancelled,
+            reporter,
+            gate: &mut gate,
+            frame_stages: &mut frame_stages,
+        }
+        .pmd_control_response(
+            SessionStage::StartAccResponse,
+            ExpectedControlResponse::ACC_START,
+            PMD_RESPONSE_TIMEOUT,
+        )
+        .await?;
+        SetupWaitContext {
+            raw_rx: &mut raw_rx,
+            fault_rx: &mut fault_rx,
+            cancelled: &mut *cancelled,
+            reporter,
+            gate: &mut gate,
+            frame_stages: &mut frame_stages,
+        }
+        .first_frame(FirstFrameKind::Acc, FIRST_STREAM_FRAME_TIMEOUT)
+        .await?;
         Ok::<(), String>(())
     }
     .await
     {
+        frame_stages.finish_pending(StageResultClass::NativeError);
         session.shutdown().await;
         return Err(error);
-    }
-
-    let mut gate = FirstFrameGate::default();
-    let mut frame_stages = FirstFrameStages::new(reporter);
-    let first_frames = tokio::time::timeout(reporter.limit(FIRST_FRAMES_TIMEOUT), async {
-        loop {
-            tokio::select! {
-                changed = cancelled.changed() => {
-                    if changed.is_err() || *cancelled.borrow() {
-                        frame_stages.finish_pending(StageResultClass::Cancelled);
-                        return Err("Windows WinRT setup was cancelled during first-frame qualification".to_string());
-                    }
-                }
-                changed = fault_rx.changed() => {
-                    if changed.is_err() {
-                        frame_stages.finish_pending(StageResultClass::NativeError);
-                        return Err("Windows WinRT notification fault channel closed".to_string());
-                    }
-                    if let Some(error) = fault_rx.borrow().clone() {
-                        frame_stages.finish_pending(StageResultClass::NativeError);
-                        return Err(error);
-                    }
-                }
-                raw = raw_rx.recv() => {
-                    let Some(raw) = raw else {
-                        frame_stages.finish_pending(StageResultClass::NativeError);
-                        return Err("Windows WinRT notifications ended before first ECG/ACC frames".to_string());
-                    };
-                    if let Some(event) = decode_notification(raw) {
-                        match &event {
-                            InputEvent::Ecg { microvolts, .. } if !microvolts.is_empty() => {
-                                frame_stages.observe(FirstFrameKind::Ecg);
-                            }
-                            InputEvent::Accelerometer { samples, .. } if !samples.is_empty() => {
-                                frame_stages.observe(FirstFrameKind::Acc);
-                            }
-                            _ => {}
-                        }
-                        match gate.push(event) {
-                            Ok(true) => return Ok(()),
-                            Ok(false) => {}
-                            Err(error) => {
-                                frame_stages.finish_pending(StageResultClass::NativeError);
-                                return Err(error);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    })
-    .await;
-
-    match first_frames {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            session.shutdown().await;
-            return Err(error);
-        }
-        Err(_) => {
-            frame_stages.finish_pending(StageResultClass::Timeout);
-            session.shutdown().await;
-            return Err(
-                "Windows WinRT first-frame qualification timed out before both ECG and ACC arrived"
-                    .to_string(),
-            );
-        }
     }
 
     if let Err(error) = ensure_active(cancelled, "battery read") {
@@ -1865,6 +1894,199 @@ fn decode_notification(raw: RawNotification) -> Option<InputEvent> {
     }
 }
 
+fn validate_control_response(
+    expected: ExpectedControlResponse,
+    response: PmdControlResponse,
+) -> Result<(), String> {
+    if response.opcode != expected.opcode || response.measurement != expected.measurement {
+        return Err(format!(
+            "Windows WinRT PMD control response arrived out of order: expected opcode 0x{:02x}/measurement 0x{:02x}, received 0x{:02x}/0x{:02x}",
+            expected.opcode, expected.measurement, response.opcode, response.measurement
+        ));
+    }
+    if response.error_code != 0 {
+        return Err(format!(
+            "Windows WinRT PMD control response rejected opcode 0x{:02x}/measurement 0x{:02x} with error 0x{:02x}",
+            response.opcode, response.measurement, response.error_code
+        ));
+    }
+    Ok(())
+}
+
+fn observe_setup_notification(
+    raw: RawNotification,
+    gate: &mut FirstFrameGate,
+    frame_stages: &mut FirstFrameStages,
+) -> Result<Option<PmdControlResponse>, String> {
+    if raw.source == NotificationSource::PmdControl {
+        return decode_pmd_control_response(&raw.value)
+            .map(Some)
+            .map_err(|error| {
+                format!("Windows WinRT received a malformed PMD control response: {error}")
+            });
+    }
+
+    let event = decode_notification(raw).ok_or_else(|| {
+        "Windows WinRT notification did not map to a setup observation".to_string()
+    })?;
+    match &event {
+        InputEvent::Ecg { microvolts, .. } if !microvolts.is_empty() => {
+            frame_stages.observe(FirstFrameKind::Ecg);
+        }
+        InputEvent::Accelerometer { samples, .. } if !samples.is_empty() => {
+            frame_stages.observe(FirstFrameKind::Acc);
+        }
+        _ => {}
+    }
+    gate.push(event)?;
+    Ok(None)
+}
+
+struct SetupWaitContext<'a> {
+    raw_rx: &'a mut mpsc::Receiver<RawNotification>,
+    fault_rx: &'a mut watch::Receiver<Option<String>>,
+    cancelled: &'a mut watch::Receiver<bool>,
+    reporter: StageReporter,
+    gate: &'a mut FirstFrameGate,
+    frame_stages: &'a mut FirstFrameStages,
+}
+
+impl SetupWaitContext<'_> {
+    async fn pmd_control_response(
+        self,
+        stage: SessionStage,
+        expected: ExpectedControlResponse,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let span = self.reporter.enter(stage, 1);
+        if *self.cancelled.borrow() {
+            span.finish(StageResultClass::Cancelled);
+            return Err(
+                "Windows WinRT setup was cancelled while awaiting a PMD control response"
+                    .to_string(),
+            );
+        }
+        let deadline = tokio::time::sleep(self.reporter.limit(timeout));
+        tokio::pin!(deadline);
+
+        loop {
+            tokio::select! {
+                changed = self.cancelled.changed() => {
+                    span.finish(StageResultClass::Cancelled);
+                    return Err(if changed.is_err() {
+                        "Windows WinRT setup cancellation owner closed while awaiting a PMD control response".to_string()
+                    } else {
+                        "Windows WinRT setup was cancelled while awaiting a PMD control response".to_string()
+                    });
+                }
+                changed = self.fault_rx.changed() => {
+                    if changed.is_err() {
+                        span.finish(StageResultClass::NativeError);
+                        return Err("Windows WinRT notification fault channel closed while awaiting a PMD control response".to_string());
+                    }
+                    if let Some(error) = self.fault_rx.borrow().clone() {
+                        span.finish(StageResultClass::NativeError);
+                        return Err(error);
+                    }
+                }
+                raw = self.raw_rx.recv() => {
+                    let Some(raw) = raw else {
+                        span.finish(StageResultClass::NativeError);
+                        return Err("Windows WinRT notifications ended while awaiting a PMD control response".to_string());
+                    };
+                    let response = match observe_setup_notification(raw, self.gate, self.frame_stages) {
+                        Ok(response) => response,
+                        Err(error) => {
+                            span.finish(StageResultClass::NativeError);
+                            return Err(error);
+                        }
+                    };
+                    if let Some(response) = response {
+                        if let Err(error) = validate_control_response(expected, response) {
+                            span.finish(StageResultClass::NativeError);
+                            return Err(error);
+                        }
+                        span.finish(StageResultClass::Success);
+                        return Ok(());
+                    }
+                }
+                () = &mut deadline => {
+                    span.finish(StageResultClass::Timeout);
+                    return Err(format!("Windows WinRT {} timed out", stage.name()));
+                }
+            }
+        }
+    }
+
+    async fn first_frame(self, kind: FirstFrameKind, timeout: Duration) -> Result<(), String> {
+        let stage = match kind {
+            FirstFrameKind::Ecg => SessionStage::FirstEcgFrame,
+            FirstFrameKind::Acc => SessionStage::FirstAccFrame,
+        };
+        self.frame_stages.begin(kind);
+        if self.gate.saw(kind) {
+            return Ok(());
+        }
+        if *self.cancelled.borrow() {
+            self.frame_stages.finish(kind, StageResultClass::Cancelled);
+            return Err(format!(
+                "Windows WinRT setup was cancelled during {}",
+                stage.name()
+            ));
+        }
+
+        let deadline = tokio::time::sleep(self.reporter.limit(timeout));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                changed = self.cancelled.changed() => {
+                    self.frame_stages.finish(kind, StageResultClass::Cancelled);
+                    return Err(if changed.is_err() {
+                        format!("Windows WinRT setup cancellation owner closed during {}", stage.name())
+                    } else {
+                        format!("Windows WinRT setup was cancelled during {}", stage.name())
+                    });
+                }
+                changed = self.fault_rx.changed() => {
+                    if changed.is_err() {
+                        self.frame_stages.finish(kind, StageResultClass::NativeError);
+                        return Err(format!("Windows WinRT notification fault channel closed during {}", stage.name()));
+                    }
+                    if let Some(error) = self.fault_rx.borrow().clone() {
+                        self.frame_stages.finish(kind, StageResultClass::NativeError);
+                        return Err(error);
+                    }
+                }
+                raw = self.raw_rx.recv() => {
+                    let Some(raw) = raw else {
+                        self.frame_stages.finish(kind, StageResultClass::NativeError);
+                        return Err(format!("Windows WinRT notifications ended during {}", stage.name()));
+                    };
+                    match observe_setup_notification(raw, self.gate, self.frame_stages) {
+                        Ok(None) if self.gate.saw(kind) => return Ok(()),
+                        Ok(None) => {}
+                        Ok(Some(response)) => {
+                            self.frame_stages.finish(kind, StageResultClass::NativeError);
+                            return Err(format!(
+                                "Windows WinRT received an unexpected PMD control response during {}: opcode 0x{:02x}/measurement 0x{:02x}",
+                                stage.name(), response.opcode, response.measurement
+                            ));
+                        }
+                        Err(error) => {
+                            self.frame_stages.finish(kind, StageResultClass::NativeError);
+                            return Err(error);
+                        }
+                    }
+                }
+                () = &mut deadline => {
+                    self.frame_stages.finish(kind, StageResultClass::Timeout);
+                    return Err(format!("Windows WinRT {} timed out", stage.name()));
+                }
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct FirstFrameGate {
     saw_ecg: bool,
@@ -1898,6 +2120,13 @@ impl FirstFrameGate {
 
     fn into_events(self) -> VecDeque<InputEvent> {
         self.buffered
+    }
+
+    fn saw(&self, kind: FirstFrameKind) -> bool {
+        match kind {
+            FirstFrameKind::Ecg => self.saw_ecg,
+            FirstFrameKind::Acc => self.saw_acc,
+        }
     }
 }
 
@@ -2190,6 +2419,182 @@ mod tests {
             gate.push(event)
                 .unwrap_err()
                 .contains("invalid sensor data")
+        );
+    }
+
+    fn control_response(expected: ExpectedControlResponse, error_code: u8) -> RawNotification {
+        RawNotification {
+            source: NotificationSource::PmdControl,
+            value: vec![
+                polar_h10_core::PMD_RESPONSE_FRAME,
+                expected.opcode,
+                expected.measurement,
+                error_code,
+            ],
+        }
+    }
+
+    #[test]
+    fn pmd_control_responses_reject_error_and_wrong_order() {
+        for expected in [
+            ExpectedControlResponse::ECG_SETTINGS,
+            ExpectedControlResponse::ECG_START,
+            ExpectedControlResponse::ACC_START,
+        ] {
+            assert!(
+                validate_control_response(
+                    expected,
+                    PmdControlResponse {
+                        opcode: expected.opcode,
+                        measurement: expected.measurement,
+                        error_code: 0,
+                    }
+                )
+                .is_ok()
+            );
+            assert!(
+                validate_control_response(
+                    expected,
+                    PmdControlResponse {
+                        opcode: expected.opcode,
+                        measurement: expected.measurement,
+                        error_code: 0x0a,
+                    }
+                )
+                .unwrap_err()
+                .contains("error 0x0a")
+            );
+        }
+
+        assert!(
+            validate_control_response(
+                ExpectedControlResponse::ECG_START,
+                PmdControlResponse {
+                    opcode: PMD_START_STREAM_OPCODE,
+                    measurement: ACC_MEASUREMENT,
+                    error_code: 0,
+                }
+            )
+            .unwrap_err()
+            .contains("out of order")
+        );
+    }
+
+    #[tokio::test]
+    async fn pmd_response_wait_covers_success_malformed_order_error_timeout_and_cancel() {
+        async fn run(
+            raw: Option<RawNotification>,
+            cancelled_initially: bool,
+        ) -> Result<(), String> {
+            let (raw_tx, mut raw_rx) = mpsc::channel(2);
+            if let Some(raw) = raw {
+                raw_tx.send(raw).await.unwrap();
+            }
+            let (_fault_tx, mut fault_rx) = watch::channel(None);
+            let (cancel_tx, mut cancelled) = watch::channel(false);
+            if cancelled_initially {
+                cancel_tx.send_replace(true);
+            }
+            let mut gate = FirstFrameGate::default();
+            let reporter = StageReporter::new(false, None);
+            let mut stages = FirstFrameStages::new(reporter);
+            SetupWaitContext {
+                raw_rx: &mut raw_rx,
+                fault_rx: &mut fault_rx,
+                cancelled: &mut cancelled,
+                reporter,
+                gate: &mut gate,
+                frame_stages: &mut stages,
+            }
+            .pmd_control_response(
+                SessionStage::StartEcgResponse,
+                ExpectedControlResponse::ECG_START,
+                Duration::from_millis(1),
+            )
+            .await
+        }
+
+        assert!(
+            run(
+                Some(control_response(ExpectedControlResponse::ECG_START, 0)),
+                false
+            )
+            .await
+            .is_ok()
+        );
+        assert!(
+            run(
+                Some(RawNotification {
+                    source: NotificationSource::PmdControl,
+                    value: vec![0xf0, PMD_START_STREAM_OPCODE],
+                }),
+                false
+            )
+            .await
+            .unwrap_err()
+            .contains("malformed")
+        );
+        assert!(
+            run(
+                Some(control_response(ExpectedControlResponse::ACC_START, 0)),
+                false
+            )
+            .await
+            .unwrap_err()
+            .contains("out of order")
+        );
+        assert!(
+            run(
+                Some(control_response(ExpectedControlResponse::ECG_START, 0x0a)),
+                false
+            )
+            .await
+            .unwrap_err()
+            .contains("error 0x0a")
+        );
+        assert!(run(None, false).await.unwrap_err().contains("timed out"));
+        assert!(run(None, true).await.unwrap_err().contains("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn first_frame_wait_accepts_sensor_data_and_rejects_control_reordering() {
+        async fn run(raw: RawNotification) -> Result<(), String> {
+            let (raw_tx, mut raw_rx) = mpsc::channel(1);
+            raw_tx.send(raw).await.unwrap();
+            let (_fault_tx, mut fault_rx) = watch::channel(None);
+            let (_cancel_tx, mut cancelled) = watch::channel(false);
+            let reporter = StageReporter::new(false, None);
+            let mut gate = FirstFrameGate::default();
+            let mut stages = FirstFrameStages::new(reporter);
+            SetupWaitContext {
+                raw_rx: &mut raw_rx,
+                fault_rx: &mut fault_rx,
+                cancelled: &mut cancelled,
+                reporter,
+                gate: &mut gate,
+                frame_stages: &mut stages,
+            }
+            .first_frame(FirstFrameKind::Ecg, Duration::from_millis(5))
+            .await
+        }
+
+        let mut ecg = vec![ECG_MEASUREMENT];
+        ecg.extend_from_slice(&1_u64.to_le_bytes());
+        ecg.push(0);
+        ecg.extend_from_slice(&[1, 0, 0]);
+        assert!(
+            run(RawNotification {
+                source: NotificationSource::PmdData,
+                value: ecg,
+            })
+            .await
+            .is_ok()
+        );
+        assert!(
+            run(control_response(ExpectedControlResponse::ACC_START, 0))
+                .await
+                .unwrap_err()
+                .contains("unexpected PMD control response")
         );
     }
 

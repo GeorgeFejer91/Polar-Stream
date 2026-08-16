@@ -206,8 +206,9 @@ address, name, payload bytes, manufacturer value, or stable device identity.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` separately emits ordered setup stage
 entry/exit records with attempt, duration, and result class only. It covers
 device acquisition, persistent session creation, PMD service/characteristics,
-CCCD subscriptions, start commands, and first ECG/ACC frames without emitting
-the selected name/address or notification payload.
+CCCD subscriptions, ECG settings/start responses, ACC start responses, and
+first ECG/ACC frames without emitting the selected name/address or notification
+payload.
 
 [WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
 read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).
@@ -226,14 +227,14 @@ tests remain host evidence only; the physical Windows gate requires advancing
 
 The published reference opens the device and persistent session, waits 500 ms,
 optionally configures heart rate, then resolves PMD control/data and enables
-their notifications before its doctor issues stream commands. Polar Stream
-currently opens the device/session, resolves required PMD first, resolves
-optional heart-rate/battery paths, then subscribes heart-rate, PMD control, and
-PMD data before starting ECG followed by ACC. Both routes use uncached service
+their notifications. Its known-working doctor requests ECG settings, observes
+the control/data phase for ECG, and only then starts ACC. Polar Stream retains
+its required-PMD-first discovery order, but now gates startup on the exact PMD
+settings response, ECG start response, first decoded ECG frame, ACC start
+response, and first decoded ACC frame. Malformed, rejected, missing, or
+out-of-order control responses fail closed. Both routes use uncached service
 discovery, `RequestAccessAsync` before characteristic lookup, bounded retries
-with cached fallback, and direct CCCD writes. This ordering difference is
-recorded rather than changed until the typed physical trace identifies the
-first non-success stage.
+with cached fallback, and direct CCCD writes.
 
 The discovery predicate repair additionally uses a black-box, identifier-free
 observation of that exact published watcher: one physical H10 was admitted by
@@ -243,12 +244,12 @@ so an earlier zero-result invocation was discarded and is not device-state
 evidence. The candidate borrows only the observed predicate contract; it does
 not copy the reference implementation or treat generic advertisements as H10s.
 A later same-lease run was reference-positive and the candidate selected one
-exact H10, then failed to qualify both first sensor frames after entering WinRT
-session setup. This proves the repaired discovery boundary only; physical ECG,
-ACC, Rusty outlet, and official-inlet acceptance remain open. The published
-reference order and cache/access/session settings are retained as behavioral
-comparison evidence while the new typed trace identifies the first
-non-returning session stage before any functional ordering change.
+exact H10. Device/session acquisition, services, characteristics, CCCDs, and
+both GATT start writes succeeded, but neither first sensor frame arrived. This
+proved the failure was after GATT write acceptance and motivated the
+response-gated sequence above; that repair remains host-only until another
+attended run. Physical ECG, ACC, Rusty outlet, and official-inlet acceptance
+remain open.
 
 ## Stable discovery names
 

@@ -16,7 +16,9 @@ Last verified: 2026-08-16
   decoded. Each native async call has an identifier-free typed stage, its own
   deadline and cancel/close ownership inside a 45-second setup budget. Partial
   subscription rollback, internal queues, callback removal, and session cleanup
-  are bounded and exactly-once.
+  are bounded and exactly-once. Startup requires exact successful PMD settings
+  and start responses, qualifies ECG first, and starts ACC only after the first
+  decoded ECG frame.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
   parameter request and reports the request status, observed interval,
   peripheral latency, and read-only negotiated MTU. Older Windows versions
@@ -148,11 +150,13 @@ Last verified: 2026-08-16
   direct WinRT scanner/session backend is compiled and deterministically tested.
   A same-lease physical differential run subsequently proved the published
   reference watcher and repaired candidate both selected an exact H10; the
-  candidate then failed to qualify both first frames after entering session
-  setup. Scanner admission is therefore proven for that epoch, while the first
-  failing WinRT setup stage, physical acquisition, and official-inlet delivery
-  remain open. Retain the publication and release hold until one Polar Stream
-  run supplies the complete evidence.
+  candidate then physically passed device/session acquisition, service and
+  characteristic discovery, all subscriptions, and both GATT start writes, but
+  neither first sensor frame arrived. Scanner and GATT setup are proven for that
+  epoch. A subsequent host-only repair now validates PMD control responses and
+  stages settings → ECG response/frame → ACC response/frame. Physical sensor
+  acquisition and official-inlet delivery remain open. Retain the publication
+  and release hold until one Polar Stream run supplies the complete evidence.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also

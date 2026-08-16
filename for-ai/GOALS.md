@@ -62,10 +62,11 @@ items into the dated history instead of silently deleting them.
   3ch/200 Hz, nonzero bounded axes, two exact official pylsl/liblsl inlets,
   loss/reorder/rate evidence, and clean process/socket shutdown. The direct
   Windows WinRT scanner now has same-epoch reference-positive physical selection
-  evidence. The next attended run must use the identifier-free ordered session
-  trace to identify the first non-success native stage, then continue only if
-  both first sensor frames advance. Rusty outlets and official inlets remain
-  unaccepted; the separate reference-doctor passes are not acceptance.
+  evidence plus physical success through CCCD subscription and both GATT start
+  writes. The next attended run must exercise the new response-gated PMD
+  settings → ECG → ACC sequence and continue only if both sensor frames advance.
+  Rusty outlets and official inlets remain unaccepted; the separate
+  reference-doctor passes are not acceptance.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that
   decision and physical/cross-platform gates close.

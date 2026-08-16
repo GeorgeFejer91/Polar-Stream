@@ -30,8 +30,12 @@ pub(crate) enum SessionStage {
     HeartRateNotification,
     PmdControlNotification,
     PmdDataNotification,
+    RequestEcgSettings,
+    EcgSettingsResponse,
     StartEcg,
+    StartEcgResponse,
     StartAcc,
+    StartAccResponse,
     FirstEcgFrame,
     FirstAccFrame,
     BatteryRead,
@@ -39,7 +43,7 @@ pub(crate) enum SessionStage {
 
 impl SessionStage {
     #[cfg(test)]
-    const ALL: [Self; 27] = [
+    const ALL: [Self; 31] = [
         Self::AddressToDevice,
         Self::GattSessionCreate,
         Self::MaintainConnection,
@@ -62,8 +66,12 @@ impl SessionStage {
         Self::HeartRateNotification,
         Self::PmdControlNotification,
         Self::PmdDataNotification,
+        Self::RequestEcgSettings,
+        Self::EcgSettingsResponse,
         Self::StartEcg,
+        Self::StartEcgResponse,
         Self::StartAcc,
+        Self::StartAccResponse,
         Self::FirstEcgFrame,
         Self::FirstAccFrame,
         Self::BatteryRead,
@@ -93,8 +101,12 @@ impl SessionStage {
             Self::HeartRateNotification => "heart-rate-notification-subscription",
             Self::PmdControlNotification => "pmd-control-notification-subscription",
             Self::PmdDataNotification => "pmd-data-notification-subscription",
+            Self::RequestEcgSettings => "pmd-request-ecg-settings",
+            Self::EcgSettingsResponse => "pmd-ecg-settings-response",
             Self::StartEcg => "pmd-start-ecg",
+            Self::StartEcgResponse => "pmd-start-ecg-response",
             Self::StartAcc => "pmd-start-acc",
+            Self::StartAccResponse => "pmd-start-acc-response",
             Self::FirstEcgFrame => "first-ecg-frame",
             Self::FirstAccFrame => "first-acc-frame",
             Self::BatteryRead => "battery-read",
@@ -384,45 +396,78 @@ pub(crate) enum FirstFrameKind {
 }
 
 pub(crate) struct FirstFrameStages {
-    ecg: Option<StageSpan>,
-    acc: Option<StageSpan>,
+    reporter: StageReporter,
+    ecg: FrameStage,
+    acc: FrameStage,
+}
+
+#[derive(Default)]
+struct FrameStage {
+    span: Option<StageSpan>,
+    completed: bool,
+    started: bool,
 }
 
 impl FirstFrameStages {
     pub(crate) fn new(reporter: StageReporter) -> Self {
         Self {
-            ecg: Some(reporter.enter(SessionStage::FirstEcgFrame, 1)),
-            acc: Some(reporter.enter(SessionStage::FirstAccFrame, 1)),
+            reporter,
+            ecg: FrameStage::default(),
+            acc: FrameStage::default(),
+        }
+    }
+
+    pub(crate) fn begin(&mut self, kind: FirstFrameKind) {
+        let (stage, state) = match kind {
+            FirstFrameKind::Ecg => (SessionStage::FirstEcgFrame, &mut self.ecg),
+            FirstFrameKind::Acc => (SessionStage::FirstAccFrame, &mut self.acc),
+        };
+        if state.started {
+            return;
+        }
+        state.started = true;
+        let span = self.reporter.enter(stage, 1);
+        if state.completed {
+            span.finish(StageResultClass::Success);
+        } else {
+            state.span = Some(span);
         }
     }
 
     pub(crate) fn observe(&mut self, kind: FirstFrameKind) {
-        let span = match kind {
-            FirstFrameKind::Ecg => self.ecg.take(),
-            FirstFrameKind::Acc => self.acc.take(),
+        let state = match kind {
+            FirstFrameKind::Ecg => &mut self.ecg,
+            FirstFrameKind::Acc => &mut self.acc,
         };
-        if let Some(span) = span {
+        state.completed = true;
+        if let Some(span) = state.span.take() {
             span.finish(StageResultClass::Success);
         }
     }
 
+    pub(crate) fn finish(&mut self, kind: FirstFrameKind, class: StageResultClass) {
+        let state = match kind {
+            FirstFrameKind::Ecg => &mut self.ecg,
+            FirstFrameKind::Acc => &mut self.acc,
+        };
+        if let Some(span) = state.span.take() {
+            span.finish(class);
+        }
+    }
+
     pub(crate) fn finish_pending(&mut self, class: StageResultClass) {
-        if let Some(span) = self.ecg.take() {
-            span.finish(class);
-        }
-        if let Some(span) = self.acc.take() {
-            span.finish(class);
-        }
+        self.finish(FirstFrameKind::Ecg, class);
+        self.finish(FirstFrameKind::Acc, class);
     }
 
     #[cfg(test)]
     fn saw_ecg(&self) -> bool {
-        self.ecg.is_none()
+        self.ecg.completed
     }
 
     #[cfg(test)]
     fn saw_acc(&self) -> bool {
-        self.acc.is_none()
+        self.acc.completed
     }
 }
 
@@ -573,12 +618,15 @@ mod tests {
     #[test]
     fn first_frame_stages_keep_missing_streams_distinct() {
         let mut stages = FirstFrameStages::new(StageReporter::new(false, None));
+        stages.begin(FirstFrameKind::Ecg);
         stages.observe(FirstFrameKind::Ecg);
         assert!(stages.saw_ecg());
         assert!(!stages.saw_acc());
+        stages.begin(FirstFrameKind::Acc);
         stages.finish_pending(StageResultClass::Timeout);
 
         let mut stages = FirstFrameStages::new(StageReporter::new(false, None));
+        stages.begin(FirstFrameKind::Acc);
         stages.observe(FirstFrameKind::Acc);
         assert!(!stages.saw_ecg());
         assert!(stages.saw_acc());
