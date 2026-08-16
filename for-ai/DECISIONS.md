@@ -1,5 +1,24 @@
 # Decision log
 
+## 2026-08-16 — Split the product input backend from output initialization
+
+The attended `pmd-only-winrt-when-completion` run was reference-positive and
+again reached both control responses with zero PMD-data callbacks. PMD-only
+`windows-future` completion projection is therefore eliminated. The link was
+connected with a 232-byte PDU after the start response but reported disconnected
+at the first-frame timeout; this single checkpoint does not establish whether
+the disconnect caused or followed missing data delivery.
+
+Before changing the backend again, an identifier-free input-only differential
+now drives the real `InputManager` scanner/session and requires two advancing
+ECG and ACC frames with nonzero samples on every ACC axis, but deliberately
+constructs no LSL/OSC/CSV output owner. This separates the product WinRT backend
+from the full verifier's pre-connection Rusty outlet initialization. It retains
+the exact session profile and cleanup owner and emits no name, address, payload,
+or stable identity. If it passes, output initialization/lifecycle is the next
+boundary; if it fails, the defect remains inside the product input backend.
+Publication remains held.
+
 ## 2026-08-16 — Match the passing probe's WinRT completion projection
 
 The attended `pmd-only-retain-successful-gatt-operations` run was

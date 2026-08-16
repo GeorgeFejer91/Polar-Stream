@@ -308,6 +308,13 @@ owner. The normal path remains unchanged when the variable is absent, and every
 other value rejects. Physical product and official-inlet acceptance remain open
 until the next attended run.
 
+An input-only differential complements that full verifier. It uses the same
+product `InputManager`, scanner, selected WinRT session, PMD response gates, and
+cleanup owner, but constructs no LSL/OSC/CSV transport. It admits success only
+after both sensor timestamps advance and every ACC axis has a nonzero sample,
+and emits no device identity. This diagnostic separates the product input
+backend from output initialization; it is not a reduced acceptance claim.
+
 ## Stable discovery names
 
 `polar-h10-metrics` owns the metric/evidence/suffix catalog;

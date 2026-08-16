@@ -36,6 +36,13 @@ Last verified: 2026-08-16
   setup and success-time explicit operation close are no longer candidate
   causes. Failure/timeout/cancellation cleanup and the default product lifecycle
   remain unchanged; physical acceptance remains open.
+- An identifier-free input-only differential now drives the same product
+  `InputManager`/WinRT session without constructing any output transport. It
+  requires a connected session, two advancing ECG frames, two advancing ACC
+  frames, and at least one nonzero sample on every ACC axis, then performs the
+  normal bounded disconnect. This determines whether pre-connection Rusty
+  outlet initialization influences the physical failure before another backend
+  change is considered.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
   parameter request and reports the request status, observed interval,
   peripheral latency, and read-only negotiated MTU. Older Windows versions
