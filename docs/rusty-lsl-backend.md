@@ -125,6 +125,12 @@ and additionally matches the passing probe's PMD setup sequence: one PMD
 service-access request, direct uncached exact characteristic lookups, explicit
 control-Indicate/data-Notify CCCDs, no inter-subscription delay, and no
 pre-frame link-property reads. The default product profile is unchanged.
+A reference-positive physical run still received both ECG control responses
+and zero PMD-data callbacks, eliminating those setup-order differences. The
+next diagnostic-only profile, `pmd-only-probe-std-handoff`, retains that setup
+and moves only the native callback handoff onto the passing probe's bounded
+standard-library channel. One owned bridge forwards into the existing bounded
+Tokio queue and stops/joins during normal reverse-order cleanup.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while

@@ -10,7 +10,11 @@ use std::{
     future::IntoFuture,
     marker::PhantomData,
     rc::Rc,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -78,6 +82,7 @@ const PMD_RETAIN_SUCCESS_PROFILE: &str = "pmd-only-retain-successful-gatt-operat
 const PMD_WHEN_COMPLETION_PROFILE: &str = "pmd-only-winrt-when-completion";
 const PMD_WHEN_ALL_SETUP_PROFILE: &str = "pmd-only-winrt-when-all-setup";
 const PMD_PROBE_SEQUENCE_PROFILE: &str = "pmd-only-probe-equivalent-sequence";
+const PMD_PROBE_STD_HANDOFF_PROFILE: &str = "pmd-only-probe-std-handoff";
 const PROPERTY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(6);
 const PROPERTY_CONFIRMATION_CONCURRENCY: usize = 8;
@@ -90,6 +95,7 @@ enum SessionProfile {
     PmdOnlyWinrtWhenCompletion,
     PmdOnlyWinrtWhenAllSetup,
     PmdOnlyProbeEquivalentSequence,
+    PmdOnlyProbeStdHandoff,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,8 +142,11 @@ impl SessionProfile {
             Some(value) if value == OsStr::new(PMD_PROBE_SEQUENCE_PROFILE) => {
                 Ok(Self::PmdOnlyProbeEquivalentSequence)
             }
+            Some(value) if value == OsStr::new(PMD_PROBE_STD_HANDOFF_PROFILE) => {
+                Ok(Self::PmdOnlyProbeStdHandoff)
+            }
             Some(_) => Err(format!(
-                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, {PMD_WHEN_COMPLETION_PROFILE}, {PMD_WHEN_ALL_SETUP_PROFILE}, or {PMD_PROBE_SEQUENCE_PROFILE} when set"
+                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, {PMD_WHEN_COMPLETION_PROFILE}, {PMD_WHEN_ALL_SETUP_PROFILE}, {PMD_PROBE_SEQUENCE_PROFILE}, or {PMD_PROBE_STD_HANDOFF_PROFILE} when set"
             )),
         }
     }
@@ -158,7 +167,8 @@ impl SessionProfile {
             }
             Self::PmdOnlyWinrtWhenCompletion
             | Self::PmdOnlyWinrtWhenAllSetup
-            | Self::PmdOnlyProbeEquivalentSequence => WinrtOperationPolicy::WHEN_RETAINED,
+            | Self::PmdOnlyProbeEquivalentSequence
+            | Self::PmdOnlyProbeStdHandoff => WinrtOperationPolicy::WHEN_RETAINED,
             Self::ReferenceCompatible | Self::PmdOnlyDifferential => WinrtOperationPolicy::DEFAULT,
         }
     }
@@ -166,7 +176,9 @@ impl SessionProfile {
     const fn setup_operation_policy(self) -> WinrtOperationPolicy {
         if matches!(
             self,
-            Self::PmdOnlyWinrtWhenAllSetup | Self::PmdOnlyProbeEquivalentSequence
+            Self::PmdOnlyWinrtWhenAllSetup
+                | Self::PmdOnlyProbeEquivalentSequence
+                | Self::PmdOnlyProbeStdHandoff
         ) {
             WinrtOperationPolicy::WHEN_RETAINED
         } else {
@@ -175,7 +187,14 @@ impl SessionProfile {
     }
 
     const fn probe_equivalent_sequence(self) -> bool {
-        matches!(self, Self::PmdOnlyProbeEquivalentSequence)
+        matches!(
+            self,
+            Self::PmdOnlyProbeEquivalentSequence | Self::PmdOnlyProbeStdHandoff
+        )
+    }
+
+    const fn probe_std_handoff(self) -> bool {
+        matches!(self, Self::PmdOnlyProbeStdHandoff)
     }
 
     const fn name(self) -> &'static str {
@@ -186,6 +205,7 @@ impl SessionProfile {
             Self::PmdOnlyWinrtWhenCompletion => PMD_WHEN_COMPLETION_PROFILE,
             Self::PmdOnlyWinrtWhenAllSetup => PMD_WHEN_ALL_SETUP_PROFILE,
             Self::PmdOnlyProbeEquivalentSequence => PMD_PROBE_SEQUENCE_PROFILE,
+            Self::PmdOnlyProbeStdHandoff => PMD_PROBE_STD_HANDOFF_PROFILE,
         }
     }
 }
@@ -1205,8 +1225,78 @@ impl ExpectedControlResponse {
 
 struct NotificationSink {
     raw_tx: mpsc::Sender<RawNotification>,
+    probe_tx: Option<std_mpsc::SyncSender<ProbeCallbackMessage>>,
     fault_tx: watch::Sender<Option<String>>,
     diagnostics: Arc<NotificationDiagnostics>,
+}
+
+enum ProbeCallbackMessage {
+    Notification(RawNotification),
+    Fault,
+}
+
+struct ProbeNotificationBridge {
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl ProbeNotificationBridge {
+    fn start(
+        raw_tx: mpsc::Sender<RawNotification>,
+        fault_tx: watch::Sender<Option<String>>,
+        diagnostics: Arc<NotificationDiagnostics>,
+    ) -> Result<(Self, std_mpsc::SyncSender<ProbeCallbackMessage>), String> {
+        let (probe_tx, probe_rx) = std_mpsc::sync_channel(RAW_NOTIFICATION_CAPACITY);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let handle = thread::Builder::new()
+            .name("polar-h10-probe-notification-bridge".to_string())
+            .spawn(move || {
+                while !thread_stop.load(Ordering::Acquire) {
+                    match probe_rx.recv_timeout(Duration::from_millis(25)) {
+                        Ok(ProbeCallbackMessage::Notification(raw)) => {
+                            let source = raw.source;
+                            diagnostics.record_callback_entered(source);
+                            diagnostics.record_callback_decoded(source);
+                            enqueue_notification(&raw_tx, &fault_tx, &diagnostics, raw);
+                        }
+                        Ok(ProbeCallbackMessage::Fault) => {
+                            diagnostics.record_callback_fault();
+                            diagnostics.report("probe-callback-fault");
+                            fault_tx.send_replace(Some(
+                                "Windows WinRT probe-style notification callback failed"
+                                    .to_string(),
+                            ));
+                        }
+                        Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            })
+            .map_err(|error| {
+                format!("Could not start the Windows H10 probe notification bridge: {error}")
+            })?;
+        Ok((
+            Self {
+                stop,
+                handle: Some(handle),
+            },
+            probe_tx,
+        ))
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for ProbeNotificationBridge {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 struct Subscription {
@@ -1254,6 +1344,7 @@ struct WinrtSession {
     cleanup: SessionCleanup,
     pmd_operation_policy: WinrtOperationPolicy,
     probe_equivalent_sequence: bool,
+    probe_notification_bridge: Option<ProbeNotificationBridge>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1350,6 +1441,7 @@ impl OpeningSession {
             cleanup: SessionCleanup::default(),
             pmd_operation_policy,
             probe_equivalent_sequence,
+            probe_notification_bridge: None,
         }
     }
 }
@@ -1880,6 +1972,7 @@ impl WinrtSession {
         let mut activation = SubscriptionActivation::default();
         let NotificationSink {
             raw_tx,
+            probe_tx,
             fault_tx,
             diagnostics,
         } = sink;
@@ -1926,8 +2019,26 @@ impl WinrtSession {
                 // data. Descriptor readback is intentionally omitted because
                 // the passing reference does not interpose that operation.
                 let token_result = {
-                    let callback_diagnostics = diagnostics.clone();
-                    let handler =
+                    let handler = if let Some(probe_tx) = probe_tx {
+                        TypedEventHandler::<GattCharacteristic, GattValueChangedEventArgs>::new(
+                            move |_, args: Ref<'_, GattValueChangedEventArgs>| {
+                                let message = match (|| {
+                                    let value = args.ok()?.CharacteristicValue()?;
+                                    let bytes = buffer_to_vec(&value)?;
+                                    Ok::<_, windows::core::Error>(RawNotification {
+                                        source,
+                                        value: bytes,
+                                    })
+                                })() {
+                                    Ok(raw) => ProbeCallbackMessage::Notification(raw),
+                                    Err(_) => ProbeCallbackMessage::Fault,
+                                };
+                                let _ = probe_tx.try_send(message);
+                                Ok(())
+                            },
+                        )
+                    } else {
+                        let callback_diagnostics = diagnostics.clone();
                         TypedEventHandler::<GattCharacteristic, GattValueChangedEventArgs>::new(
                             move |_, args| {
                                 callback_diagnostics.record_callback_entered(source);
@@ -1956,7 +2067,8 @@ impl WinrtSession {
                                 }
                                 Ok(())
                             },
-                        );
+                        )
+                    };
                     characteristic
                         .ValueChanged(&handler)
                         .map(|token| (token, handler))
@@ -2147,6 +2259,9 @@ impl WinrtSession {
         while let Some(mut subscription) = self.subscriptions.pop() {
             Self::disable_subscription(&mut subscription).await;
         }
+        if let Some(mut bridge) = self.probe_notification_bridge.take() {
+            bridge.stop();
+        }
         self.close_native_handles();
     }
 }
@@ -2166,6 +2281,9 @@ impl Drop for WinrtSession {
         );
         debug_assert!(plan.close_session);
         self.subscriptions.clear();
+        if let Some(mut bridge) = self.probe_notification_bridge.take() {
+            bridge.stop();
+        }
         self.close_native_handles();
     }
 }
@@ -2182,14 +2300,15 @@ pub(super) async fn prepare(
         let pmd_policy = profile.pmd_operation_policy();
         let setup_policy = profile.setup_operation_policy();
         eprintln!(
-            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={} winrt-when-completion={} close-successful-setup-operations={} winrt-when-all-setup={} probe-equivalent-sequence={}",
+            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={} winrt-when-completion={} close-successful-setup-operations={} winrt-when-all-setup={} probe-equivalent-sequence={} probe-std-handoff={}",
             profile.name(),
             profile.heart_rate_enabled(),
             pmd_policy.close_after_success,
             matches!(pmd_policy.projection, WinrtCompletionProjection::When),
             setup_policy.close_after_success,
             matches!(setup_policy.projection, WinrtCompletionProjection::When),
-            profile.probe_equivalent_sequence()
+            profile.probe_equivalent_sequence(),
+            profile.probe_std_handoff()
         );
     }
     let reporter = StageReporter::new(
@@ -2200,6 +2319,17 @@ pub(super) async fn prepare(
     let (raw_tx, mut raw_rx) = mpsc::channel(RAW_NOTIFICATION_CAPACITY);
     let (fault_tx, mut fault_rx) = watch::channel(None::<String>);
     let mut session = WinrtSession::open(device_id, profile, reporter, cancelled).await?;
+    let probe_tx = if profile.probe_std_handoff() {
+        let (bridge, probe_tx) = ProbeNotificationBridge::start(
+            raw_tx.clone(),
+            fault_tx.clone(),
+            notification_diagnostics.clone(),
+        )?;
+        session.probe_notification_bridge = Some(bridge);
+        Some(probe_tx)
+    } else {
+        None
+    };
     session.report_link_diagnostic("after-discovery");
     let mut gate = FirstFrameGate::default();
     let mut frame_stages = FirstFrameStages::new(reporter);
@@ -2225,6 +2355,7 @@ pub(super) async fn prepare(
                     cancelled,
                     NotificationSink {
                         raw_tx: raw_tx.clone(),
+                        probe_tx: probe_tx.clone(),
                         fault_tx: fault_tx.clone(),
                         diagnostics: notification_diagnostics.clone(),
                     },
@@ -2241,6 +2372,7 @@ pub(super) async fn prepare(
                 cancelled,
                 NotificationSink {
                     raw_tx: raw_tx.clone(),
+                    probe_tx: probe_tx.clone(),
                     fault_tx: fault_tx.clone(),
                     diagnostics: notification_diagnostics.clone(),
                 },
@@ -2260,6 +2392,7 @@ pub(super) async fn prepare(
                 cancelled,
                 NotificationSink {
                     raw_tx,
+                    probe_tx,
                     fault_tx,
                     diagnostics: notification_diagnostics.clone(),
                 },
@@ -3216,6 +3349,23 @@ mod tests {
             WinrtOperationPolicy::WHEN_RETAINED
         );
         assert!(probe.probe_equivalent_sequence());
+        assert!(!probe.probe_std_handoff());
+
+        let std_handoff =
+            SessionProfile::parse(Some(OsStr::new(PMD_PROBE_STD_HANDOFF_PROFILE))).unwrap();
+        assert_eq!(std_handoff, SessionProfile::PmdOnlyProbeStdHandoff);
+        assert_eq!(std_handoff.name(), PMD_PROBE_STD_HANDOFF_PROFILE);
+        assert!(!std_handoff.heart_rate_enabled());
+        assert_eq!(
+            std_handoff.pmd_operation_policy(),
+            WinrtOperationPolicy::WHEN_RETAINED
+        );
+        assert_eq!(
+            std_handoff.setup_operation_policy(),
+            WinrtOperationPolicy::WHEN_RETAINED
+        );
+        assert!(std_handoff.probe_equivalent_sequence());
+        assert!(std_handoff.probe_std_handoff());
 
         let error = SessionProfile::parse(Some(OsStr::new("pmd-only"))).unwrap_err();
         assert!(error.contains(SESSION_PROFILE_ENV));
@@ -3224,6 +3374,7 @@ mod tests {
         assert!(error.contains(PMD_WHEN_COMPLETION_PROFILE));
         assert!(error.contains(PMD_WHEN_ALL_SETUP_PROFILE));
         assert!(error.contains(PMD_PROBE_SEQUENCE_PROFILE));
+        assert!(error.contains(PMD_PROBE_STD_HANDOFF_PROFILE));
     }
 
     fn evidence(
@@ -3603,6 +3754,47 @@ mod tests {
         );
         assert_eq!(diagnostics.snapshot().queue_closed, 1);
         assert!(fault_rx.borrow().is_none());
+    }
+
+    #[tokio::test]
+    async fn probe_notification_bridge_forwards_and_stops_without_an_orphan() {
+        let diagnostics = Arc::new(NotificationDiagnostics::new(true));
+        let (raw_tx, mut raw_rx) = mpsc::channel(RAW_NOTIFICATION_CAPACITY);
+        let (fault_tx, mut fault_rx) = watch::channel(None);
+        let (mut bridge, probe_tx) =
+            ProbeNotificationBridge::start(raw_tx, fault_tx, diagnostics.clone()).unwrap();
+
+        assert!(
+            probe_tx
+                .try_send(ProbeCallbackMessage::Notification(RawNotification {
+                    source: NotificationSource::PmdData,
+                    value: vec![1, 2, 3],
+                }))
+                .is_ok()
+        );
+        let raw = tokio::time::timeout(Duration::from_secs(1), raw_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(raw.source, NotificationSource::PmdData);
+        assert_eq!(raw.value, vec![1, 2, 3]);
+        let source = diagnostics.snapshot().sources[NotificationSource::PmdData.diagnostic_index()];
+        assert_eq!(source.callbacks_entered, 1);
+        assert_eq!(source.callbacks_decoded, 1);
+        assert_eq!(source.callbacks_enqueued, 1);
+
+        assert!(probe_tx.try_send(ProbeCallbackMessage::Fault).is_ok());
+        tokio::time::timeout(Duration::from_secs(1), fault_rx.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fault_rx.borrow().as_deref(),
+            Some("Windows WinRT probe-style notification callback failed")
+        );
+
+        bridge.stop();
+        assert!(bridge.handle.is_none());
     }
 
     fn ecg_event() -> InputEvent {

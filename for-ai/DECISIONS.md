@@ -1,5 +1,25 @@
 # Decision log
 
+## 2026-08-17 — Isolate the callback handoff from Tokio
+
+The reference watcher observed exactly one H10 immediately before the
+`pmd-only-probe-equivalent-sequence` input-only run. That run used one PMD
+service-access request, direct uncached exact characteristic lookups, explicit
+control-Indicate/data-Notify CCCDs, no inter-subscription delay, and no
+pre-frame link-property reads. It still received both ECG control responses
+while PMD-data callbacks remained zero through the first-frame deadline. Those
+setup-order and property-read differences are therefore eliminated.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-probe-std-handoff`. It preserves the
+failed candidate's exact WinRT setup and changes only the native callback
+handoff: callbacks send bounded messages through the same standard-library
+channel family as the physically passing probe, and one owned bridge forwards
+them into the existing bounded Tokio queue. The bridge is stopped and joined
+after reverse-order handler/CCCD cleanup, with deterministic forwarding,
+fault, and no-orphan coverage. The default product path, response/frame gates,
+commands, scanner, output transports, and publication hold remain unchanged.
+
 ## 2026-08-17 — Match the passing probe's PMD setup sequence
 
 The reference-positive input-only

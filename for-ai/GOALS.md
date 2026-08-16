@@ -69,12 +69,12 @@ items into the dated history instead of silently deleting them.
   first frames in that probe, while the full product path in the same lease
   still timed out with zero PMD-data callbacks. Reconcile the product session
   with the passing minimal lifecycle one difference at a time. The prepared
-  next candidate matches the probe's PMD service-access, direct uncached
-  characteristic discovery, explicit CCCD modes, subscription spacing, and
-  pre-frame property-read shape under a closed verifier-only profile; run it
-  through the physical input-only gate and then the full official-inlet gate.
-  Rusty outlets and official inlets remain unaccepted; the probe pass is not
-  product acceptance.
+  probe-equivalent setup candidate still received zero PMD-data callbacks. The
+  prepared next candidate retains that setup and moves only native callback
+  handoff to a bounded standard-library channel with one owned bridge into the
+  existing Tokio queue; run it through the physical input-only gate and then
+  the full official-inlet gate. Rusty outlets and official inlets remain
+  unaccepted; the probe pass is not product acceptance.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that
   decision and physical/cross-platform gates close.

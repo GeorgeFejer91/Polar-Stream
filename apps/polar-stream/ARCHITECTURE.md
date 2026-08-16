@@ -328,7 +328,13 @@ PMD-only setup shape: one service-access request, one uncached exact
 characteristic lookup per PMD characteristic, explicit control-Indicate and
 data-Notify CCCD values, no inter-subscription delay, and no pre-frame link
 property reads. Production deadlines, cancellation, rollback, final cleanup,
-and the default profile remain unchanged.
+and the default profile remain unchanged. A reference-positive physical run
+still received both ECG control responses and zero PMD-data callbacks, so those
+setup-order differences are eliminated. The next closed verifier profile,
+`pmd-only-probe-std-handoff`, keeps that exact setup but gives both native
+callbacks the passing probe's bounded standard-library channel handoff. One
+owned bridge forwards into the existing bounded Tokio queue and is stopped and
+joined during the same reverse-order cleanup. This remains diagnostic-only.
 
 ## Stable discovery names
 
