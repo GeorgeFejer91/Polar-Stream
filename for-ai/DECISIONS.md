@@ -47,7 +47,9 @@ duration, and result class plus aggregate notification diagnostics. The latter
 records each characteristic's Notify/Indicate/read/write property shape, the
 selected CCCD mode, handler attachment/removal counts, and per-source callback,
 decode, enqueue, fault, and queue outcomes. It never emits an address, name,
-payload, manufacturer value, payload size, or stable device identity. The
+payload, manufacturer value, payload size, or stable device identity.
+Identifier-free link checkpoints also expose only connection state, negotiated
+PDU size, connection-interval units, and peripheral latency. The
 subsequent physical run
 stopped at the first typed non-success stage and compared that ordering with the
 exact published reference behavior before the response-gated change above. The

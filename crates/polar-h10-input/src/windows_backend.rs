@@ -1002,6 +1002,38 @@ struct WinrtSession {
     cleanup: SessionCleanup,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LinkDiagnosticSnapshot {
+    connected: Option<bool>,
+    max_pdu_size: Option<u16>,
+    connection_interval: Option<u16>,
+    connection_latency: Option<u16>,
+}
+
+impl LinkDiagnosticSnapshot {
+    fn summary(self) -> String {
+        let connected = self
+            .connected
+            .map(|value| if value { "true" } else { "false" })
+            .unwrap_or("unavailable");
+        let max_pdu_size = self
+            .max_pdu_size
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".to_string());
+        let connection_interval = self
+            .connection_interval
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".to_string());
+        let connection_latency = self
+            .connection_latency
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".to_string());
+        format!(
+            "connected={connected} max-pdu-size={max_pdu_size} connection-interval-units={connection_interval} connection-latency={connection_latency}"
+        )
+    }
+}
+
 struct OpeningSession {
     device: Option<BluetoothLEDevice>,
     gatt_session: Option<GattSession>,
@@ -1364,6 +1396,32 @@ impl WinrtSession {
         Ok(())
     }
 
+    fn link_diagnostic_snapshot(&self) -> LinkDiagnosticSnapshot {
+        let connected = self.device.ConnectionStatus().ok().map(|status| {
+            status == windows::Devices::Bluetooth::BluetoothConnectionStatus::Connected
+        });
+        let parameters = self.device.GetConnectionParameters().ok();
+        LinkDiagnosticSnapshot {
+            connected,
+            max_pdu_size: self.gatt_session.MaxPduSize().ok(),
+            connection_interval: parameters
+                .as_ref()
+                .and_then(|parameters| parameters.ConnectionInterval().ok()),
+            connection_latency: parameters
+                .as_ref()
+                .and_then(|parameters| parameters.ConnectionLatency().ok()),
+        }
+    }
+
+    fn report_link_diagnostic(&self, checkpoint: &str) {
+        if std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some() {
+            eprintln!(
+                "POLAR_H10_LINK_DIAGNOSTIC checkpoint={checkpoint} {}",
+                self.link_diagnostic_snapshot().summary()
+            );
+        }
+    }
+
     fn link_summary(&self) -> String {
         let mtu = self.gatt_session.MaxPduSize().ok();
         let observed = self
@@ -1660,6 +1718,7 @@ pub(super) async fn prepare(
     let (raw_tx, mut raw_rx) = mpsc::channel(RAW_NOTIFICATION_CAPACITY);
     let (fault_tx, mut fault_rx) = watch::channel(None::<String>);
     let mut session = WinrtSession::open(device_id, reporter, cancelled).await?;
+    session.report_link_diagnostic("after-discovery");
     let mut gate = FirstFrameGate::default();
     let mut frame_stages = FirstFrameStages::new(reporter);
 
@@ -1724,6 +1783,7 @@ pub(super) async fn prepare(
             .await?;
         ensure_active(cancelled, "PMD data subscription")?;
         tokio::time::sleep(Duration::from_millis(200)).await;
+        session.report_link_diagnostic("before-pmd-setup");
         ensure_active(cancelled, "PMD setup")?;
 
         send_status(
@@ -1779,6 +1839,7 @@ pub(super) async fn prepare(
             PMD_RESPONSE_TIMEOUT,
         )
         .await?;
+        session.report_link_diagnostic("after-ecg-start-response");
         SetupWaitContext {
             raw_rx: &mut raw_rx,
             fault_rx: &mut fault_rx,
@@ -1832,6 +1893,7 @@ pub(super) async fn prepare(
     }
     .await
     {
+        session.report_link_diagnostic("setup-failure");
         frame_stages.finish_pending(StageResultClass::NativeError);
         session.shutdown().await;
         return Err(error);
@@ -2688,6 +2750,30 @@ mod tests {
         let mut token = Some(17);
         assert_eq!(take_subscription_token(&mut token), Some(17));
         assert_eq!(take_subscription_token(&mut token), None);
+    }
+
+    #[test]
+    fn link_diagnostic_summary_is_identifier_free_and_deterministic() {
+        assert_eq!(
+            LinkDiagnosticSnapshot {
+                connected: Some(true),
+                max_pdu_size: Some(247),
+                connection_interval: Some(12),
+                connection_latency: Some(0),
+            }
+            .summary(),
+            "connected=true max-pdu-size=247 connection-interval-units=12 connection-latency=0"
+        );
+        assert_eq!(
+            LinkDiagnosticSnapshot {
+                connected: None,
+                max_pdu_size: None,
+                connection_interval: None,
+                connection_latency: None,
+            }
+            .summary(),
+            "connected=unavailable max-pdu-size=unavailable connection-interval-units=unavailable connection-latency=unavailable"
+        );
     }
 
     #[test]

@@ -87,6 +87,8 @@ budget, so a typed native stage exits before the outer source-readiness bound.
 stage name, attempt, entry/exit, duration, and result class. It also records
 identifier-free characteristic property/CCCD choices, handler lifetime counts,
 per-source callback/decode/enqueue counts, callback faults, and queue outcomes.
+Link checkpoints record only connection state, negotiated PDU size, connection
+interval units, and peripheral latency.
 It never records addresses, names, payload bytes or sizes, manufacturer data, or
 stable device identities. PMD settings and start responses are separate stages
 from their GATT writes and first frames.

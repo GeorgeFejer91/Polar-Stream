@@ -211,6 +211,10 @@ entry/exit records with attempt, duration, and result class. At subscription
 and qualification checkpoints it also emits aggregate, identifier-free
 characteristic property/CCCD choices, callback entry/decode/enqueue counts,
 handler attachment/removal counts, callback faults, and bounded-queue outcomes.
+Identifier-free link checkpoints additionally record connection state,
+`GattSession.MaxPduSize`, connection-interval units, and peripheral latency
+after discovery, before PMD setup, after the ECG start response, and on setup
+failure.
 It covers device acquisition, persistent session creation, PMD
 service/characteristics, CCCD subscriptions, ECG settings/start responses, ACC
 start responses, and first ECG/ACC frames without emitting the selected
