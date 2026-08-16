@@ -209,7 +209,8 @@ address, name, payload bytes, manufacturer value, or stable device identity.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` separately emits ordered setup stage
 entry/exit records with attempt, duration, and result class. At subscription
 and qualification checkpoints it also emits aggregate, identifier-free
-characteristic property/CCCD choices, callback entry/decode/enqueue counts,
+characteristic properties, requested and read-back CCCD state, callback
+entry/decode/enqueue counts,
 handler attachment/removal counts, callback faults, and bounded-queue outcomes.
 Identifier-free link checkpoints additionally record connection state,
 `GattSession.MaxPduSize`, connection-interval units, and peripheral latency
@@ -262,8 +263,15 @@ callback; ACC start was intentionally not attempted. Handler-order, a
 reference-style settings delay, and a pre-stream preferred-connection request
 were each eliminated as causes. Identifier-free callback/property/lifetime
 counters now distinguish a missing WinRT event from buffer conversion, queue,
-or frame qualification failure on the next attended run. Physical ECG, ACC,
-Rusty outlet, and official-inlet acceptance remain open.
+or frame qualification failure. A subsequent reference-positive run retained a
+connected session and negotiated 232-byte PDU before and after the accepted ECG
+start response, while PMD control and heart-rate callbacks advanced and PMD
+data callbacks remained at zero. Link readiness and MTU are therefore no longer
+candidate causes. Subscription setup now reads back every CCCD and retains an
+agile owner for every WinRT event delegate; mismatched/read-failed CCCDs roll
+back before the session can proceed. That hardening remains host evidence until
+the next attended run. Physical ECG, ACC, Rusty outlet, and official-inlet
+acceptance remain open.
 
 ## Stable discovery names
 

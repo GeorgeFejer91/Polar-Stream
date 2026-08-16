@@ -85,7 +85,8 @@ before the source is stopped. Native session setup has its own 45-second total
 budget, so a typed native stage exits before the outer source-readiness bound.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` is enabled by this verifier and records
 stage name, attempt, entry/exit, duration, and result class. It also records
-identifier-free characteristic property/CCCD choices, handler lifetime counts,
+identifier-free characteristic properties, requested and read-back CCCD state,
+handler lifetime counts,
 per-source callback/decode/enqueue counts, callback faults, and queue outcomes.
 Link checkpoints record only connection state, negotiated PDU size, connection
 interval units, and peripheral latency.
@@ -121,6 +122,15 @@ setup, the physical H10, or Rusty LSL. An
 earlier zero from the published reference CLI wrapper is invalid
 because that wrapper returns immediately after starting its asynchronous
 watcher and is not device-state evidence.
+
+A later reference-positive differential run kept the candidate connected with a
+232-byte negotiated PDU through the accepted ECG start response. PMD control and
+heart-rate callbacks advanced, but PMD data delivered no WinRT event at all.
+This rules out link readiness and MTU for that epoch. The next source checkpoint
+adds fail-closed CCCD readback and explicit agile ownership of each registered
+event delegate; it has deterministic host coverage but is not physical
+acceptance until another attended same-epoch chain reaches both sensor streams
+and the pinned official inlets.
 
 The typed trace proved address/device acquisition, persistent session setup,
 service/characteristic access, all three CCCDs, and the ECG settings/start

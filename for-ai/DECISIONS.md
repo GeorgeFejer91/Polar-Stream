@@ -1,5 +1,24 @@
 # Decision log
 
+## 2026-08-16 — Notification admission verifies CCCD state and owns delegates
+
+A reference-positive physical epoch proved the selected H10 remained connected
+with a negotiated 232-byte PDU before and after its accepted ECG start response.
+PMD control indications and heart-rate notifications entered, decoded, and
+queued through the same WinRT callback bridge, while PMD data entered zero
+callbacks. The failure is therefore narrower than link readiness, MTU, generic
+event dispatch, buffer conversion, queueing, or Rusty LSL.
+
+Every Windows notification subscription now reads the CCCD back after a
+successful write and requires the exact requested Notify/Indicate value. A
+failed or mismatched readback disables that CCCD before setup returns. Each
+registered `TypedEventHandler` also has an explicit agile owner retained beside
+its removal token until exactly-once teardown. These changes make OS-side
+subscription state and delegate lifetime explicit; they do not claim to have
+fixed the physical PMD data boundary. Another attended same-epoch run must still
+reach advancing ECG and ACC, both Rusty outlets, and both pinned official inlets
+before publication.
+
 ## 2026-08-16 — PMD startup is response-gated and qualifies ECG before ACC
 
 The first typed physical trace proved the selected H10 reached a persistent
