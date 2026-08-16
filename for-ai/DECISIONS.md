@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-16 — Leave successful PMD GATT operations unclosed as the next differential
+
+The attended `pmd-only-differential` run was reference-positive, selected the
+exact H10, completed PMD discovery/subscriptions and both ECG control responses,
+but still recorded zero PMD-data callbacks through the first-frame timeout.
+Optional heart-rate discovery/subscription is therefore eliminated.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-retain-successful-gatt-operations`.
+Relative to the failed PMD-only baseline it changes one behavior: successful
+PMD CCCD and control-write WinRT operations are not explicitly closed
+immediately after completion, matching their lifetime in the physically passing
+minimal probe. Native error, timeout, cancellation, rollback, and final session
+cleanup keep their cancel/close behavior. The default product profile still
+closes successful operations, and unknown values reject before device setup.
+This remains a local diagnostic candidate; publication and physical acceptance
+remain held.
+
 ## 2026-08-16 — PMD-only production differential changes one optional branch
 
 The next full-product candidate uses the exact closed environment value

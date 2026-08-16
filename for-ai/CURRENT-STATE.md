@@ -28,6 +28,13 @@ Last verified: 2026-08-16
   notification callbacks, steady-state acquisition, stop, callback removal,
   handle closure, and apartment teardown share that owner. A completion guard
   keeps disconnect signalling bounded if the owner unwinds.
+- The current local verifier-only differential leaves successful PMD
+  CCCD/control-write WinRT operations without an explicit completion-time
+  `Close()` while preserving exact
+  cancel/close behavior on failure, timeout, cancellation, rollback, and final
+  teardown. The preceding HR-free physical run still received zero PMD-data
+  callbacks, so optional heart-rate setup is no longer a candidate cause. The
+  default product lifecycle is unchanged; physical acceptance remains open.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
   parameter request and reports the request status, observed interval,
   peripheral latency, and read-only negotiated MTU. Older Windows versions

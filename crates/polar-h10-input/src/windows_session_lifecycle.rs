@@ -257,6 +257,10 @@ impl Drop for StageSpan {
 pub(crate) trait StageControl {
     fn cancel(&self) -> Result<(), String>;
     fn close(&self) -> Result<(), String>;
+
+    fn close_after_success(&self) -> bool {
+        true
+    }
 }
 
 pub(crate) async fn run_controlled_stage<T, F, C>(
@@ -292,7 +296,11 @@ where
         result = &mut future => {
             match result {
                 Ok(value) => {
-                    let close_result = control.close();
+                    let close_result = if control.close_after_success() {
+                        control.close()
+                    } else {
+                        Ok(())
+                    };
                     span.finish(if close_result.is_ok() {
                         StageResultClass::Success
                     } else {
@@ -541,6 +549,23 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct RetainedSuccessControl(FakeControl);
+
+    impl StageControl for RetainedSuccessControl {
+        fn cancel(&self) -> Result<(), String> {
+            self.0.cancel()
+        }
+
+        fn close(&self) -> Result<(), String> {
+            self.0.close()
+        }
+
+        fn close_after_success(&self) -> bool {
+            false
+        }
+    }
+
     #[tokio::test]
     async fn every_stage_covers_success_native_error_timeout_and_cancellation() {
         for stage in SessionStage::ALL {
@@ -616,6 +641,64 @@ mod tests {
             assert_eq!(control.cancelled.load(Ordering::SeqCst), 1);
             assert_eq!(control.closed.load(Ordering::SeqCst), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn retained_success_skips_only_success_close() {
+        let reporter = StageReporter::new(false, None);
+        let stage = SessionStage::PmdDataNotification;
+
+        let (_cancel, mut cancelled) = watch::channel(false);
+        let control = RetainedSuccessControl::default();
+        assert_eq!(
+            run_controlled_stage(
+                reporter,
+                stage,
+                1,
+                Duration::from_secs(1),
+                &mut cancelled,
+                ready(Ok::<_, String>(())),
+                control.clone(),
+            )
+            .await,
+            Ok(())
+        );
+        assert_eq!(control.0.cancelled.load(Ordering::SeqCst), 0);
+        assert_eq!(control.0.closed.load(Ordering::SeqCst), 0);
+
+        let (_cancel, mut cancelled) = watch::channel(false);
+        let control = RetainedSuccessControl::default();
+        let error = run_controlled_stage(
+            reporter,
+            stage,
+            1,
+            Duration::from_secs(1),
+            &mut cancelled,
+            ready(Err::<(), _>("synthetic native error".to_string())),
+            control.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.class(), StageResultClass::NativeError);
+        assert_eq!(control.0.cancelled.load(Ordering::SeqCst), 0);
+        assert_eq!(control.0.closed.load(Ordering::SeqCst), 1);
+
+        let (_cancel, mut cancelled) = watch::channel(false);
+        let control = RetainedSuccessControl::default();
+        let error = run_controlled_stage(
+            reporter,
+            stage,
+            1,
+            Duration::from_millis(1),
+            &mut cancelled,
+            pending::<Result<(), String>>(),
+            control.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.class(), StageResultClass::TimeoutCancelled);
+        assert_eq!(control.0.cancelled.load(Ordering::SeqCst), 1);
+        assert_eq!(control.0.closed.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -9,7 +9,7 @@ import unittest
 
 from verify_rusty_lsl_h10 import (
     EXPECTED,
-    PMD_ONLY_PROFILE,
+    PMD_RETAIN_SUCCESS_PROFILE,
     SCAN_DIAGNOSTICS_ENV,
     SESSION_DIAGNOSTICS_ENV,
     SESSION_PROFILE_ENV,
@@ -93,7 +93,9 @@ class OfficialInletWorkerTests(unittest.TestCase):
         environment = physical_source_environment()
         self.assertEqual(environment[SCAN_DIAGNOSTICS_ENV], "1")
         self.assertEqual(environment[SESSION_DIAGNOSTICS_ENV], "1")
-        self.assertEqual(environment[SESSION_PROFILE_ENV], PMD_ONLY_PROFILE)
+        self.assertEqual(
+            environment[SESSION_PROFILE_ENV], PMD_RETAIN_SUCCESS_PROFILE
+        )
 
     def test_collects_exact_shapes_and_waits_for_explicit_close(self):
         pylsl = FakePylsl()

@@ -289,14 +289,18 @@ start response, while PMD control and heart-rate callbacks advanced and PMD
 The direct-handler candidate and a standalone minimal PMD probe closed the
 generic projection-level question. The probe physically received ECG and ACC;
 the full product verifier in the same lease still received both ECG control
-responses but zero PMD-data callbacks. The next candidate is therefore the
-closed verifier-only session profile
-`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential`. It skips only optional
-heart-rate discovery/subscription while retaining the production scanner,
-session, PMD operations, queues, Rusty outlets, and official inlets. The normal
-path is unchanged when the variable is absent, and every other value rejects.
-Physical product and official-inlet acceptance remain open until the next
-attended run.
+responses but zero PMD-data callbacks. The closed verifier-only session profile
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential` then skipped optional
+heart-rate discovery/subscription. The full product still received both ECG
+control responses but zero PMD-data callbacks, eliminating the optional heart
+rate branch. The next exact candidate is
+`pmd-only-retain-successful-gatt-operations`: relative to that failed baseline,
+it additionally leaves successful PMD CCCD/control-write WinRT operations
+without an explicit `Close()` immediately after completion. Timeout,
+cancellation, native-error,
+rollback, and final session cleanup remain unchanged. The normal path remains
+unchanged when the variable is absent, and every other value rejects. Physical
+product and official-inlet acceptance remain open until the next attended run.
 
 ## Stable discovery names
 

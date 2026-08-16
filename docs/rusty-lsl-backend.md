@@ -94,14 +94,17 @@ It never records addresses, names, payload bytes or sizes, manufacturer data, or
 stable device identities. PMD settings and start responses are separate stages
 from their GATT writes and first frames.
 
-The current attended differential additionally sets
+An attended differential set
 `POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential`. This closed,
-verifier-only profile skips optional heart-rate discovery and subscription but
-retains the same scanner, device/session ownership, PMD discovery, control/data
-subscriptions, response gates, queues, cleanup, outlets, and official inlets.
-An absent variable preserves the normal reference-compatible product path; any
-other value rejects before device setup. This is a one-variable diagnostic, not
-a supported user configuration or a claim that heart rate caused the failure.
+verifier-only profile skipped optional heart-rate discovery and subscription,
+but the same physical zero-PMD-data-callback failure remained. Heart-rate setup
+is therefore eliminated. The next attended verifier uses
+`pmd-only-retain-successful-gatt-operations`: it retains the HR-free baseline
+and additionally omits success-time `Close()` only for PMD CCCD/control-write
+WinRT operations. Failed, timed-out, cancelled, rollback, and final cleanup
+paths still cancel/close. An absent variable preserves the normal
+reference-compatible product path; any other value rejects before device
+setup. These are diagnostic profiles, not supported user configuration.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
