@@ -76,6 +76,7 @@ const SESSION_PROFILE_ENV: &str = "POLAR_STREAM_H10_SESSION_PROFILE";
 const PMD_ONLY_PROFILE: &str = "pmd-only-differential";
 const PMD_RETAIN_SUCCESS_PROFILE: &str = "pmd-only-retain-successful-gatt-operations";
 const PMD_WHEN_COMPLETION_PROFILE: &str = "pmd-only-winrt-when-completion";
+const PMD_WHEN_ALL_SETUP_PROFILE: &str = "pmd-only-winrt-when-all-setup";
 const PROPERTY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(6);
 const PROPERTY_CONFIRMATION_CONCURRENCY: usize = 8;
@@ -86,6 +87,34 @@ enum SessionProfile {
     PmdOnlyDifferential,
     PmdOnlyRetainSuccessfulGattOperations,
     PmdOnlyWinrtWhenCompletion,
+    PmdOnlyWinrtWhenAllSetup,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WinrtCompletionProjection {
+    IntoFuture,
+    When,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WinrtOperationPolicy {
+    projection: WinrtCompletionProjection,
+    close_after_success: bool,
+}
+
+impl WinrtOperationPolicy {
+    const DEFAULT: Self = Self {
+        projection: WinrtCompletionProjection::IntoFuture,
+        close_after_success: true,
+    };
+    const WHEN_RETAINED: Self = Self {
+        projection: WinrtCompletionProjection::When,
+        close_after_success: false,
+    };
+    const INTO_FUTURE_RETAINED: Self = Self {
+        projection: WinrtCompletionProjection::IntoFuture,
+        close_after_success: false,
+    };
 }
 
 impl SessionProfile {
@@ -99,8 +128,11 @@ impl SessionProfile {
             Some(value) if value == OsStr::new(PMD_WHEN_COMPLETION_PROFILE) => {
                 Ok(Self::PmdOnlyWinrtWhenCompletion)
             }
+            Some(value) if value == OsStr::new(PMD_WHEN_ALL_SETUP_PROFILE) => {
+                Ok(Self::PmdOnlyWinrtWhenAllSetup)
+            }
             Some(_) => Err(format!(
-                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, or {PMD_WHEN_COMPLETION_PROFILE} when set"
+                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, {PMD_WHEN_COMPLETION_PROFILE}, or {PMD_WHEN_ALL_SETUP_PROFILE} when set"
             )),
         }
     }
@@ -114,15 +146,24 @@ impl SessionProfile {
         matches!(self, Self::ReferenceCompatible)
     }
 
-    const fn close_successful_gatt_operations(self) -> bool {
-        !matches!(
-            self,
-            Self::PmdOnlyRetainSuccessfulGattOperations | Self::PmdOnlyWinrtWhenCompletion
-        )
+    const fn pmd_operation_policy(self) -> WinrtOperationPolicy {
+        match self {
+            Self::PmdOnlyRetainSuccessfulGattOperations => {
+                WinrtOperationPolicy::INTO_FUTURE_RETAINED
+            }
+            Self::PmdOnlyWinrtWhenCompletion | Self::PmdOnlyWinrtWhenAllSetup => {
+                WinrtOperationPolicy::WHEN_RETAINED
+            }
+            Self::ReferenceCompatible | Self::PmdOnlyDifferential => WinrtOperationPolicy::DEFAULT,
+        }
     }
 
-    const fn use_winrt_when_completion(self) -> bool {
-        matches!(self, Self::PmdOnlyWinrtWhenCompletion)
+    const fn setup_operation_policy(self) -> WinrtOperationPolicy {
+        if matches!(self, Self::PmdOnlyWinrtWhenAllSetup) {
+            WinrtOperationPolicy::WHEN_RETAINED
+        } else {
+            WinrtOperationPolicy::DEFAULT
+        }
     }
 
     const fn name(self) -> &'static str {
@@ -131,6 +172,7 @@ impl SessionProfile {
             Self::PmdOnlyDifferential => PMD_ONLY_PROFILE,
             Self::PmdOnlyRetainSuccessfulGattOperations => PMD_RETAIN_SUCCESS_PROFILE,
             Self::PmdOnlyWinrtWhenCompletion => PMD_WHEN_COMPLETION_PROFILE,
+            Self::PmdOnlyWinrtWhenAllSetup => PMD_WHEN_ALL_SETUP_PROFILE,
         }
     }
 }
@@ -1191,8 +1233,7 @@ struct WinrtSession {
     battery: Option<GattCharacteristic>,
     subscriptions: Vec<Subscription>,
     cleanup: SessionCleanup,
-    close_successful_gatt_operations: bool,
-    use_winrt_when_completion: bool,
+    pmd_operation_policy: WinrtOperationPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1265,8 +1306,7 @@ impl OpeningSession {
     fn finish(
         mut self,
         handles: DiscoveredHandles,
-        close_successful_gatt_operations: bool,
-        use_winrt_when_completion: bool,
+        pmd_operation_policy: WinrtOperationPolicy,
     ) -> WinrtSession {
         WinrtSession {
             device: self
@@ -1287,8 +1327,7 @@ impl OpeningSession {
             battery: handles.battery,
             subscriptions: Vec::new(),
             cleanup: SessionCleanup::default(),
-            close_successful_gatt_operations,
-            use_winrt_when_completion,
+            pmd_operation_policy,
         }
     }
 }
@@ -1476,6 +1515,33 @@ where
     .map_err(|error| error.to_string())
 }
 
+async fn await_winrt_stage_with_policy<T>(
+    call: WinrtStageCall,
+    operation: windows::core::Result<IAsyncOperation<T>>,
+    policy: WinrtOperationPolicy,
+    cancelled: &mut watch::Receiver<bool>,
+) -> Result<T, String>
+where
+    T: windows::core::RuntimeType + Send + 'static,
+{
+    match policy.projection {
+        WinrtCompletionProjection::IntoFuture => {
+            await_winrt_stage_with_success_close(
+                call,
+                operation,
+                |operation| operation.Cancel(),
+                |operation| operation.Close(),
+                policy.close_after_success,
+                cancelled,
+            )
+            .await
+        }
+        WinrtCompletionProjection::When => {
+            await_winrt_stage_when(call, operation, policy.close_after_success, cancelled).await
+        }
+    }
+}
+
 async fn await_cleanup_operation<T, O, C, X>(
     operation: windows::core::Result<O>,
     cancel: C,
@@ -1507,6 +1573,7 @@ impl WinrtSession {
         cancelled: &mut watch::Receiver<bool>,
     ) -> Result<Self, String> {
         ensure_active(cancelled, "address-to-device")?;
+        let setup_operation_policy = profile.setup_operation_policy();
         let address = parse_bluetooth_address(device_id).ok_or_else(|| {
             reporter.record_immediate(
                 SessionStage::AddressToDevice,
@@ -1516,11 +1583,10 @@ impl WinrtSession {
             "Windows WinRT address-to-device failed: the Bluetooth address was not recognized"
                 .to_string()
         })?;
-        let device = await_winrt_stage(
+        let device = await_winrt_stage_with_policy(
             WinrtStageCall::new(reporter, SessionStage::AddressToDevice, 1, OPEN_TIMEOUT),
             BluetoothLEDevice::FromBluetoothAddressAsync(address),
-            |operation| operation.Cancel(),
-            |operation| operation.Close(),
+            setup_operation_policy,
             cancelled,
         )
         .await?;
@@ -1528,11 +1594,10 @@ impl WinrtSession {
         let bluetooth_device_id = device
             .BluetoothDeviceId()
             .map_err(|error| stage_error(SessionStage::GattSessionCreate.name(), error))?;
-        let gatt_session = await_winrt_stage(
+        let gatt_session = await_winrt_stage_with_policy(
             WinrtStageCall::new(reporter, SessionStage::GattSessionCreate, 1, OPEN_TIMEOUT),
             GattSession::FromDeviceIdAsync(&bluetooth_device_id),
-            |operation| operation.Cancel(),
-            |operation| operation.Close(),
+            setup_operation_policy,
             cancelled,
         )
         .await?;
@@ -1577,6 +1642,7 @@ impl WinrtSession {
                 HEART_RATE_SERVICE,
                 SessionStage::HeartRateServiceDiscovery,
                 reporter,
+                setup_operation_policy,
                 cancelled,
             )
             .await;
@@ -1591,6 +1657,7 @@ impl WinrtSession {
                         cached: SessionStage::HeartRateDiscoveryCached,
                     },
                     reporter,
+                    setup_operation_policy,
                     cancelled,
                 )
                 .await
@@ -1609,6 +1676,7 @@ impl WinrtSession {
             "PMD service",
             SessionStage::PmdServiceDiscovery,
             reporter,
+            setup_operation_policy,
             cancelled,
         )
         .await?;
@@ -1623,6 +1691,7 @@ impl WinrtSession {
                 cached: SessionStage::PmdControlDiscoveryCached,
             },
             reporter,
+            setup_operation_policy,
             cancelled,
         )
         .await?;
@@ -1637,6 +1706,7 @@ impl WinrtSession {
                 cached: SessionStage::PmdDataDiscoveryCached,
             },
             reporter,
+            setup_operation_policy,
             cancelled,
         )
         .await?;
@@ -1652,8 +1722,7 @@ impl WinrtSession {
                 heart_rate,
                 battery: None,
             },
-            profile.close_successful_gatt_operations(),
-            profile.use_winrt_when_completion(),
+            profile.pmd_operation_policy(),
         ))
     }
 
@@ -1758,25 +1827,9 @@ impl WinrtSession {
         let call = WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT);
         let operation =
             characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(mode.cccd());
-        let status = if self.use_winrt_when_completion {
-            await_winrt_stage_when(
-                call,
-                operation,
-                self.close_successful_gatt_operations,
-                cancelled,
-            )
-            .await
-        } else {
-            await_winrt_stage_with_success_close(
-                call,
-                operation,
-                |operation| operation.Cancel(),
-                |operation| operation.Close(),
-                self.close_successful_gatt_operations,
-                cancelled,
-            )
-            .await
-        };
+        let status =
+            await_winrt_stage_with_policy(call, operation, self.pmd_operation_policy, cancelled)
+                .await;
         match status {
             Ok(GattCommunicationStatus::Success) => {
                 activation.commit_cccd().map_err(|error| {
@@ -1875,25 +1928,9 @@ impl WinrtSession {
             self.control.WriteValueWithResultAsync(&buffer)
         })();
         let call = WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT);
-        let result = if self.use_winrt_when_completion {
-            await_winrt_stage_when(
-                call,
-                operation,
-                self.close_successful_gatt_operations,
-                cancelled,
-            )
-            .await?
-        } else {
-            await_winrt_stage_with_success_close(
-                call,
-                operation,
-                |operation| operation.Cancel(),
-                |operation| operation.Close(),
-                self.close_successful_gatt_operations,
-                cancelled,
-            )
-            .await?
-        };
+        let result =
+            await_winrt_stage_with_policy(call, operation, self.pmd_operation_policy, cancelled)
+                .await?;
         let status = result
             .Status()
             .map_err(|error| stage_error(stage.name(), error))?;
@@ -1914,6 +1951,7 @@ impl WinrtSession {
                 uuid::Uuid::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb),
                 SessionStage::BatteryServiceDiscovery,
                 reporter,
+                WinrtOperationPolicy::DEFAULT,
                 cancelled,
             )
             .await;
@@ -1928,6 +1966,7 @@ impl WinrtSession {
                         cached: SessionStage::BatteryDiscoveryCached,
                     },
                     reporter,
+                    WinrtOperationPolicy::DEFAULT,
                     cancelled,
                 )
                 .await
@@ -2057,12 +2096,16 @@ pub(super) async fn prepare(
     let profile = SessionProfile::from_environment()?;
     let diagnostics_enabled = std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some();
     if diagnostics_enabled {
+        let pmd_policy = profile.pmd_operation_policy();
+        let setup_policy = profile.setup_operation_policy();
         eprintln!(
-            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={} winrt-when-completion={}",
+            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={} winrt-when-completion={} close-successful-setup-operations={} winrt-when-all-setup={}",
             profile.name(),
             profile.heart_rate_enabled(),
-            profile.close_successful_gatt_operations(),
-            profile.use_winrt_when_completion()
+            pmd_policy.close_after_success,
+            matches!(pmd_policy.projection, WinrtCompletionProjection::When),
+            setup_policy.close_after_success,
+            matches!(setup_policy.projection, WinrtCompletionProjection::When)
         );
     }
     let reporter = StageReporter::new(
@@ -2363,9 +2406,10 @@ async fn required_service(
     label: &str,
     stage: SessionStage,
     reporter: StageReporter,
+    operation_policy: WinrtOperationPolicy,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<GattDeviceService, String> {
-    service(device, uuid, stage, reporter, cancelled)
+    service(device, uuid, stage, reporter, operation_policy, cancelled)
         .await?
         .ok_or_else(|| format!("Windows WinRT discovery failed: {label} was not exposed"))
 }
@@ -2375,9 +2419,10 @@ async fn optional_service(
     uuid: uuid::Uuid,
     stage: SessionStage,
     reporter: StageReporter,
+    operation_policy: WinrtOperationPolicy,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Option<GattDeviceService> {
-    service(device, uuid, stage, reporter, cancelled)
+    service(device, uuid, stage, reporter, operation_policy, cancelled)
         .await
         .ok()
         .flatten()
@@ -2388,17 +2433,17 @@ async fn service(
     uuid: uuid::Uuid,
     stage: SessionStage,
     reporter: StageReporter,
+    operation_policy: WinrtOperationPolicy,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<Option<GattDeviceService>, String> {
     ensure_active(cancelled, "service discovery")?;
-    let result = await_winrt_stage(
+    let result = await_winrt_stage_with_policy(
         WinrtStageCall::new(reporter, stage, 1, DISCOVERY_TIMEOUT),
         device.GetGattServicesForUuidWithCacheModeAsync(
             GUID::from_u128(uuid.as_u128()),
             BluetoothCacheMode::Uncached,
         ),
-        |operation| operation.Cancel(),
-        |operation| operation.Close(),
+        operation_policy,
         cancelled,
     )
     .await?;
@@ -2430,9 +2475,10 @@ async fn required_characteristic(
     label: &str,
     stages: CharacteristicStages,
     reporter: StageReporter,
+    operation_policy: WinrtOperationPolicy,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<GattCharacteristic, String> {
-    characteristic(service, uuid, stages, reporter, cancelled)
+    characteristic(service, uuid, stages, reporter, operation_policy, cancelled)
         .await?
         .ok_or_else(|| format!("Windows WinRT discovery failed: {label} was not exposed"))
 }
@@ -2442,9 +2488,10 @@ async fn optional_characteristic(
     uuid: uuid::Uuid,
     stages: CharacteristicStages,
     reporter: StageReporter,
+    operation_policy: WinrtOperationPolicy,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Option<GattCharacteristic> {
-    characteristic(service, uuid, stages, reporter, cancelled)
+    characteristic(service, uuid, stages, reporter, operation_policy, cancelled)
         .await
         .ok()
         .flatten()
@@ -2455,6 +2502,7 @@ async fn characteristic(
     uuid: uuid::Uuid,
     stages: CharacteristicStages,
     reporter: StageReporter,
+    operation_policy: WinrtOperationPolicy,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<Option<GattCharacteristic>, String> {
     let guid = GUID::from_u128(uuid.as_u128());
@@ -2462,25 +2510,23 @@ async fn characteristic(
 
     for attempt in 0..CHARACTERISTIC_ATTEMPTS {
         ensure_active(cancelled, "characteristic discovery")?;
-        let access = await_winrt_stage(
+        let access = await_winrt_stage_with_policy(
             WinrtStageCall::new(reporter, stages.access, attempt + 1, GATT_TIMEOUT),
             service.RequestAccessAsync(),
-            |operation| operation.Cancel(),
-            |operation| operation.Close(),
+            operation_policy,
             cancelled,
         )
         .await?;
         if access != DeviceAccessStatus::Allowed {
             last_error = format!("service access returned {access:?}");
         } else {
-            let result = await_winrt_stage(
+            let result = await_winrt_stage_with_policy(
                 WinrtStageCall::new(reporter, stages.uncached, attempt + 1, GATT_TIMEOUT),
                 service.GetCharacteristicsForUuidWithCacheModeAsync(
                     guid,
                     BluetoothCacheMode::Uncached,
                 ),
-                |operation| operation.Cancel(),
-                |operation| operation.Close(),
+                operation_policy,
                 cancelled,
             )
             .await?;
@@ -2508,8 +2554,15 @@ async fn characteristic(
                 if discovered.is_some() {
                     return Ok(discovered);
                 }
-                if let Some(cached) =
-                    cached_characteristic(service, guid, stages.cached, reporter, cancelled).await?
+                if let Some(cached) = cached_characteristic(
+                    service,
+                    guid,
+                    stages.cached,
+                    reporter,
+                    operation_policy,
+                    cancelled,
+                )
+                .await?
                 {
                     return Ok(Some(cached));
                 }
@@ -2539,14 +2592,14 @@ async fn cached_characteristic(
     guid: GUID,
     stage: SessionStage,
     reporter: StageReporter,
+    operation_policy: WinrtOperationPolicy,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<Option<GattCharacteristic>, String> {
     ensure_active(cancelled, "cached characteristic discovery")?;
-    let result = await_winrt_stage(
+    let result = await_winrt_stage_with_policy(
         WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT),
         service.GetCharacteristicsForUuidWithCacheModeAsync(guid, BluetoothCacheMode::Cached),
-        |operation| operation.Cancel(),
-        |operation| operation.Close(),
+        operation_policy,
         cancelled,
     )
     .await?;
@@ -2930,15 +2983,27 @@ mod tests {
         assert_eq!(reference, SessionProfile::ReferenceCompatible);
         assert_eq!(reference.name(), "reference-compatible");
         assert!(reference.heart_rate_enabled());
-        assert!(reference.close_successful_gatt_operations());
-        assert!(!reference.use_winrt_when_completion());
+        assert_eq!(
+            reference.pmd_operation_policy(),
+            WinrtOperationPolicy::DEFAULT
+        );
+        assert_eq!(
+            reference.setup_operation_policy(),
+            WinrtOperationPolicy::DEFAULT
+        );
 
         let pmd_only = SessionProfile::parse(Some(OsStr::new(PMD_ONLY_PROFILE))).unwrap();
         assert_eq!(pmd_only, SessionProfile::PmdOnlyDifferential);
         assert_eq!(pmd_only.name(), PMD_ONLY_PROFILE);
         assert!(!pmd_only.heart_rate_enabled());
-        assert!(pmd_only.close_successful_gatt_operations());
-        assert!(!pmd_only.use_winrt_when_completion());
+        assert_eq!(
+            pmd_only.pmd_operation_policy(),
+            WinrtOperationPolicy::DEFAULT
+        );
+        assert_eq!(
+            pmd_only.setup_operation_policy(),
+            WinrtOperationPolicy::DEFAULT
+        );
 
         let retained = SessionProfile::parse(Some(OsStr::new(PMD_RETAIN_SUCCESS_PROFILE))).unwrap();
         assert_eq!(
@@ -2947,21 +3012,44 @@ mod tests {
         );
         assert_eq!(retained.name(), PMD_RETAIN_SUCCESS_PROFILE);
         assert!(!retained.heart_rate_enabled());
-        assert!(!retained.close_successful_gatt_operations());
-        assert!(!retained.use_winrt_when_completion());
+        assert_eq!(
+            retained.pmd_operation_policy(),
+            WinrtOperationPolicy::INTO_FUTURE_RETAINED
+        );
+        assert_eq!(
+            retained.setup_operation_policy(),
+            WinrtOperationPolicy::DEFAULT
+        );
 
         let when = SessionProfile::parse(Some(OsStr::new(PMD_WHEN_COMPLETION_PROFILE))).unwrap();
         assert_eq!(when, SessionProfile::PmdOnlyWinrtWhenCompletion);
         assert_eq!(when.name(), PMD_WHEN_COMPLETION_PROFILE);
         assert!(!when.heart_rate_enabled());
-        assert!(!when.close_successful_gatt_operations());
-        assert!(when.use_winrt_when_completion());
+        assert_eq!(
+            when.pmd_operation_policy(),
+            WinrtOperationPolicy::WHEN_RETAINED
+        );
+        assert_eq!(when.setup_operation_policy(), WinrtOperationPolicy::DEFAULT);
+
+        let when_all = SessionProfile::parse(Some(OsStr::new(PMD_WHEN_ALL_SETUP_PROFILE))).unwrap();
+        assert_eq!(when_all, SessionProfile::PmdOnlyWinrtWhenAllSetup);
+        assert_eq!(when_all.name(), PMD_WHEN_ALL_SETUP_PROFILE);
+        assert!(!when_all.heart_rate_enabled());
+        assert_eq!(
+            when_all.pmd_operation_policy(),
+            WinrtOperationPolicy::WHEN_RETAINED
+        );
+        assert_eq!(
+            when_all.setup_operation_policy(),
+            WinrtOperationPolicy::WHEN_RETAINED
+        );
 
         let error = SessionProfile::parse(Some(OsStr::new("pmd-only"))).unwrap_err();
         assert!(error.contains(SESSION_PROFILE_ENV));
         assert!(error.contains(PMD_ONLY_PROFILE));
         assert!(error.contains(PMD_RETAIN_SUCCESS_PROFILE));
         assert!(error.contains(PMD_WHEN_COMPLETION_PROFILE));
+        assert!(error.contains(PMD_WHEN_ALL_SETUP_PROFILE));
     }
 
     fn evidence(

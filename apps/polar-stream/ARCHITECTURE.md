@@ -314,6 +314,13 @@ cleanup owner, but constructs no LSL/OSC/CSV transport. It admits success only
 after both sensor timestamps advance and every ACC axis has a nonzero sample,
 and emits no device identity. This diagnostic separates the product input
 backend from output initialization; it is not a reduced acceptance claim.
+The reference-positive input-only run reproduced the same zero-data-callback
+timeout, so output initialization is eliminated. The next closed profile,
+`pmd-only-winrt-when-all-setup`, extends the passing probe's `.when` completion
+and no-success-close policy to device acquisition, GATT-session creation, PMD
+service access/discovery, and characteristic discovery. It retains the same
+deadline/cancellation/cleanup owner and leaves the default product path
+unchanged.
 
 ## Stable discovery names
 

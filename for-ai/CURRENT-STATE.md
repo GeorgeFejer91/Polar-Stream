@@ -43,6 +43,12 @@ Last verified: 2026-08-16
   normal bounded disconnect. This determines whether pre-connection Rusty
   outlet initialization influences the physical failure before another backend
   change is considered.
+- That input-only differential reproduced the zero-PMD-data-callback failure,
+  eliminating every output transport as a cause. The current verifier-only
+  profile applies the passing probe's `.when`/no-success-close operation policy
+  across the entire selected-device setup chain as well as PMD CCCD/control
+  operations. Default product behavior, scanner confirmation, error/timeout
+  cleanup, and battery-after-qualification remain unchanged.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
   parameter request and reports the request status, observed interval,
   peripheral latency, and read-only negotiated MTU. Older Windows versions

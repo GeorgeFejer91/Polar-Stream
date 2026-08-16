@@ -1,5 +1,25 @@
 # Decision log
 
+## 2026-08-16 — Apply probe completion policy to the full selected-device setup
+
+The reference-positive input-only differential selected one exact H10 and,
+without constructing any output transport, reproduced the same failure: device
+and session setup, 232-byte PDU, PMD CCCDs/handlers, and both ECG control
+responses succeeded while PMD-data callbacks remained zero through the
+first-frame timeout. Rusty LSL, OSC, CSV, and output initialization are therefore
+eliminated as causes; the defect remains inside the product WinRT session path.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-winrt-when-all-setup`. Relative to
+the failed PMD-only `.when` candidate, it changes one remaining projection and
+lifetime boundary: selected-device acquisition, GATT-session creation, PMD
+service discovery/access, and characteristic discovery now also use the
+physically passing probe's `windows-future` `.when` completion path without an
+explicit success-time `Close()`. PMD CCCD/control operations retain that same
+policy. Timeouts, cancellation, errors, rollback, and final cleanup remain under
+the existing bounded owner. Scanner confirmation, battery-after-qualification,
+and the default product profile remain unchanged. Publication remains held.
+
 ## 2026-08-16 — Split the product input backend from output initialization
 
 The attended `pmd-only-winrt-when-completion` run was reference-positive and

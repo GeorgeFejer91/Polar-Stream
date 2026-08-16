@@ -111,6 +111,14 @@ variable preserves the normal reference-compatible product path; any other
 value rejects before device setup. These are diagnostic profiles, not supported
 user configuration.
 
+An input-only product differential then reproduced the missing PMD-data event
+without constructing any output transport, eliminating Rusty LSL and output
+initialization as causes. The next verifier profile is
+`pmd-only-winrt-when-all-setup`: it extends the passing probe's `.when`
+completion and no-success-close policy from PMD CCCD/control operations to the
+entire selected-device setup chain. Timeout/error cancellation and final
+cleanup remain unchanged; this is still diagnostic-only.
+
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
 Polar Stream's old `btleplug` GATT connection path stopped at connect,
