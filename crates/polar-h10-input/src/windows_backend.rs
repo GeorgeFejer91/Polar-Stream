@@ -83,6 +83,7 @@ const PMD_WHEN_COMPLETION_PROFILE: &str = "pmd-only-winrt-when-completion";
 const PMD_WHEN_ALL_SETUP_PROFILE: &str = "pmd-only-winrt-when-all-setup";
 const PMD_PROBE_SEQUENCE_PROFILE: &str = "pmd-only-probe-equivalent-sequence";
 const PMD_PROBE_STD_HANDOFF_PROFILE: &str = "pmd-only-probe-std-handoff";
+const PMD_PROBE_SYNC_OWNER_PROFILE: &str = "pmd-only-probe-synchronous-owner";
 const PROPERTY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(6);
 const PROPERTY_CONFIRMATION_CONCURRENCY: usize = 8;
@@ -96,6 +97,7 @@ enum SessionProfile {
     PmdOnlyWinrtWhenAllSetup,
     PmdOnlyProbeEquivalentSequence,
     PmdOnlyProbeStdHandoff,
+    PmdOnlyProbeSynchronousOwner,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,8 +147,11 @@ impl SessionProfile {
             Some(value) if value == OsStr::new(PMD_PROBE_STD_HANDOFF_PROFILE) => {
                 Ok(Self::PmdOnlyProbeStdHandoff)
             }
+            Some(value) if value == OsStr::new(PMD_PROBE_SYNC_OWNER_PROFILE) => {
+                Ok(Self::PmdOnlyProbeSynchronousOwner)
+            }
             Some(_) => Err(format!(
-                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, {PMD_WHEN_COMPLETION_PROFILE}, {PMD_WHEN_ALL_SETUP_PROFILE}, {PMD_PROBE_SEQUENCE_PROFILE}, or {PMD_PROBE_STD_HANDOFF_PROFILE} when set"
+                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, {PMD_WHEN_COMPLETION_PROFILE}, {PMD_WHEN_ALL_SETUP_PROFILE}, {PMD_PROBE_SEQUENCE_PROFILE}, {PMD_PROBE_STD_HANDOFF_PROFILE}, or {PMD_PROBE_SYNC_OWNER_PROFILE} when set"
             )),
         }
     }
@@ -168,7 +173,8 @@ impl SessionProfile {
             Self::PmdOnlyWinrtWhenCompletion
             | Self::PmdOnlyWinrtWhenAllSetup
             | Self::PmdOnlyProbeEquivalentSequence
-            | Self::PmdOnlyProbeStdHandoff => WinrtOperationPolicy::WHEN_RETAINED,
+            | Self::PmdOnlyProbeStdHandoff
+            | Self::PmdOnlyProbeSynchronousOwner => WinrtOperationPolicy::WHEN_RETAINED,
             Self::ReferenceCompatible | Self::PmdOnlyDifferential => WinrtOperationPolicy::DEFAULT,
         }
     }
@@ -179,6 +185,7 @@ impl SessionProfile {
             Self::PmdOnlyWinrtWhenAllSetup
                 | Self::PmdOnlyProbeEquivalentSequence
                 | Self::PmdOnlyProbeStdHandoff
+                | Self::PmdOnlyProbeSynchronousOwner
         ) {
             WinrtOperationPolicy::WHEN_RETAINED
         } else {
@@ -189,12 +196,18 @@ impl SessionProfile {
     const fn probe_equivalent_sequence(self) -> bool {
         matches!(
             self,
-            Self::PmdOnlyProbeEquivalentSequence | Self::PmdOnlyProbeStdHandoff
+            Self::PmdOnlyProbeEquivalentSequence
+                | Self::PmdOnlyProbeStdHandoff
+                | Self::PmdOnlyProbeSynchronousOwner
         )
     }
 
     const fn probe_std_handoff(self) -> bool {
         matches!(self, Self::PmdOnlyProbeStdHandoff)
+    }
+
+    const fn probe_synchronous_owner(self) -> bool {
+        matches!(self, Self::PmdOnlyProbeSynchronousOwner)
     }
 
     const fn name(self) -> &'static str {
@@ -206,6 +219,7 @@ impl SessionProfile {
             Self::PmdOnlyWinrtWhenAllSetup => PMD_WHEN_ALL_SETUP_PROFILE,
             Self::PmdOnlyProbeEquivalentSequence => PMD_PROBE_SEQUENCE_PROFILE,
             Self::PmdOnlyProbeStdHandoff => PMD_PROBE_STD_HANDOFF_PROFILE,
+            Self::PmdOnlyProbeSynchronousOwner => PMD_PROBE_SYNC_OWNER_PROFILE,
         }
     }
 }
@@ -845,6 +859,835 @@ fn build_session_runtime() -> Result<tokio::runtime::Runtime, String> {
         .map_err(|error| format!("Could not initialize the Windows H10 session runtime: {error}"))
 }
 
+const SYNC_OWNER_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const SYNC_OWNER_CANCEL_GRACE: Duration = Duration::from_millis(250);
+
+fn wait_winrt_operation_sync<T>(
+    stage: SessionStage,
+    operation: windows::core::Result<IAsyncOperation<T>>,
+    timeout: Duration,
+    setup_deadline: Option<Instant>,
+    reporter: StageReporter,
+    cancelled: &watch::Receiver<bool>,
+) -> Result<T, String>
+where
+    T: windows::core::RuntimeType + Send + 'static,
+{
+    let span = reporter.enter(stage, 1);
+    if *cancelled.borrow() {
+        span.finish(StageResultClass::Cancelled);
+        return Err(format!(
+            "Windows WinRT {} was cancelled before it started",
+            stage.name()
+        ));
+    }
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(error) => {
+            span.finish(StageResultClass::NativeError);
+            return Err(stage_error(stage.name(), error));
+        }
+    };
+    let cancel = operation.clone();
+    let (completion_tx, completion_rx) = std_mpsc::sync_channel(1);
+    if let Err(error) = operation.when(move |result| {
+        let _ = completion_tx.send(result.map_err(|error| error.to_string()));
+    }) {
+        span.finish(StageResultClass::NativeError);
+        return Err(stage_error(stage.name(), error));
+    }
+
+    let stage_deadline = Instant::now()
+        + setup_deadline
+            .map(|deadline| timeout.min(deadline.saturating_duration_since(Instant::now())))
+            .unwrap_or(timeout);
+    loop {
+        if *cancelled.borrow() {
+            let _ = cancel.Cancel();
+            let _ = completion_rx.recv_timeout(SYNC_OWNER_CANCEL_GRACE);
+            span.finish(StageResultClass::Cancelled);
+            return Err(format!("Windows WinRT {} was cancelled", stage.name()));
+        }
+        let remaining = stage_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let _ = cancel.Cancel();
+            let _ = completion_rx.recv_timeout(SYNC_OWNER_CANCEL_GRACE);
+            span.finish(StageResultClass::TimeoutCancelled);
+            return Err(format!("Windows WinRT {} timed out", stage.name()));
+        }
+        match completion_rx.recv_timeout(remaining.min(SYNC_OWNER_POLL_INTERVAL)) {
+            Ok(Ok(value)) => {
+                span.finish(StageResultClass::Success);
+                return Ok(value);
+            }
+            Ok(Err(error)) => {
+                span.finish(StageResultClass::NativeError);
+                return Err(stage_error(stage.name(), error));
+            }
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                span.finish(StageResultClass::NativeError);
+                return Err(format!(
+                    "Windows WinRT {} completion owner stopped",
+                    stage.name()
+                ));
+            }
+        }
+    }
+}
+
+fn sync_required_service(
+    device: &BluetoothLEDevice,
+    reporter: StageReporter,
+    cancelled: &watch::Receiver<bool>,
+    setup_deadline: Option<Instant>,
+) -> Result<GattDeviceService, String> {
+    let result = wait_winrt_operation_sync(
+        SessionStage::PmdServiceDiscovery,
+        device.GetGattServicesForUuidWithCacheModeAsync(
+            GUID::from_u128(PMD_SERVICE.as_u128()),
+            BluetoothCacheMode::Uncached,
+        ),
+        DISCOVERY_TIMEOUT,
+        setup_deadline,
+        reporter,
+        cancelled,
+    )?;
+    let status = result
+        .Status()
+        .map_err(|error| stage_error(SessionStage::PmdServiceDiscovery.name(), error))?;
+    if status != GattCommunicationStatus::Success {
+        return Err(format!(
+            "Windows WinRT {} failed: {status:?}",
+            SessionStage::PmdServiceDiscovery.name()
+        ));
+    }
+    let services = result
+        .Services()
+        .map_err(|error| stage_error("PMD service enumeration", error))?;
+    if services
+        .Size()
+        .map_err(|error| stage_error("PMD service enumeration", error))?
+        != 1
+    {
+        return Err(
+            "Windows WinRT discovery failed: PMD service did not have exactly one match"
+                .to_string(),
+        );
+    }
+    services
+        .GetAt(0)
+        .map_err(|error| stage_error("PMD service enumeration", error))
+}
+
+fn sync_required_characteristic(
+    service: &GattDeviceService,
+    uuid: uuid::Uuid,
+    stage: SessionStage,
+    label: &str,
+    reporter: StageReporter,
+    cancelled: &watch::Receiver<bool>,
+    setup_deadline: Option<Instant>,
+) -> Result<GattCharacteristic, String> {
+    let result = wait_winrt_operation_sync(
+        stage,
+        service.GetCharacteristicsForUuidWithCacheModeAsync(
+            GUID::from_u128(uuid.as_u128()),
+            BluetoothCacheMode::Uncached,
+        ),
+        GATT_TIMEOUT,
+        setup_deadline,
+        reporter,
+        cancelled,
+    )?;
+    let status = result
+        .Status()
+        .map_err(|error| stage_error(stage.name(), error))?;
+    if status != GattCommunicationStatus::Success {
+        return Err(format!("Windows WinRT {} failed: {status:?}", stage.name()));
+    }
+    let characteristics = result
+        .Characteristics()
+        .map_err(|error| stage_error("PMD characteristic enumeration", error))?;
+    if characteristics
+        .Size()
+        .map_err(|error| stage_error("PMD characteristic enumeration", error))?
+        != 1
+    {
+        return Err(format!(
+            "Windows WinRT discovery failed: {label} did not have exactly one match"
+        ));
+    }
+    characteristics
+        .GetAt(0)
+        .map_err(|error| stage_error("PMD characteristic enumeration", error))
+}
+
+fn sync_configure_cccd(
+    characteristic: &GattCharacteristic,
+    mode: GattClientCharacteristicConfigurationDescriptorValue,
+    stage: SessionStage,
+    timeout: Duration,
+    reporter: StageReporter,
+    cancelled: &watch::Receiver<bool>,
+    setup_deadline: Option<Instant>,
+) -> Result<(), String> {
+    let status = wait_winrt_operation_sync(
+        stage,
+        characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(mode),
+        timeout,
+        setup_deadline,
+        reporter,
+        cancelled,
+    )?;
+    if status != GattCommunicationStatus::Success {
+        return Err(format!("Windows WinRT {} failed: {status:?}", stage.name()));
+    }
+    Ok(())
+}
+
+fn sync_write_control(
+    characteristic: &GattCharacteristic,
+    bytes: &[u8],
+    stage: SessionStage,
+    timeout: Duration,
+    reporter: StageReporter,
+    cancelled: &watch::Receiver<bool>,
+    setup_deadline: Option<Instant>,
+) -> Result<(), String> {
+    let writer = DataWriter::new().map_err(|error| stage_error(stage.name(), error))?;
+    writer
+        .WriteBytes(bytes)
+        .map_err(|error| stage_error(stage.name(), error))?;
+    let buffer = writer
+        .DetachBuffer()
+        .map_err(|error| stage_error(stage.name(), error))?;
+    let result = wait_winrt_operation_sync(
+        stage,
+        characteristic.WriteValueWithResultAsync(&buffer),
+        timeout,
+        setup_deadline,
+        reporter,
+        cancelled,
+    )?;
+    let status = result
+        .Status()
+        .map_err(|error| stage_error(stage.name(), error))?;
+    if status != GattCommunicationStatus::Success {
+        return Err(format!("Windows WinRT {} failed: {status:?}", stage.name()));
+    }
+    Ok(())
+}
+
+struct SynchronousSubscription {
+    characteristic: GattCharacteristic,
+    token: Option<i64>,
+    _handler: TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs>,
+    cccd_committed: bool,
+}
+
+#[derive(Default)]
+struct SynchronousCallbackState {
+    faulted: AtomicBool,
+}
+
+impl SynchronousCallbackState {
+    fn record_fault(&self) {
+        self.faulted.store(true, Ordering::Release);
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if self.faulted.load(Ordering::Acquire) {
+            Err(
+                "Windows WinRT synchronous notification callback or bounded queue failed"
+                    .to_string(),
+            )
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn sync_attach_handler(
+    characteristic: &GattCharacteristic,
+    source: NotificationSource,
+    tx: std_mpsc::SyncSender<RawNotification>,
+    callback_state: Arc<SynchronousCallbackState>,
+    stage: SessionStage,
+    reporter: StageReporter,
+) -> Result<SynchronousSubscription, String> {
+    let span = reporter.enter(stage, 1);
+    let handler = TypedEventHandler::new(move |_, args: Ref<'_, GattValueChangedEventArgs>| {
+        let bytes = (|| {
+            let value = args.ok()?.CharacteristicValue()?;
+            buffer_to_vec(&value)
+        })();
+        match bytes {
+            Ok(value) => {
+                if tx.try_send(RawNotification { source, value }).is_err() {
+                    callback_state.record_fault();
+                }
+            }
+            Err(_) => callback_state.record_fault(),
+        }
+        Ok(())
+    });
+    let token = match characteristic.ValueChanged(&handler) {
+        Ok(token) => token,
+        Err(error) => {
+            span.finish(StageResultClass::NativeError);
+            return Err(stage_error(stage.name(), error));
+        }
+    };
+    span.finish(StageResultClass::Success);
+    Ok(SynchronousSubscription {
+        characteristic: characteristic.clone(),
+        token: Some(token),
+        _handler: handler,
+        cccd_committed: true,
+    })
+}
+
+struct SynchronousSession {
+    device: BluetoothLEDevice,
+    gatt_session: GattSession,
+    service: GattDeviceService,
+    control: GattCharacteristic,
+    subscriptions: Vec<SynchronousSubscription>,
+    reporter: StageReporter,
+    cleaned: bool,
+}
+
+impl SynchronousSession {
+    fn cleanup(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        self.cleaned = true;
+        let (_cancel, cancelled) = watch::channel(false);
+        let _ = sync_write_control(
+            &self.control,
+            &stop_command(ECG_MEASUREMENT),
+            SessionStage::StartEcg,
+            CLEANUP_OPERATION_TIMEOUT,
+            self.reporter,
+            &cancelled,
+            None,
+        );
+        let _ = sync_write_control(
+            &self.control,
+            &stop_command(ACC_MEASUREMENT),
+            SessionStage::StartAcc,
+            CLEANUP_OPERATION_TIMEOUT,
+            self.reporter,
+            &cancelled,
+            None,
+        );
+        while let Some(mut subscription) = self.subscriptions.pop() {
+            if let Some(token) = subscription.token.take() {
+                let _ = subscription.characteristic.RemoveValueChanged(token);
+            }
+            if subscription.cccd_committed {
+                let stage = if self.subscriptions.is_empty() {
+                    SessionStage::PmdControlNotification
+                } else {
+                    SessionStage::PmdDataNotification
+                };
+                let _ = sync_configure_cccd(
+                    &subscription.characteristic,
+                    GattClientCharacteristicConfigurationDescriptorValue::None,
+                    stage,
+                    CLEANUP_OPERATION_TIMEOUT,
+                    self.reporter,
+                    &cancelled,
+                    None,
+                );
+            }
+        }
+        let _ = self.gatt_session.SetMaintainConnection(false);
+        let _ = self.service.Close();
+        let _ = self.gatt_session.Close();
+        let _ = self.device.Close();
+    }
+}
+
+impl Drop for SynchronousSession {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+struct SynchronousInbox {
+    rx: std_mpsc::Receiver<RawNotification>,
+    buffered_events: VecDeque<InputEvent>,
+    callback_state: Arc<SynchronousCallbackState>,
+}
+
+impl SynchronousInbox {
+    fn new(
+        rx: std_mpsc::Receiver<RawNotification>,
+        callback_state: Arc<SynchronousCallbackState>,
+    ) -> Self {
+        Self {
+            rx,
+            buffered_events: VecDeque::new(),
+            callback_state,
+        }
+    }
+
+    fn observe(&mut self, raw: RawNotification) -> Result<Option<PmdControlResponse>, String> {
+        if raw.source == NotificationSource::PmdControl {
+            return decode_pmd_control_response(&raw.value)
+                .map(Some)
+                .map_err(|error| {
+                    format!("Windows WinRT received a malformed PMD control response: {error}")
+                });
+        }
+        if let Some(event) = decode_notification(raw) {
+            if let InputEvent::Error(error) = event {
+                return Err(format!(
+                    "Windows WinRT received invalid sensor data before synchronous first-frame qualification: {error}"
+                ));
+            }
+            if self.buffered_events.len() >= FIRST_FRAME_BUFFER_CAPACITY {
+                return Err(format!(
+                    "Windows WinRT synchronous first-frame buffer reached its {FIRST_FRAME_BUFFER_CAPACITY}-event bound"
+                ));
+            }
+            self.buffered_events.push_back(event);
+        }
+        Ok(None)
+    }
+
+    fn has_frame(&self, kind: FirstFrameKind) -> bool {
+        self.buffered_events
+            .iter()
+            .any(|event| match (kind, event) {
+                (FirstFrameKind::Ecg, InputEvent::Ecg { microvolts, .. }) => !microvolts.is_empty(),
+                (FirstFrameKind::Acc, InputEvent::Accelerometer { samples, .. }) => {
+                    !samples.is_empty()
+                }
+                _ => false,
+            })
+    }
+
+    fn receive(
+        &self,
+        deadline: Instant,
+        cancelled: &watch::Receiver<bool>,
+        stage: SessionStage,
+    ) -> Result<RawNotification, String> {
+        loop {
+            self.callback_state.check()?;
+            if *cancelled.borrow() {
+                return Err(format!("Windows WinRT {} was cancelled", stage.name()));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!("Windows WinRT {} timed out", stage.name()));
+            }
+            match self
+                .rx
+                .recv_timeout(remaining.min(SYNC_OWNER_POLL_INTERVAL))
+            {
+                Ok(raw) => return Ok(raw),
+                Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(format!(
+                        "Windows WinRT {} notification owner stopped",
+                        stage.name()
+                    ));
+                }
+            }
+        }
+    }
+
+    fn wait_for_control(
+        &mut self,
+        expected: ExpectedControlResponse,
+        stage: SessionStage,
+        reporter: StageReporter,
+        cancelled: &watch::Receiver<bool>,
+        setup_deadline: Instant,
+    ) -> Result<(), String> {
+        let span = reporter.enter(stage, 1);
+        let deadline = (Instant::now() + PMD_RESPONSE_TIMEOUT).min(setup_deadline);
+        loop {
+            let raw = match self.receive(deadline, cancelled, stage) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    span.finish(if *cancelled.borrow() {
+                        StageResultClass::Cancelled
+                    } else {
+                        StageResultClass::Timeout
+                    });
+                    return Err(error);
+                }
+            };
+            if let Some(response) = self.observe(raw)? {
+                let result = validate_control_response(expected, response);
+                span.finish(if result.is_ok() {
+                    StageResultClass::Success
+                } else {
+                    StageResultClass::NativeError
+                });
+                return result;
+            }
+        }
+    }
+
+    fn wait_for_frame(
+        &mut self,
+        kind: FirstFrameKind,
+        stage: SessionStage,
+        reporter: StageReporter,
+        cancelled: &watch::Receiver<bool>,
+        setup_deadline: Instant,
+    ) -> Result<(), String> {
+        let span = reporter.enter(stage, 1);
+        if self.has_frame(kind) {
+            span.finish(StageResultClass::Success);
+            return Ok(());
+        }
+        let deadline = (Instant::now() + FIRST_STREAM_FRAME_TIMEOUT).min(setup_deadline);
+        loop {
+            let raw = match self.receive(deadline, cancelled, stage) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    span.finish(if *cancelled.borrow() {
+                        StageResultClass::Cancelled
+                    } else {
+                        StageResultClass::Timeout
+                    });
+                    return Err(error);
+                }
+            };
+            self.observe(raw)?;
+            if self.has_frame(kind) {
+                span.finish(StageResultClass::Success);
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn try_send_sync(event_tx: &mpsc::Sender<InputEvent>, event: InputEvent) -> Result<(), String> {
+    event_tx.try_send(event).map_err(|error| match error {
+        mpsc::error::TrySendError::Full(_) => {
+            "Input event receiver stalled during synchronous Windows session".to_string()
+        }
+        mpsc::error::TrySendError::Closed(_) => "Input event receiver closed".to_string(),
+    })
+}
+
+fn open_synchronous_session(
+    device_id: &str,
+    reporter: StageReporter,
+    cancelled: &watch::Receiver<bool>,
+    setup_deadline: Instant,
+) -> Result<(SynchronousSession, SynchronousInbox), String> {
+    let setup_deadline = Some(setup_deadline);
+    let address = parse_bluetooth_address(device_id)
+        .ok_or_else(|| "Windows WinRT address-to-device failed: invalid address".to_string())?;
+    let device = wait_winrt_operation_sync(
+        SessionStage::AddressToDevice,
+        BluetoothLEDevice::FromBluetoothAddressAsync(address),
+        OPEN_TIMEOUT,
+        setup_deadline,
+        reporter,
+        cancelled,
+    )?;
+    let bluetooth_device_id = device
+        .BluetoothDeviceId()
+        .map_err(|error| stage_error(SessionStage::GattSessionCreate.name(), error))?;
+    let gatt_session = wait_winrt_operation_sync(
+        SessionStage::GattSessionCreate,
+        GattSession::FromDeviceIdAsync(&bluetooth_device_id),
+        OPEN_TIMEOUT,
+        setup_deadline,
+        reporter,
+        cancelled,
+    )?;
+    run_sync_stage(reporter, SessionStage::MaintainConnection, || {
+        gatt_session
+            .SetMaintainConnection(true)
+            .map_err(|error| error.to_string())
+    })
+    .map_err(|error| error.to_string())?;
+    let settle = reporter.enter(SessionStage::ConnectionSettle, 1);
+    let settle_deadline = Instant::now() + CONNECTION_SETTLE;
+    while Instant::now() < settle_deadline {
+        if *cancelled.borrow() {
+            settle.finish(StageResultClass::Cancelled);
+            return Err("Windows WinRT connection settle was cancelled".to_string());
+        }
+        thread::sleep(
+            settle_deadline
+                .saturating_duration_since(Instant::now())
+                .min(SYNC_OWNER_POLL_INTERVAL),
+        );
+    }
+    settle.finish(StageResultClass::Success);
+
+    let service = sync_required_service(&device, reporter, cancelled, setup_deadline)?;
+    let access = wait_winrt_operation_sync(
+        SessionStage::PmdControlAccess,
+        service.RequestAccessAsync(),
+        GATT_TIMEOUT,
+        setup_deadline,
+        reporter,
+        cancelled,
+    )?;
+    if access != DeviceAccessStatus::Allowed {
+        return Err(format!(
+            "Windows WinRT PMD service access failed: {access:?}"
+        ));
+    }
+    let control = sync_required_characteristic(
+        &service,
+        PMD_CONTROL_POINT,
+        SessionStage::PmdControlDiscoveryUncached,
+        "PMD control point",
+        reporter,
+        cancelled,
+        setup_deadline,
+    )?;
+    let data = sync_required_characteristic(
+        &service,
+        PMD_DATA,
+        SessionStage::PmdDataDiscoveryUncached,
+        "PMD data",
+        reporter,
+        cancelled,
+        setup_deadline,
+    )?;
+    let (notification_tx, notification_rx) = std_mpsc::sync_channel(RAW_NOTIFICATION_CAPACITY);
+    let callback_state = Arc::new(SynchronousCallbackState::default());
+    let mut session = SynchronousSession {
+        device,
+        gatt_session,
+        service,
+        control,
+        subscriptions: Vec::new(),
+        reporter,
+        cleaned: false,
+    };
+
+    sync_configure_cccd(
+        &session.control,
+        GattClientCharacteristicConfigurationDescriptorValue::Indicate,
+        SessionStage::PmdControlNotification,
+        GATT_TIMEOUT,
+        reporter,
+        cancelled,
+        setup_deadline,
+    )?;
+    let control_subscription = match sync_attach_handler(
+        &session.control,
+        NotificationSource::PmdControl,
+        notification_tx.clone(),
+        callback_state.clone(),
+        SessionStage::PmdControlNotification,
+        reporter,
+    ) {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            let _ = sync_configure_cccd(
+                &session.control,
+                GattClientCharacteristicConfigurationDescriptorValue::None,
+                SessionStage::PmdControlNotification,
+                CLEANUP_OPERATION_TIMEOUT,
+                reporter,
+                cancelled,
+                None,
+            );
+            return Err(error);
+        }
+    };
+    session.subscriptions.push(control_subscription);
+    sync_configure_cccd(
+        &data,
+        GattClientCharacteristicConfigurationDescriptorValue::Notify,
+        SessionStage::PmdDataNotification,
+        GATT_TIMEOUT,
+        reporter,
+        cancelled,
+        setup_deadline,
+    )?;
+    let data_subscription = match sync_attach_handler(
+        &data,
+        NotificationSource::PmdData,
+        notification_tx,
+        callback_state.clone(),
+        SessionStage::PmdDataNotification,
+        reporter,
+    ) {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            let _ = sync_configure_cccd(
+                &data,
+                GattClientCharacteristicConfigurationDescriptorValue::None,
+                SessionStage::PmdDataNotification,
+                CLEANUP_OPERATION_TIMEOUT,
+                reporter,
+                cancelled,
+                None,
+            );
+            return Err(error);
+        }
+    };
+    session.subscriptions.push(data_subscription);
+    Ok((
+        session,
+        SynchronousInbox::new(notification_rx, callback_state),
+    ))
+}
+
+fn run_synchronous_session_owner(
+    device_id: String,
+    device_name: String,
+    event_tx: mpsc::Sender<InputEvent>,
+    setup_tx: &mut Option<oneshot::Sender<Result<(), String>>>,
+    cancelled: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let diagnostics_enabled = std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some();
+    if diagnostics_enabled {
+        eprintln!(
+            "POLAR_H10_SESSION_PROFILE name={PMD_PROBE_SYNC_OWNER_PROFILE} heart-rate-enabled=false probe-equivalent-sequence=true probe-std-handoff=true probe-synchronous-owner=true"
+        );
+    }
+    let reporter = StageReporter::new(diagnostics_enabled, None);
+    let setup_deadline = Instant::now() + SESSION_SETUP_TIMEOUT;
+    try_send_sync(
+        &event_tx,
+        InputEvent::Status {
+            phase: "authorizing",
+            message: "Windows is opening the direct synchronous WinRT PMD session…".to_string(),
+        },
+    )?;
+    let (mut session, mut inbox) =
+        open_synchronous_session(&device_id, reporter, &cancelled, setup_deadline)?;
+    let setup_result = (|| {
+        sync_write_control(
+            &session.control,
+            &request_settings_command(ECG_MEASUREMENT),
+            SessionStage::RequestEcgSettings,
+            GATT_TIMEOUT,
+            reporter,
+            &cancelled,
+            Some(setup_deadline),
+        )?;
+        inbox.wait_for_control(
+            ExpectedControlResponse::ECG_SETTINGS,
+            SessionStage::EcgSettingsResponse,
+            reporter,
+            &cancelled,
+            setup_deadline,
+        )?;
+        sync_write_control(
+            &session.control,
+            &start_ecg_command(),
+            SessionStage::StartEcg,
+            GATT_TIMEOUT,
+            reporter,
+            &cancelled,
+            Some(setup_deadline),
+        )?;
+        inbox.wait_for_control(
+            ExpectedControlResponse::ECG_START,
+            SessionStage::StartEcgResponse,
+            reporter,
+            &cancelled,
+            setup_deadline,
+        )?;
+        inbox.wait_for_frame(
+            FirstFrameKind::Ecg,
+            SessionStage::FirstEcgFrame,
+            reporter,
+            &cancelled,
+            setup_deadline,
+        )?;
+        sync_write_control(
+            &session.control,
+            &start_accelerometer_command(),
+            SessionStage::StartAcc,
+            GATT_TIMEOUT,
+            reporter,
+            &cancelled,
+            Some(setup_deadline),
+        )?;
+        inbox.wait_for_control(
+            ExpectedControlResponse::ACC_START,
+            SessionStage::StartAccResponse,
+            reporter,
+            &cancelled,
+            setup_deadline,
+        )?;
+        inbox.wait_for_frame(
+            FirstFrameKind::Acc,
+            SessionStage::FirstAccFrame,
+            reporter,
+            &cancelled,
+            setup_deadline,
+        )?;
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = setup_result {
+        session.cleanup();
+        return Err(error);
+    }
+
+    try_send_sync(
+        &event_tx,
+        InputEvent::Connected {
+            device_name: device_name.clone(),
+            battery_percent: None,
+        },
+    )?;
+    while let Some(event) = inbox.buffered_events.pop_front() {
+        try_send_sync(&event_tx, event)?;
+    }
+    if let Some(sender) = setup_tx.take() {
+        sender
+            .send(Ok(()))
+            .map_err(|_| "Windows H10 setup receiver closed".to_string())?;
+    }
+
+    while !*cancelled.borrow() {
+        inbox.callback_state.check()?;
+        match inbox.rx.recv_timeout(SYNC_OWNER_POLL_INTERVAL) {
+            Ok(raw) => {
+                if let Some(event) = decode_notification(raw) {
+                    try_send_sync(&event_tx, event)?;
+                }
+            }
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    session.cleanup();
+    let _ = try_send_sync(
+        &event_tx,
+        InputEvent::Disconnected {
+            device_name,
+            battery_percent: None,
+        },
+    );
+    Ok(())
+}
+
+fn clear_active_synchronously(manager: &Weak<InputManager>, generation: u64) {
+    if let Some(manager) = manager.upgrade() {
+        let mut active = manager.active.blocking_lock();
+        if active
+            .as_ref()
+            .is_some_and(|connection| connection.generation == generation)
+        {
+            active.take();
+        }
+    }
+}
+
 pub(super) async fn spawn_session(
     device_id: String,
     device_name: String,
@@ -854,6 +1697,7 @@ pub(super) async fn spawn_session(
     mut cancelled: watch::Receiver<bool>,
     finished: watch::Sender<bool>,
 ) -> Result<(), String> {
+    let profile = SessionProfile::from_environment()?;
     let (setup_tx, setup_rx) = oneshot::channel();
     thread::Builder::new()
         .name("polar-h10-winrt-session".to_string())
@@ -866,6 +1710,25 @@ pub(super) async fn spawn_session(
                     return;
                 }
             };
+            if profile.probe_synchronous_owner() {
+                let mut setup_tx = Some(setup_tx);
+                let result = run_synchronous_session_owner(
+                    device_id,
+                    device_name,
+                    event_tx.clone(),
+                    &mut setup_tx,
+                    cancelled,
+                );
+                if let Err(error) = result {
+                    if let Some(sender) = setup_tx.take() {
+                        let _ = sender.send(Err(error.clone()));
+                    } else {
+                        let _ = try_send_sync(&event_tx, InputEvent::Error(error));
+                    }
+                }
+                clear_active_synchronously(&manager, generation);
+                return;
+            }
             let runtime = match build_session_runtime() {
                 Ok(runtime) => runtime,
                 Err(error) => {
@@ -3366,6 +4229,27 @@ mod tests {
         );
         assert!(std_handoff.probe_equivalent_sequence());
         assert!(std_handoff.probe_std_handoff());
+        assert!(!std_handoff.probe_synchronous_owner());
+
+        let synchronous_owner =
+            SessionProfile::parse(Some(OsStr::new(PMD_PROBE_SYNC_OWNER_PROFILE))).unwrap();
+        assert_eq!(
+            synchronous_owner,
+            SessionProfile::PmdOnlyProbeSynchronousOwner
+        );
+        assert_eq!(synchronous_owner.name(), PMD_PROBE_SYNC_OWNER_PROFILE);
+        assert!(!synchronous_owner.heart_rate_enabled());
+        assert_eq!(
+            synchronous_owner.pmd_operation_policy(),
+            WinrtOperationPolicy::WHEN_RETAINED
+        );
+        assert_eq!(
+            synchronous_owner.setup_operation_policy(),
+            WinrtOperationPolicy::WHEN_RETAINED
+        );
+        assert!(synchronous_owner.probe_equivalent_sequence());
+        assert!(!synchronous_owner.probe_std_handoff());
+        assert!(synchronous_owner.probe_synchronous_owner());
 
         let error = SessionProfile::parse(Some(OsStr::new("pmd-only"))).unwrap_err();
         assert!(error.contains(SESSION_PROFILE_ENV));
@@ -3375,6 +4259,7 @@ mod tests {
         assert!(error.contains(PMD_WHEN_ALL_SETUP_PROFILE));
         assert!(error.contains(PMD_PROBE_SEQUENCE_PROFILE));
         assert!(error.contains(PMD_PROBE_STD_HANDOFF_PROFILE));
+        assert!(error.contains(PMD_PROBE_SYNC_OWNER_PROFILE));
     }
 
     fn evidence(
@@ -3813,6 +4698,70 @@ mod tests {
                 z_mg: 3,
             }],
         }
+    }
+
+    #[test]
+    fn synchronous_inbox_qualifies_both_shapes_and_observes_cancellation() {
+        let (_tx, rx) = std_mpsc::sync_channel(1);
+        let callback_state = Arc::new(SynchronousCallbackState::default());
+        let mut inbox = SynchronousInbox::new(rx, callback_state.clone());
+        assert!(!inbox.has_frame(FirstFrameKind::Ecg));
+        assert!(!inbox.has_frame(FirstFrameKind::Acc));
+        inbox.buffered_events.push_back(ecg_event());
+        assert!(inbox.has_frame(FirstFrameKind::Ecg));
+        assert!(!inbox.has_frame(FirstFrameKind::Acc));
+        inbox.buffered_events.push_back(acc_event());
+        assert!(inbox.has_frame(FirstFrameKind::Acc));
+
+        let (cancel, cancelled) = watch::channel(false);
+        cancel.send_replace(true);
+        let error = inbox
+            .receive(
+                Instant::now() + Duration::from_secs(1),
+                &cancelled,
+                SessionStage::FirstEcgFrame,
+            )
+            .unwrap_err();
+        assert!(error.contains("cancelled"));
+
+        callback_state.record_fault();
+        let error = inbox
+            .receive(
+                Instant::now() + Duration::from_secs(1),
+                &cancelled,
+                SessionStage::FirstEcgFrame,
+            )
+            .unwrap_err();
+        assert!(error.contains("callback or bounded queue failed"));
+    }
+
+    #[test]
+    fn synchronous_inbox_rejects_malformed_data_and_buffer_overflow() {
+        let (_tx, rx) = std_mpsc::sync_channel(1);
+        let mut inbox = SynchronousInbox::new(rx, Arc::new(SynchronousCallbackState::default()));
+        let error = inbox
+            .observe(RawNotification {
+                source: NotificationSource::PmdData,
+                value: vec![ECG_MEASUREMENT],
+            })
+            .unwrap_err();
+        assert!(error.contains("invalid sensor data"));
+
+        for _ in 0..FIRST_FRAME_BUFFER_CAPACITY {
+            inbox.buffered_events.push_back(ecg_event());
+        }
+        let mut valid_ecg = vec![ECG_MEASUREMENT];
+        valid_ecg.extend_from_slice(&42_u64.to_le_bytes());
+        valid_ecg.push(0);
+        valid_ecg.extend_from_slice(&[1, 0, 0]);
+        let error = inbox
+            .observe(RawNotification {
+                source: NotificationSource::PmdData,
+                value: valid_ecg,
+            })
+            .unwrap_err();
+        assert!(error.contains("first-frame buffer"));
+        assert_eq!(inbox.buffered_events.len(), FIRST_FRAME_BUFFER_CAPACITY);
     }
 
     #[test]

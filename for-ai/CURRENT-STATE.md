@@ -24,10 +24,13 @@ Last verified: 2026-08-16
   and start responses, qualifies ECG first, and starts ACC only after the first
   decoded ECG frame.
 - The selected Windows device lifecycle is confined to one named OS thread with
-  an explicitly initialized MTA and a current-thread Tokio executor. Setup,
-  notification callbacks, steady-state acquisition, stop, callback removal,
-  handle closure, and apartment teardown share that owner. A completion guard
-  keeps disconnect signalling bounded if the owner unwinds.
+  an explicitly initialized MTA. The default product profile drives bounded
+  operations through a current-thread Tokio executor. The final closed
+  verifier-only differential instead owns the complete GATT lifecycle
+  synchronously on the plain MTA thread, matching the physically passing
+  minimal probe's execution model; only decoded events cross to the application
+  channel. A completion guard keeps disconnect signalling bounded if either
+  owner unwinds.
 - The current local verifier-only differential uses the physically passing
   minimal probe's `windows-future` `.when` completion callback for PMD
   CCCD/control operations, then crosses a bounded Tokio oneshot into the
@@ -55,10 +58,13 @@ Last verified: 2026-08-16
   control-Indicate/data-Notify modes, no inter-subscription delay, and no
   pre-frame link-property reads. A reference-positive run still received both
   control responses with zero PMD-data callbacks, eliminating that setup shape.
-  The current closed profile keeps it and changes only callback handoff to a
-  bounded standard-library channel with one owned bridge into the existing
-  Tokio queue. Default product behavior, scanner confirmation, error/timeout
-  cleanup, and battery-after-qualification remain unchanged.
+  Keeping that setup while moving callback handoff to a bounded
+  standard-library channel still produced zero data callbacks, eliminating the
+  callback-to-queue transport. The current closed profile removes the last
+  execution-model difference: the entire WinRT operation/response/frame and
+  cleanup lifecycle runs synchronously on its dedicated MTA thread with bounded
+  standard-library channels. Default product behavior, scanner confirmation,
+  error/timeout cleanup, and battery-after-qualification remain unchanged.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
   parameter request and reports the request status, observed interval,
   peripheral latency, and read-only negotiated MTU. Older Windows versions

@@ -1,5 +1,27 @@
 # Decision log
 
+## 2026-08-17 — Give the passing lifecycle one synchronous MTA owner
+
+The reference watcher observed exactly one H10 immediately before the
+`pmd-only-probe-std-handoff` input-only run. That run retained the passing
+probe's PMD setup order and used the same bounded standard-library callback
+channel, but still received both ECG control responses and zero PMD-data
+callbacks. Callback capture and the callback-to-queue transport are therefore
+eliminated.
+
+The final closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-probe-synchronous-owner`. It keeps
+the scanner and exact PMD sequence unchanged, but moves the complete selected
+device lifecycle—WinRT operations, response/frame waits, steady-state receive,
+stop, callback removal, CCCD rollback, and handle closure—onto the dedicated
+plain MTA thread. Native completions and notifications use bounded
+standard-library channels; only decoded `InputEvent` values cross to the
+existing application channel. Every native operation retains a deadline and
+cancellation route, callback/channel faults fail closed, and active-session
+cleanup remains generation-safe. This profile is diagnostic-only until the
+same-epoch physical input and official-inlet gates pass; default product
+behavior and the publication hold are unchanged.
+
 ## 2026-08-17 — Isolate the callback handoff from Tokio
 
 The reference watcher observed exactly one H10 immediately before the

@@ -335,6 +335,14 @@ setup-order differences are eliminated. The next closed verifier profile,
 callbacks the passing probe's bounded standard-library channel handoff. One
 owned bridge forwards into the existing bounded Tokio queue and is stopped and
 joined during the same reverse-order cleanup. This remains diagnostic-only.
+That handoff also produced both control responses and zero data callbacks in a
+reference-positive run. The final diagnostic profile,
+`pmd-only-probe-synchronous-owner`, therefore matches the probe's remaining
+architectural property: one plain MTA thread synchronously owns every GATT
+operation, response/frame wait, steady receive, and reverse cleanup. Bounded
+native channels remain inside that owner; only decoded events cross into the
+application. It does not alter the default profile or weaken physical
+acceptance.
 
 ## Stable discovery names
 

@@ -131,6 +131,15 @@ next diagnostic-only profile, `pmd-only-probe-std-handoff`, retains that setup
 and moves only the native callback handoff onto the passing probe's bounded
 standard-library channel. One owned bridge forwards into the existing bounded
 Tokio queue and stops/joins during normal reverse-order cleanup.
+That exact candidate still produced both ECG control responses and zero PMD
+data callbacks in a reference-positive physical run, eliminating callback
+capture and callback-to-queue delivery. The final closed diagnostic profile,
+`pmd-only-probe-synchronous-owner`, moves the complete GATT lifecycle onto one
+plain MTA owner thread: native-operation completions, response/frame waits,
+steady receive, cancellation, and reverse cleanup are synchronous and bounded.
+Decoded events alone cross to the application channel. This remains a
+verifier-only differential until both input-only and official-inlet physical
+qualification pass.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
