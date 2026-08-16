@@ -8,7 +8,7 @@ use std::{
     collections::{HashMap, VecDeque},
     future::IntoFuture,
     sync::{Arc, Mutex, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures_util::{StreamExt, stream};
@@ -49,7 +49,8 @@ use super::{
     },
 };
 
-const SCAN_DURATION: Duration = Duration::from_secs(4);
+const SCAN_DURATION: Duration = Duration::from_secs(15);
+const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_SCANNED_DEVICES: usize = 256;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
@@ -149,6 +150,12 @@ impl ScanAccumulator {
             self.diagnostics.advertisements += 1;
             self.diagnostics.malformed_core_fields += 1;
         }
+    }
+
+    fn has_exact_name_candidate(&self) -> bool {
+        self.devices
+            .values()
+            .any(|device| device.name.as_deref().is_some_and(is_polar_h10_name))
     }
 
     fn record(&mut self, address: u64, rssi: i16, evidence: AdvertisementEvidence) {
@@ -438,7 +445,21 @@ fn scan_blocking() -> Result<ScanBatch, String> {
         .Start()
         .map_err(|error| stage_error("scan start", error))?;
     report_scan_status(diagnostics_enabled, "started", &guard.watcher);
-    std::thread::sleep(SCAN_DURATION);
+    let scan_deadline = Instant::now() + SCAN_DURATION;
+    loop {
+        let exact_name_observed = observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .has_exact_name_candidate();
+        if exact_name_observed {
+            break;
+        }
+        let remaining = scan_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        std::thread::sleep(SCAN_POLL_INTERVAL.min(remaining));
+    }
     report_scan_status(diagnostics_enabled, "before-stop", &guard.watcher);
     guard
         .watcher
@@ -2506,7 +2527,9 @@ mod tests {
     #[test]
     fn exact_reference_name_does_not_depend_on_service_uuid_readback() {
         let mut scan = ScanAccumulator::new(true);
+        assert!(!scan.has_exact_name_candidate());
         scan.record(1, -45, evidence(Some("Polar H10 TEST"), true, false, false));
+        assert!(scan.has_exact_name_candidate());
         let batch = scan.finish();
         assert_eq!(batch.candidates.len(), 1);
         assert_eq!(batch.candidates[0].name.as_deref(), Some("Polar H10 TEST"));
@@ -2522,6 +2545,7 @@ mod tests {
         scan.record(3, -20, evidence(Some("Polar H100"), true, true, false));
         scan.record(4, -20, evidence(Some("Fake Polar H10"), true, true, false));
         assert!(scan.devices.is_empty());
+        assert!(!scan.has_exact_name_candidate());
 
         scan.record(5, -80, evidence(Some("Polar H10 TEST"), true, true, false));
         scan.record(5, -55, evidence(None, true, true, false));

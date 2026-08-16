@@ -5,8 +5,11 @@ Last verified: 2026-08-16
 ## Implemented
 
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
-- Windows uses a four-second direct WinRT advertisement watcher for bounded
-  scanning and exact-model selection. Exact H10 local-name evidence is
+- Windows uses a direct WinRT advertisement watcher for up to fifteen seconds,
+  stopping early after exact H10 local-name evidence. This bound matches the
+  sparse advertisement cadence observed from a reference-positive physical
+  H10 while retaining a fast path when an exact packet arrives immediately.
+  Exact H10 local-name evidence is
   independent of service-UUID readability; unnamed PMD/heart-rate candidates
   require a bounded direct WinRT name confirmation, while weak/generic
   advertisements remain rejected. It then owns one persistent WinRT GATT

@@ -57,7 +57,7 @@ CCCD subscription, and explicit cleanup; no reference source is copied.
 
 ## 2026-08-16 — H10 advertisement evidence is route-independent and confirmed
 
-The Windows watcher keeps its four-second start/stop/callback lifecycle, but
+The Windows watcher keeps its bounded start/stop/callback lifecycle, but
 local-name and advertised-service evidence are evaluated independently. An
 exact `Polar H10` name is strong evidence even if WinRT cannot enumerate that
 packet's service UUIDs. A PMD/heart-rate service without an exact name is only
@@ -87,8 +87,13 @@ authorized attended run.
 
 ## 2026-08-15 — Windows owns one direct WinRT Bluetooth session
 
-Windows uses an active WinRT advertisement watcher for four seconds and
-coalesces at most 256 unique matching addresses before exact device selection.
+Windows uses an active WinRT advertisement watcher for up to fifteen seconds
+and coalesces at most 256 unique matching addresses before exact device
+selection. It stops early after observing exact H10 local-name evidence. The
+longer ceiling is bound to a same-lease differential run where the known
+reference observed only four exact H10 packets over fifteen seconds while the
+candidate's prior four-second window received 41 unrelated advertisements and
+no H10 packet.
 The callback is removed before return, cleanup calls `Stop` only while the
 watcher is actively started, and no per-device property request can stall the
 scan. After selection, `polar-h10-input` opens the Bluetooth address

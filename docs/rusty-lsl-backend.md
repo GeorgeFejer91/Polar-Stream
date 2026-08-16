@@ -78,7 +78,7 @@ Its output may contain a device identifier and must remain ignored/private; it
 records bounded aggregates, not physiological samples. Official inlet
 collection starts only after exact selection, the direct WinRT session, and
 advancing ECG/ACC source frames. It runs in a daemon worker so a native liblsl
-call cannot defeat the outer deadline; selection has a separate 20-second
+call cannot defeat the outer deadline; selection has a separate 30-second
 fail-fast bound, post-selection source readiness has a 60-second bound, and
 source/consumer collection retains its two-minute bound. The worker must close
 before the source is stopped. Native session setup has its own 45-second total
