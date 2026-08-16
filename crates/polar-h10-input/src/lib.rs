@@ -259,25 +259,28 @@ impl InputManager {
         #[cfg(target_os = "windows")]
         {
             let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-            let (cancel, mut cancelled) = watch::channel(false);
+            let (cancel, cancelled) = watch::channel(false);
             let (finished_tx, finished) = watch::channel(false);
             self.active.lock().await.replace(ActiveConnection {
                 generation,
                 cancel,
                 finished,
             });
-            let prepared =
-                match windows_backend::prepare(device_id, device_name, event_tx, &mut cancelled)
-                    .await
-                {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        self.clear_active(generation).await;
-                        finished_tx.send_replace(true);
-                        return Err(error);
-                    }
-                };
-            prepared.spawn(Arc::downgrade(self), generation, cancelled, finished_tx);
+            if let Err(error) = windows_backend::spawn_session(
+                device_id.to_string(),
+                device_name,
+                event_tx,
+                Arc::downgrade(self),
+                generation,
+                cancelled,
+                finished_tx.clone(),
+            )
+            .await
+            {
+                self.clear_active(generation).await;
+                finished_tx.send_replace(true);
+                return Err(error);
+            }
             Ok(event_rx)
         }
 

@@ -7,7 +7,10 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::IntoFuture,
+    marker::PhantomData,
+    rc::Rc,
     sync::{Arc, Mutex, Weak},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -17,7 +20,7 @@ use polar_h10_core::{
     PmdControlResponse, PmdFrame, decode_heart_rate, decode_pmd, decode_pmd_control_response,
     request_settings_command, start_accelerometer_command, start_ecg_command, stop_command,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use windows::{
     Devices::{
         Bluetooth::{
@@ -37,6 +40,7 @@ use windows::{
     },
     Foundation::TypedEventHandler,
     Storage::Streams::{DataReader, DataWriter, IBuffer},
+    Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
     core::{AgileReference, GUID, Ref},
 };
 
@@ -669,18 +673,96 @@ pub(super) struct PreparedConnection {
     battery_percent: Option<u8>,
 }
 
-impl PreparedConnection {
-    pub fn spawn(
-        self,
-        manager: Weak<InputManager>,
-        generation: u64,
-        cancelled: watch::Receiver<bool>,
-        finished: watch::Sender<bool>,
-    ) {
-        tokio::spawn(run_connection(
-            self, manager, generation, cancelled, finished,
-        ));
+struct WinrtApartment(PhantomData<Rc<()>>);
+
+impl WinrtApartment {
+    fn initialize_mta() -> Result<Self, String> {
+        // SAFETY: this runs once at the start of a newly created, dedicated
+        // session thread. `WinrtApartment::drop` balances the successful call
+        // on that same thread after every WinRT handle and callback is closed.
+        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
+            .map(|()| Self(PhantomData))
+            .map_err(|error| format!("Could not initialize the Windows Runtime apartment: {error}"))
     }
+}
+
+impl Drop for WinrtApartment {
+    fn drop(&mut self) {
+        // SAFETY: this guard is neither Send nor moved after construction; it
+        // is dropped on the same dedicated thread that called `RoInitialize`.
+        unsafe { RoUninitialize() };
+    }
+}
+
+struct SessionThreadFinished(watch::Sender<bool>);
+
+impl Drop for SessionThreadFinished {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+
+fn build_session_runtime() -> Result<tokio::runtime::Runtime, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Could not initialize the Windows H10 session runtime: {error}"))
+}
+
+pub(super) async fn spawn_session(
+    device_id: String,
+    device_name: String,
+    event_tx: mpsc::Sender<InputEvent>,
+    manager: Weak<InputManager>,
+    generation: u64,
+    mut cancelled: watch::Receiver<bool>,
+    finished: watch::Sender<bool>,
+) -> Result<(), String> {
+    let (setup_tx, setup_rx) = oneshot::channel();
+    thread::Builder::new()
+        .name("polar-h10-winrt-session".to_string())
+        .spawn(move || {
+            let _finished_guard = SessionThreadFinished(finished.clone());
+            let _apartment = match WinrtApartment::initialize_mta() {
+                Ok(apartment) => apartment,
+                Err(error) => {
+                    let _ = setup_tx.send(Err(error));
+                    return;
+                }
+            };
+            let runtime = match build_session_runtime() {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = setup_tx.send(Err(error));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                match prepare(&device_id, device_name, event_tx, &mut cancelled).await {
+                    Ok(mut prepared) => {
+                        if setup_tx.send(Ok(())).is_err() {
+                            prepared.session.shutdown().await;
+                            if let Some(manager) = manager.upgrade() {
+                                manager.clear_active(generation).await;
+                            }
+                            return;
+                        }
+                        run_connection(prepared, manager, generation, cancelled, finished).await;
+                    }
+                    Err(error) => {
+                        if let Some(manager) = manager.upgrade() {
+                            manager.clear_active(generation).await;
+                        }
+                        let _ = setup_tx.send(Err(error));
+                    }
+                }
+            });
+        })
+        .map_err(|error| format!("Could not start the Windows H10 session owner: {error}"))?;
+
+    setup_rx
+        .await
+        .map_err(|_| "The Windows H10 session owner stopped during setup".to_string())?
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2707,6 +2789,64 @@ mod tests {
             advertisement_type_readable: true,
             connectable: Some(true),
             manufacturer_section_count: Some(1),
+        }
+    }
+
+    #[test]
+    fn session_owner_keeps_one_initialized_thread_across_async_yields() {
+        let (before, after) = thread::spawn(|| {
+            let _apartment = WinrtApartment::initialize_mta().unwrap();
+            let runtime = build_session_runtime().unwrap();
+            let before = thread::current().id();
+            let after = runtime.block_on(async {
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                thread::current().id()
+            });
+            (before, after)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn session_owner_completion_is_signalled_even_during_unwind_cleanup() {
+        let (finished_tx, finished_rx) = watch::channel(false);
+        {
+            let _guard = SessionThreadFinished(finished_tx);
+            assert!(!*finished_rx.borrow());
+        }
+        assert!(*finished_rx.borrow());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_owner_reports_setup_failure_without_blocking_the_caller_runtime() {
+        let manager = Arc::new(InputManager::new());
+        let (event_tx, _event_rx) = mpsc::channel(4);
+        let (_cancel_tx, cancelled) = watch::channel(false);
+        let (finished_tx, mut finished_rx) = watch::channel(false);
+        let heartbeat = tokio::spawn(async {
+            tokio::task::yield_now().await;
+            "caller-responsive"
+        });
+
+        let error = spawn_session(
+            "not-a-bluetooth-address".to_string(),
+            "identifier-free-test-device".to_string(),
+            event_tx,
+            Arc::downgrade(&manager),
+            1,
+            cancelled,
+            finished_tx,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(heartbeat.await.unwrap(), "caller-responsive");
+        assert!(error.contains("Bluetooth address was not recognized"));
+        while !*finished_rx.borrow() {
+            finished_rx.changed().await.unwrap();
         }
     }
 

@@ -22,6 +22,11 @@ Last verified: 2026-08-16
   are bounded and exactly-once. Startup requires exact successful PMD settings
   and start responses, qualifies ECG first, and starts ACC only after the first
   decoded ECG frame.
+- The selected Windows device lifecycle is confined to one named OS thread with
+  an explicitly initialized MTA and a current-thread Tokio executor. Setup,
+  notification callbacks, steady-state acquisition, stop, callback removal,
+  handle closure, and apartment teardown share that owner. A completion guard
+  keeps disconnect signalling bounded if the owner unwinds.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
   parameter request and reports the request status, observed interval,
   peripheral latency, and read-only negotiated MTU. Older Windows versions
@@ -156,8 +161,11 @@ Last verified: 2026-08-16
   candidate then physically passed device/session acquisition, service and
   characteristic discovery, all subscriptions, and both GATT start writes, but
   neither first sensor frame arrived. Scanner and GATT setup are proven for that
-  epoch. A subsequent host-only repair now validates PMD control responses and
-  stages settings → ECG response/frame → ACC response/frame. Physical sensor
+  epoch. Response gating, exact CCCD readback, explicit delegate ownership, a
+  232-byte PDU, and reference-aligned settle/discovery ordering were then proven
+  while PMD control and heart-rate events advanced, but PMD data entered zero
+  callbacks. A host-only checkpoint now confines all WinRT work to one explicit
+  MTA/current-thread owner to eliminate runtime-worker migration. Physical sensor
   acquisition and official-inlet delivery remain open. Retain the publication
   and release hold until one Polar Stream run supplies the complete evidence.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.

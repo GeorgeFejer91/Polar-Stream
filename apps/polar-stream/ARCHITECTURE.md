@@ -179,6 +179,14 @@ characteristic discovery, direct WinRT notification handlers, PMD start/stop,
 and handle closure. Other operating systems retain the cross-platform
 `btleplug` scan and connection path.
 
+The selected device's complete WinRT lifecycle runs on one named OS thread with
+an explicitly initialized multithreaded Windows Runtime apartment and one
+current-thread Tokio executor. Setup, callbacks, steady-state reads, stop
+commands, handler removal, handle closure, and apartment uninitialization cannot
+migrate between runtime workers. A completion guard signals disconnect even if
+that owner unwinds; the caller remains asynchronous while awaiting setup and
+bounded shutdown.
+
 Setup does not emit `Connected` until it has decoded both an ECG frame and a
 three-axis ACC frame. After persistent-session creation, a cancellable 500 ms
 settle matches the proven Windows reference before heart-rate-first discovery.
@@ -278,6 +286,10 @@ the next attended run. Because exact CCCD confirmation still produced no PMD
 data event, the remaining black-box lifecycle difference is closed by the
 reference-aligned settle, discovery order, and deferred battery work. Physical
 ECG, ACC, Rusty outlet, and official-inlet acceptance remain open.
+That alignment also produced zero PMD-data events, while heart-rate and PMD
+control callbacks advanced. The next host checkpoint therefore confines the
+entire WinRT lifecycle to the explicit apartment owner above. It remains a
+physical hypothesis until the next attended run.
 
 ## Stable discovery names
 

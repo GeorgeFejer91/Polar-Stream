@@ -132,6 +132,15 @@ event delegate; it has deterministic host coverage but is not physical
 acceptance until another attended same-epoch chain reaches both sensor streams
 and the pinned official inlets.
 
+CCCD readback and the reference-aligned settle/discovery order subsequently
+passed on hardware without producing a PMD-data event; PMD control and heart
+rate still advanced. The remaining host hypothesis is runtime ownership. The
+whole selected-device WinRT lifecycle now runs on one explicitly initialized
+MTA thread and one current-thread executor, including setup, callbacks, stop,
+handler removal, handle closure, and balanced apartment teardown. Deterministic
+tests prove thread identity across async yields and completion signalling, but
+this is not device acceptance until the next attended run.
+
 The typed trace proved address/device acquisition, persistent session setup,
 service/characteristic access, all three CCCDs, and the ECG settings/start
 writes and responses succeeded. A GATT result does not prove the PMD protocol

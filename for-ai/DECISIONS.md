@@ -1,5 +1,25 @@
 # Decision log
 
+## 2026-08-16 — One explicit Windows apartment owns the selected H10
+
+The reference-aligned physical run kept a healthy 232-byte connection, confirmed
+all three CCCDs, and delivered heart-rate plus PMD-control events, but PMD data
+still entered zero callbacks. Link state, command admission, subscription state,
+delegate retention, service order, and reference timing are therefore exhausted
+as candidate causes. Polar Stream previously created and awaited WinRT objects
+on a multithreaded application runtime whose worker could change across awaits.
+
+The complete selected-device lifecycle now runs on one named OS thread with an
+explicitly initialized multithreaded Windows Runtime apartment and a
+current-thread Tokio executor. The same owner performs setup, receives callbacks,
+runs steady state, sends stop commands, removes handlers, closes handles, and
+balances `RoUninitialize`. Only the required OS apartment initialization and
+teardown calls are isolated `unsafe` boundaries; all GATT work remains through
+windows-rs. The caller still awaits setup and disconnect asynchronously, while a
+drop guard guarantees completion signalling on unwind. Host tests prove thread
+identity across async yields and guard behavior. Physical acceptance remains
+held for the next attended run.
+
 ## 2026-08-16 — Windows qualification follows the proven reference lifecycle
 
 The exact CCCD-readback physical run confirmed PMD data was set to Notify and
