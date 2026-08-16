@@ -219,9 +219,9 @@ property confirmation, rejection, and overflow. Those diagnostics contain no
 address, name, payload bytes, manufacturer value, or stable device identity.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` separately emits ordered setup stage
 entry/exit records with attempt, duration, and result class. At subscription
-and qualification checkpoints it also emits aggregate, identifier-free
-characteristic properties, requested and read-back CCCD state, callback
-entry/decode/enqueue counts,
+ and qualification checkpoints it also emits aggregate, identifier-free
+ characteristic properties, selected CCCD mode and successful commit count,
+ callback entry/decode/enqueue counts,
 handler attachment/removal counts, callback faults, and bounded-queue outcomes.
 Identifier-free link checkpoints additionally record connection state,
 `GattSession.MaxPduSize`, connection-interval units, and peripheral latency
@@ -278,18 +278,23 @@ counters now distinguish a missing WinRT event from buffer conversion, queue,
 or frame qualification failure. A subsequent reference-positive run retained a
 connected session and negotiated 232-byte PDU before and after the accepted ECG
 start response, while PMD control and heart-rate callbacks advanced and PMD
-data callbacks remained at zero. Link readiness and MTU are therefore no longer
-candidate causes. Subscription setup now reads back every CCCD and retains an
-agile owner for every WinRT event delegate; mismatched/read-failed CCCDs roll
-back before the session can proceed. That hardening remains host evidence until
-the next attended run. Because exact CCCD confirmation still produced no PMD
-data event, the remaining black-box lifecycle difference is closed by the
-reference-aligned settle, discovery order, and deferred battery work. Physical
-ECG, ACC, Rusty outlet, and official-inlet acceptance remain open.
-That alignment also produced zero PMD-data events, while heart-rate and PMD
-control callbacks advanced. The next host checkpoint therefore confines the
-entire WinRT lifecycle to the explicit apartment owner above. It remains a
-physical hypothesis until the next attended run.
+ data callbacks remained at zero. Link readiness and MTU are therefore no longer
+ candidate causes. Exact CCCD readback and explicit agile delegate ownership
+ were then proven on hardware without producing a PMD data event. The
+ reference-aligned settle/discovery/deferred-battery sequence also produced zero
+ PMD-data events while heart-rate and PMD control callbacks advanced. Confining
+ the entire WinRT lifecycle to the explicit apartment owner above produced the
+ same physical outcome, ruling out runtime-worker migration.
+
+The current host candidate now closes the last projection-level subscription
+difference: exactly one successful CCCD write is immediately followed by one
+directly retained `TypedEventHandler`, matching the passing reference without
+an interposed descriptor readback or `AgileReference`. A typed activation guard
+rejects handler-before-write and duplicate activation, and failure after the
+CCCD commit rolls it back. Previous exact CCCD readback remains historical
+diagnostic evidence; it is not repeated in the acquisition path. Physical ECG,
+ACC, Rusty outlet, and official-inlet acceptance remain open until the next
+attended run.
 
 ## Stable discovery names
 

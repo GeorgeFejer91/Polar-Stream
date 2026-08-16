@@ -85,8 +85,8 @@ before the source is stopped. Native session setup has its own 45-second total
 budget, so a typed native stage exits before the outer source-readiness bound.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` is enabled by this verifier and records
 stage name, attempt, entry/exit, duration, and result class. It also records
-identifier-free characteristic properties, requested and read-back CCCD state,
-handler lifetime counts,
+identifier-free characteristic properties, selected CCCD mode and successful
+commit count, handler lifetime counts,
 per-source callback/decode/enqueue counts, callback faults, and queue outcomes.
 Link checkpoints record only connection state, negotiated PDU size, connection
 interval units, and peripheral latency.
@@ -138,8 +138,21 @@ rate still advanced. The remaining host hypothesis is runtime ownership. The
 whole selected-device WinRT lifecycle now runs on one explicitly initialized
 MTA thread and one current-thread executor, including setup, callbacks, stop,
 handler removal, handle closure, and balanced apartment teardown. Deterministic
-tests prove thread identity across async yields and completion signalling, but
-this is not device acceptance until the next attended run.
+tests prove thread identity across async yields and completion signalling. An
+attended reference-positive run of that exact candidate still produced PMD
+control and heart-rate callbacks but zero PMD-data callbacks, ruling out
+runtime-worker migration.
+
+The next host candidate matches the passing reference's projection more
+literally: one successful CCCD write is followed immediately by registration
+and direct retention of the actual `TypedEventHandler`. It removes the
+interposed descriptor readback and `AgileReference` while retaining the same
+characteristic, response gates, deadlines, queues, cancellation, and rollback.
+A typed activation guard and deterministic damaged-order/duplicate tests bind
+that sequence. Prior exact readback remains historical diagnostic evidence, not
+an acquisition requirement. This candidate is not device acceptance until the
+next attended same-epoch run reaches both sensor streams and both official
+inlets.
 
 The typed trace proved address/device acquisition, persistent session setup,
 service/characteristic access, all three CCCDs, and the ECG settings/start

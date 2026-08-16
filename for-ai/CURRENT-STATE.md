@@ -14,9 +14,10 @@ Last verified: 2026-08-16
   require a bounded direct WinRT name confirmation, while weak/generic
   advertisements remain rejected. It then owns one persistent WinRT GATT
   session, requests PMD service access, and discovers
-  uncached with bounded retry/cached fallback, installs direct notification
-  handlers, and does not report success until both ECG and three-axis ACC have
-  decoded. Each native async call has an identifier-free typed stage, its own
+  uncached with bounded retry/cached fallback, enables each notification with
+  one CCCD write immediately followed by one directly retained handler, and
+  does not report success until both ECG and three-axis ACC have decoded. Each
+  native async call has an identifier-free typed stage, its own
   deadline and cancel/close ownership inside a 45-second setup budget. Partial
   subscription rollback, internal queues, callback removal, and session cleanup
   are bounded and exactly-once. Startup requires exact successful PMD settings
@@ -164,10 +165,13 @@ Last verified: 2026-08-16
   epoch. Response gating, exact CCCD readback, explicit delegate ownership, a
   232-byte PDU, and reference-aligned settle/discovery ordering were then proven
   while PMD control and heart-rate events advanced, but PMD data entered zero
-  callbacks. A host-only checkpoint now confines all WinRT work to one explicit
-  MTA/current-thread owner to eliminate runtime-worker migration. Physical sensor
-  acquisition and official-inlet delivery remain open. Retain the publication
-  and release hold until one Polar Stream run supplies the complete evidence.
+  callbacks. Confining all WinRT work to one explicit MTA/current-thread owner
+  produced the same physical result, ruling out runtime-worker migration. The
+  next host candidate removes the extra descriptor readback and retains the
+  actual event handler, exactly matching the passing reference's one-write then
+  one-handler projection. Physical sensor acquisition and official-inlet
+  delivery remain open. Retain the publication and release hold until one Polar
+  Stream run supplies the complete evidence.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also

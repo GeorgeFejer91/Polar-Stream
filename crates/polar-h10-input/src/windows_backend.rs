@@ -41,7 +41,7 @@ use windows::{
     Foundation::TypedEventHandler,
     Storage::Streams::{DataReader, DataWriter, IBuffer},
     Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
-    core::{AgileReference, GUID, Ref},
+    core::{GUID, Ref},
 };
 
 use super::{
@@ -810,34 +810,37 @@ enum SubscriptionMode {
     Indicate,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CccdReadback {
-    None,
-    Notify,
-    Indicate,
-    Unexpected,
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SubscriptionActivation {
+    cccd_committed: bool,
+    handler_attached: bool,
 }
 
-impl CccdReadback {
-    const fn from_winrt(value: GattClientCharacteristicConfigurationDescriptorValue) -> Self {
-        if value.0 == GattClientCharacteristicConfigurationDescriptorValue::None.0 {
-            Self::None
-        } else if value.0 == GattClientCharacteristicConfigurationDescriptorValue::Notify.0 {
-            Self::Notify
-        } else if value.0 == GattClientCharacteristicConfigurationDescriptorValue::Indicate.0 {
-            Self::Indicate
-        } else {
-            Self::Unexpected
+impl SubscriptionActivation {
+    fn commit_cccd(&mut self) -> Result<(), &'static str> {
+        if self.cccd_committed {
+            return Err("CCCD was committed more than once");
         }
+        if self.handler_attached {
+            return Err("handler was attached before the CCCD commit");
+        }
+        self.cccd_committed = true;
+        Ok(())
     }
 
-    const fn diagnostic_name(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Notify => "notify",
-            Self::Indicate => "indicate",
-            Self::Unexpected => "unexpected",
+    fn attach_handler(&mut self) -> Result<(), &'static str> {
+        if !self.cccd_committed {
+            return Err("handler attachment preceded the CCCD commit");
         }
+        if self.handler_attached {
+            return Err("handler was attached more than once");
+        }
+        self.handler_attached = true;
+        Ok(())
+    }
+
+    const fn rollback_required(self) -> bool {
+        self.cccd_committed && !self.handler_attached
     }
 }
 
@@ -853,13 +856,6 @@ impl SubscriptionMode {
         match self {
             Self::Notify => GattClientCharacteristicConfigurationDescriptorValue::Notify,
             Self::Indicate => GattClientCharacteristicConfigurationDescriptorValue::Indicate,
-        }
-    }
-
-    const fn readback(self) -> CccdReadback {
-        match self {
-            Self::Notify => CccdReadback::Notify,
-            Self::Indicate => CccdReadback::Indicate,
         }
     }
 }
@@ -901,7 +897,7 @@ fn select_subscription_mode(shape: CharacteristicPropertyShape) -> SubscriptionM
 struct SourceNotificationDiagnostics {
     properties: Option<CharacteristicPropertyShape>,
     mode: Option<SubscriptionMode>,
-    cccd_readback: Option<CccdReadback>,
+    cccd_committed: usize,
     handlers_attached: usize,
     handlers_removed: usize,
     handler_remove_failures: usize,
@@ -955,13 +951,17 @@ impl NotificationDiagnostics {
         });
     }
 
-    fn record_handler_attached(&self, source: NotificationSource) {
-        self.mutate(|state| state.sources[source.diagnostic_index()].handlers_attached += 1);
+    fn record_cccd_committed(&self, source: NotificationSource) {
+        self.mutate(|state| {
+            state.sources[source.diagnostic_index()].cccd_committed += 1;
+        });
     }
 
-    fn record_cccd_readback(&self, source: NotificationSource, readback: CccdReadback) {
+    fn record_handler_attached(&self, source: NotificationSource) {
         self.mutate(|state| {
-            state.sources[source.diagnostic_index()].cccd_readback = Some(readback);
+            let source = &mut state.sources[source.diagnostic_index()];
+            debug_assert_eq!(source.cccd_committed, source.handlers_attached + 1);
+            source.handlers_attached += 1;
         });
     }
 
@@ -1015,12 +1015,8 @@ impl NotificationDiagnostics {
                 .mode
                 .map(SubscriptionMode::diagnostic_name)
                 .unwrap_or("none");
-            let cccd_readback = state
-                .cccd_readback
-                .map(CccdReadback::diagnostic_name)
-                .unwrap_or("unread");
             format!(
-                "{}:properties-notify={},properties-indicate={},properties-read={},properties-write={},properties-write-without-response={},mode={},cccd-readback={},handlers-attached={},handlers-removed={},handler-remove-failures={},callbacks-entered={},callbacks-decoded={},callbacks-enqueued={}",
+                "{}:properties-notify={},properties-indicate={},properties-read={},properties-write={},properties-write-without-response={},mode={},cccd-committed={},handlers-attached={},handlers-removed={},handler-remove-failures={},callbacks-entered={},callbacks-decoded={},callbacks-enqueued={}",
                 source.diagnostic_name(),
                 properties.notify,
                 properties.indicate,
@@ -1028,7 +1024,7 @@ impl NotificationDiagnostics {
                 properties.write,
                 properties.write_without_response,
                 mode,
-                cccd_readback,
+                state.cccd_committed,
                 state.handlers_attached,
                 state.handlers_removed,
                 state.handler_remove_failures,
@@ -1097,7 +1093,7 @@ struct Subscription {
     notification_source: NotificationSource,
     diagnostics: Arc<NotificationDiagnostics>,
     token: Option<i64>,
-    _handler: AgileReference<TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs>>,
+    _handler: TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs>,
 }
 
 impl Subscription {
@@ -1593,6 +1589,7 @@ impl WinrtSession {
         cancelled: &mut watch::Receiver<bool>,
         sink: NotificationSink,
     ) -> Result<(), String> {
+        let mut activation = SubscriptionActivation::default();
         let NotificationSink {
             raw_tx,
             fault_tx,
@@ -1615,60 +1612,16 @@ impl WinrtSession {
         .await;
         match status {
             Ok(GattCommunicationStatus::Success) => {
-                let readback = match await_winrt_stage(
-                    WinrtStageCall::new(reporter, stage, 2, GATT_TIMEOUT),
-                    characteristic.ReadClientCharacteristicConfigurationDescriptorAsync(),
-                    |operation| operation.Cancel(),
-                    |operation| operation.Close(),
-                    cancelled,
-                )
-                .await
-                {
-                    Ok(readback) => readback,
-                    Err(error) => {
-                        Self::disable_cccd(characteristic).await;
-                        return Err(error);
-                    }
-                };
-                let readback = (|| {
-                    let status = readback
-                        .Status()
-                        .map_err(|error| stage_error("notification CCCD readback status", error))?;
-                    if status != GattCommunicationStatus::Success {
-                        return Err(format!(
-                            "Windows WinRT notification CCCD readback failed: {status:?}"
-                        ));
-                    }
-                    readback
-                        .ClientCharacteristicConfigurationDescriptor()
-                        .map(CccdReadback::from_winrt)
-                        .map_err(|error| stage_error("notification CCCD readback", error))
-                })();
-                let readback = match readback {
-                    Ok(readback) => readback,
-                    Err(error) => {
-                        Self::disable_cccd(characteristic).await;
-                        return Err(error);
-                    }
-                };
-                diagnostics.record_cccd_readback(source, readback);
-                diagnostics.report("cccd-readback");
-                if readback != mode.readback() {
-                    let error = format!(
-                        "Windows WinRT notification CCCD readback mismatch: requested {}, observed {}",
-                        mode.diagnostic_name(),
-                        readback.diagnostic_name()
-                    );
-                    Self::disable_cccd(characteristic).await;
-                    return Err(error);
-                }
-
-                // Match the proven Windows reference lifecycle: commit the
-                // CCCD first, then attach the WinRT event handler before any
-                // PMD command can produce data. Registering the handler first
-                // yielded accepted PMD start responses but no data callbacks
-                // on a physical H10. The non-Send delegate remains confined to
-                // this synchronous scope so later awaits stay Send.
+                activation.commit_cccd().map_err(|error| {
+                    format!("Windows WinRT subscription invariant failed: {error}")
+                })?;
+                diagnostics.record_cccd_committed(source);
+                diagnostics.report("cccd-committed");
+                // Match the proven Windows reference projection exactly:
+                // perform one successful CCCD write and immediately attach a
+                // directly retained handler before any PMD command can produce
+                // data. Descriptor readback is intentionally omitted because
+                // the passing reference does not interpose that operation.
                 let token_result = {
                     let callback_diagnostics = diagnostics.clone();
                     let handler =
@@ -1701,19 +1654,26 @@ impl WinrtSession {
                                 Ok(())
                             },
                         );
-                    let handler_owner = AgileReference::new(&handler)
-                        .map_err(|error| stage_error("notification handler ownership", error))?;
                     characteristic
                         .ValueChanged(&handler)
-                        .map(|token| (token, handler_owner))
+                        .map(|token| (token, handler))
                 };
                 let (token, handler) = match token_result {
                     Ok(value) => value,
                     Err(error) => {
-                        Self::disable_cccd(characteristic).await;
+                        if activation.rollback_required() {
+                            Self::disable_cccd(characteristic).await;
+                        }
                         return Err(stage_error("notification handler", error));
                     }
                 };
+                if let Err(error) = activation.attach_handler() {
+                    let _ = characteristic.RemoveValueChanged(token);
+                    Self::disable_cccd(characteristic).await;
+                    return Err(format!(
+                        "Windows WinRT subscription invariant failed: {error}"
+                    ));
+                }
                 diagnostics.record_handler_attached(source);
                 self.subscriptions.push(Subscription {
                     characteristic: characteristic.clone(),
@@ -3017,6 +2977,30 @@ mod tests {
     }
 
     #[test]
+    fn reference_subscription_activation_is_single_write_then_single_handler() {
+        let mut activation = SubscriptionActivation::default();
+        assert!(!activation.rollback_required());
+        assert_eq!(
+            activation.attach_handler(),
+            Err("handler attachment preceded the CCCD commit")
+        );
+
+        activation.commit_cccd().expect("first CCCD commit");
+        assert!(activation.rollback_required());
+        assert_eq!(
+            activation.commit_cccd(),
+            Err("CCCD was committed more than once")
+        );
+
+        activation.attach_handler().expect("first handler attach");
+        assert!(!activation.rollback_required());
+        assert_eq!(
+            activation.attach_handler(),
+            Err("handler was attached more than once")
+        );
+    }
+
+    #[test]
     fn link_diagnostic_summary_is_identifier_free_and_deterministic() {
         assert_eq!(
             LinkDiagnosticSnapshot {
@@ -3042,25 +3026,6 @@ mod tests {
 
     #[test]
     fn subscription_mode_and_identifier_free_diagnostics_are_deterministic() {
-        assert_eq!(
-            CccdReadback::from_winrt(GattClientCharacteristicConfigurationDescriptorValue::None),
-            CccdReadback::None
-        );
-        assert_eq!(
-            CccdReadback::from_winrt(GattClientCharacteristicConfigurationDescriptorValue::Notify),
-            CccdReadback::Notify
-        );
-        assert_eq!(
-            CccdReadback::from_winrt(
-                GattClientCharacteristicConfigurationDescriptorValue::Indicate
-            ),
-            CccdReadback::Indicate
-        );
-        assert_eq!(
-            CccdReadback::from_winrt(GattClientCharacteristicConfigurationDescriptorValue(3)),
-            CccdReadback::Unexpected
-        );
-
         let both = CharacteristicPropertyShape {
             notify: true,
             indicate: true,
@@ -3083,7 +3048,7 @@ mod tests {
             both,
             SubscriptionMode::Indicate,
         );
-        diagnostics.record_cccd_readback(NotificationSource::PmdData, CccdReadback::Indicate);
+        diagnostics.record_cccd_committed(NotificationSource::PmdData);
         diagnostics.record_handler_attached(NotificationSource::PmdData);
         diagnostics.record_callback_entered(NotificationSource::PmdData);
         diagnostics.record_callback_decoded(NotificationSource::PmdData);
@@ -3096,7 +3061,7 @@ mod tests {
             SourceNotificationDiagnostics {
                 properties: Some(both),
                 mode: Some(SubscriptionMode::Indicate),
-                cccd_readback: Some(CccdReadback::Indicate),
+                cccd_committed: 1,
                 handlers_attached: 1,
                 handlers_removed: 1,
                 handler_remove_failures: 0,
@@ -3107,7 +3072,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics.summary(),
-            "pmd-control:properties-notify=false,properties-indicate=false,properties-read=false,properties-write=false,properties-write-without-response=false,mode=none,cccd-readback=unread,handlers-attached=0,handlers-removed=0,handler-remove-failures=0,callbacks-entered=0,callbacks-decoded=0,callbacks-enqueued=0 pmd-data:properties-notify=true,properties-indicate=true,properties-read=false,properties-write=false,properties-write-without-response=false,mode=indicate,cccd-readback=indicate,handlers-attached=1,handlers-removed=1,handler-remove-failures=0,callbacks-entered=1,callbacks-decoded=1,callbacks-enqueued=1 heart-rate:properties-notify=false,properties-indicate=false,properties-read=false,properties-write=false,properties-write-without-response=false,mode=none,cccd-readback=unread,handlers-attached=0,handlers-removed=0,handler-remove-failures=0,callbacks-entered=0,callbacks-decoded=0,callbacks-enqueued=0 callback-faults=0 queue-full=0 queue-closed=0"
+            "pmd-control:properties-notify=false,properties-indicate=false,properties-read=false,properties-write=false,properties-write-without-response=false,mode=none,cccd-committed=0,handlers-attached=0,handlers-removed=0,handler-remove-failures=0,callbacks-entered=0,callbacks-decoded=0,callbacks-enqueued=0 pmd-data:properties-notify=true,properties-indicate=true,properties-read=false,properties-write=false,properties-write-without-response=false,mode=indicate,cccd-committed=1,handlers-attached=1,handlers-removed=1,handler-remove-failures=0,callbacks-entered=1,callbacks-decoded=1,callbacks-enqueued=1 heart-rate:properties-notify=false,properties-indicate=false,properties-read=false,properties-write=false,properties-write-without-response=false,mode=none,cccd-committed=0,handlers-attached=0,handlers-removed=0,handler-remove-failures=0,callbacks-entered=0,callbacks-decoded=0,callbacks-enqueued=0 callback-faults=0 queue-full=0 queue-closed=0"
         );
     }
 

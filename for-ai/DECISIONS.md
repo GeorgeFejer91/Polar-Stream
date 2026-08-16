@@ -1,5 +1,27 @@
 # Decision log
 
+## 2026-08-16 — Subscription projection matches the passing Windows reference
+
+The attended dedicated-apartment candidate was reference-positive, connected
+with a negotiated 232-byte PDU, received heart-rate and both expected PMD
+control responses, and still received zero PMD data callbacks before the first
+ECG-frame deadline. Confining windows-rs, its current-thread executor, every
+GATT object, and teardown to one explicitly initialized MTA therefore did not
+fix the physical boundary and is no longer the active hypothesis.
+
+The passing `MesmerPrism/PolarH10` projection performs one successful CCCD
+write and immediately registers a directly retained `TypedEventHandler`. Polar
+Stream had inserted a descriptor readback between those operations and retained
+an `AgileReference` rather than the handler itself. The next candidate removes
+only those extra projection operations while preserving the proven
+write-then-handler order, direct characteristic ownership, response gates,
+deadlines, queues, and exactly-once cleanup. A typed activation guard rejects
+handler-before-write and duplicate-write/handler states; deterministic tests
+cover the valid sequence and rollback boundary. Prior exact CCCD-readback
+evidence remains valid historical evidence, but readback is no longer part of
+the acquisition path. This remains host evidence until an attended run reaches
+both sensor streams and the pinned official consumers.
+
 ## 2026-08-16 — One explicit Windows apartment owns the selected H10
 
 The reference-aligned physical run kept a healthy 232-byte connection, confirmed
