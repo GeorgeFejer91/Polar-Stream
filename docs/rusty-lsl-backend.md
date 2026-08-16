@@ -117,7 +117,14 @@ initialization as causes. The next verifier profile is
 `pmd-only-winrt-when-all-setup`: it extends the passing probe's `.when`
 completion and no-success-close policy from PMD CCCD/control operations to the
 entire selected-device setup chain. Timeout/error cancellation and final
-cleanup remain unchanged; this is still diagnostic-only.
+cleanup remain unchanged. A reference-positive input-only run still reached
+both ECG control responses with zero PMD-data callbacks, eliminating the full
+selected-device async completion projection. The next diagnostic-only profile
+is `pmd-only-probe-equivalent-sequence`. It retains those operation lifetimes
+and additionally matches the passing probe's PMD setup sequence: one PMD
+service-access request, direct uncached exact characteristic lookups, explicit
+control-Indicate/data-Notify CCCDs, no inter-subscription delay, and no
+pre-frame link-property reads. The default product profile is unchanged.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while

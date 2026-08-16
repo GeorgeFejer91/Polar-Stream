@@ -1,5 +1,27 @@
 # Decision log
 
+## 2026-08-17 — Match the passing probe's PMD setup sequence
+
+The reference-positive input-only
+`pmd-only-winrt-when-all-setup` run used the passing probe's `.when`
+completion/no-success-close policy throughout device, session, service,
+characteristic, CCCD, and control operations. It still completed both ECG
+control responses with zero PMD-data callbacks through the first-frame
+deadline. The selected-device async projection and operation lifetime are
+therefore eliminated; no output transport was constructed.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-probe-equivalent-sequence`. It
+retains the existing bounded owner and changes only remaining setup-sequence
+differences relative to the physically passing minimal probe: one PMD
+service-access request, one direct uncached exact lookup for each PMD
+characteristic, explicit control-Indicate and data-Notify CCCD values without
+reading characteristic properties, no inter-subscription delay, and no
+pre-first-frame link-property reads. Identifier-free diagnostics explicitly
+mark suppressed reads and selected modes. Error/timeout cancellation, partial
+rollback, final cleanup, scanner confirmation, response/frame gates, and the
+default product profile remain unchanged. Publication remains held.
+
 ## 2026-08-16 — Apply probe completion policy to the full selected-device setup
 
 The reference-positive input-only differential selected one exact H10 and,

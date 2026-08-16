@@ -45,10 +45,17 @@ Last verified: 2026-08-16
   change is considered.
 - That input-only differential reproduced the zero-PMD-data-callback failure,
   eliminating every output transport as a cause. The current verifier-only
-  profile applies the passing probe's `.when`/no-success-close operation policy
-  across the entire selected-device setup chain as well as PMD CCCD/control
-  operations. Default product behavior, scanner confirmation, error/timeout
-  cleanup, and battery-after-qualification remain unchanged.
+  profile first applied the passing probe's `.when`/no-success-close operation
+  policy across the entire selected-device setup chain as well as PMD
+  CCCD/control operations. A reference-positive run still reached both ECG
+  control responses with zero PMD-data callbacks, eliminating that projection.
+  The current closed verifier-only profile additionally matches the probe's
+  PMD service/characteristic/subscription sequence: one service access request,
+  direct uncached exact characteristic lookups, explicit
+  control-Indicate/data-Notify modes, no inter-subscription delay, and no
+  pre-frame link-property reads. Default product behavior, scanner
+  confirmation, error/timeout cleanup, and battery-after-qualification remain
+  unchanged.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
   parameter request and reports the request status, observed interval,
   peripheral latency, and read-only negotiated MTU. Older Windows versions
@@ -200,11 +207,10 @@ Last verified: 2026-08-16
   callbacks before its first-frame timeout. The remaining defect is therefore
   confined to an extra production-session behavior rather than the H10, PMD
   commands, scanner, Rusty LSL, or generic `windows-rs` event delivery. Official
-  inlet delivery remains open. The next verifier uses a closed, opt-in PMD-only
-  session profile that skips only heart-rate discovery/subscription; the normal
-  product profile and every other production behavior remain unchanged. Retain
-  the publication and release hold until one full Polar Stream run supplies the
-  complete evidence.
+  inlet delivery remains open. The current verifier uses a closed, opt-in
+  probe-equivalent PMD sequence while the normal product profile remains
+  unchanged. Retain the publication and release hold until one full Polar
+  Stream run supplies the complete evidence.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also

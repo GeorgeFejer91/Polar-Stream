@@ -320,7 +320,15 @@ timeout, so output initialization is eliminated. The next closed profile,
 and no-success-close policy to device acquisition, GATT-session creation, PMD
 service access/discovery, and characteristic discovery. It retains the same
 deadline/cancellation/cleanup owner and leaves the default product path
-unchanged.
+unchanged. That profile also reached both ECG control responses with zero PMD
+data callbacks, eliminating the selected-device async completion projection as
+the remaining difference. The next closed verifier profile,
+`pmd-only-probe-equivalent-sequence`, additionally matches the passing probe's
+PMD-only setup shape: one service-access request, one uncached exact
+characteristic lookup per PMD characteristic, explicit control-Indicate and
+data-Notify CCCD values, no inter-subscription delay, and no pre-frame link
+property reads. Production deadlines, cancellation, rollback, final cleanup,
+and the default profile remain unchanged.
 
 ## Stable discovery names
 

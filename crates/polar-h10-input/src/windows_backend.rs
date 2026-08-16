@@ -77,6 +77,7 @@ const PMD_ONLY_PROFILE: &str = "pmd-only-differential";
 const PMD_RETAIN_SUCCESS_PROFILE: &str = "pmd-only-retain-successful-gatt-operations";
 const PMD_WHEN_COMPLETION_PROFILE: &str = "pmd-only-winrt-when-completion";
 const PMD_WHEN_ALL_SETUP_PROFILE: &str = "pmd-only-winrt-when-all-setup";
+const PMD_PROBE_SEQUENCE_PROFILE: &str = "pmd-only-probe-equivalent-sequence";
 const PROPERTY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(6);
 const PROPERTY_CONFIRMATION_CONCURRENCY: usize = 8;
@@ -88,6 +89,7 @@ enum SessionProfile {
     PmdOnlyRetainSuccessfulGattOperations,
     PmdOnlyWinrtWhenCompletion,
     PmdOnlyWinrtWhenAllSetup,
+    PmdOnlyProbeEquivalentSequence,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,8 +133,11 @@ impl SessionProfile {
             Some(value) if value == OsStr::new(PMD_WHEN_ALL_SETUP_PROFILE) => {
                 Ok(Self::PmdOnlyWinrtWhenAllSetup)
             }
+            Some(value) if value == OsStr::new(PMD_PROBE_SEQUENCE_PROFILE) => {
+                Ok(Self::PmdOnlyProbeEquivalentSequence)
+            }
             Some(_) => Err(format!(
-                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, {PMD_WHEN_COMPLETION_PROFILE}, or {PMD_WHEN_ALL_SETUP_PROFILE} when set"
+                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, {PMD_WHEN_COMPLETION_PROFILE}, {PMD_WHEN_ALL_SETUP_PROFILE}, or {PMD_PROBE_SEQUENCE_PROFILE} when set"
             )),
         }
     }
@@ -151,19 +156,26 @@ impl SessionProfile {
             Self::PmdOnlyRetainSuccessfulGattOperations => {
                 WinrtOperationPolicy::INTO_FUTURE_RETAINED
             }
-            Self::PmdOnlyWinrtWhenCompletion | Self::PmdOnlyWinrtWhenAllSetup => {
-                WinrtOperationPolicy::WHEN_RETAINED
-            }
+            Self::PmdOnlyWinrtWhenCompletion
+            | Self::PmdOnlyWinrtWhenAllSetup
+            | Self::PmdOnlyProbeEquivalentSequence => WinrtOperationPolicy::WHEN_RETAINED,
             Self::ReferenceCompatible | Self::PmdOnlyDifferential => WinrtOperationPolicy::DEFAULT,
         }
     }
 
     const fn setup_operation_policy(self) -> WinrtOperationPolicy {
-        if matches!(self, Self::PmdOnlyWinrtWhenAllSetup) {
+        if matches!(
+            self,
+            Self::PmdOnlyWinrtWhenAllSetup | Self::PmdOnlyProbeEquivalentSequence
+        ) {
             WinrtOperationPolicy::WHEN_RETAINED
         } else {
             WinrtOperationPolicy::DEFAULT
         }
+    }
+
+    const fn probe_equivalent_sequence(self) -> bool {
+        matches!(self, Self::PmdOnlyProbeEquivalentSequence)
     }
 
     const fn name(self) -> &'static str {
@@ -173,6 +185,7 @@ impl SessionProfile {
             Self::PmdOnlyRetainSuccessfulGattOperations => PMD_RETAIN_SUCCESS_PROFILE,
             Self::PmdOnlyWinrtWhenCompletion => PMD_WHEN_COMPLETION_PROFILE,
             Self::PmdOnlyWinrtWhenAllSetup => PMD_WHEN_ALL_SETUP_PROFILE,
+            Self::PmdOnlyProbeEquivalentSequence => PMD_PROBE_SEQUENCE_PROFILE,
         }
     }
 }
@@ -1054,6 +1067,12 @@ impl NotificationDiagnostics {
         });
     }
 
+    fn record_explicit_mode(&self, source: NotificationSource, mode: SubscriptionMode) {
+        self.mutate(|state| {
+            state.sources[source.diagnostic_index()].mode = Some(mode);
+        });
+    }
+
     fn record_cccd_committed(&self, source: NotificationSource) {
         self.mutate(|state| {
             state.sources[source.diagnostic_index()].cccd_committed += 1;
@@ -1234,6 +1253,7 @@ struct WinrtSession {
     subscriptions: Vec<Subscription>,
     cleanup: SessionCleanup,
     pmd_operation_policy: WinrtOperationPolicy,
+    probe_equivalent_sequence: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1307,6 +1327,7 @@ impl OpeningSession {
         mut self,
         handles: DiscoveredHandles,
         pmd_operation_policy: WinrtOperationPolicy,
+        probe_equivalent_sequence: bool,
     ) -> WinrtSession {
         WinrtSession {
             device: self
@@ -1328,6 +1349,7 @@ impl OpeningSession {
             subscriptions: Vec::new(),
             cleanup: SessionCleanup::default(),
             pmd_operation_policy,
+            probe_equivalent_sequence,
         }
     }
 }
@@ -1681,35 +1703,68 @@ impl WinrtSession {
         )
         .await?;
         ensure_active(cancelled, "PMD service discovery")?;
-        let control = required_characteristic(
-            &pmd_service,
-            PMD_CONTROL_POINT,
-            "PMD control point",
-            CharacteristicStages {
-                access: SessionStage::PmdControlAccess,
-                uncached: SessionStage::PmdControlDiscoveryUncached,
-                cached: SessionStage::PmdControlDiscoveryCached,
-            },
-            reporter,
-            setup_operation_policy,
-            cancelled,
-        )
-        .await?;
-        ensure_active(cancelled, "PMD control discovery")?;
-        let pmd_data = required_characteristic(
-            &pmd_service,
-            PMD_DATA,
-            "PMD data",
-            CharacteristicStages {
-                access: SessionStage::PmdDataAccess,
-                uncached: SessionStage::PmdDataDiscoveryUncached,
-                cached: SessionStage::PmdDataDiscoveryCached,
-            },
-            reporter,
-            setup_operation_policy,
-            cancelled,
-        )
-        .await?;
+        let (control, pmd_data) = if profile.probe_equivalent_sequence() {
+            request_service_access_once(
+                &pmd_service,
+                SessionStage::PmdControlAccess,
+                reporter,
+                setup_operation_policy,
+                cancelled,
+            )
+            .await?;
+            let control = required_characteristic_direct(
+                &pmd_service,
+                PMD_CONTROL_POINT,
+                "PMD control point",
+                SessionStage::PmdControlDiscoveryUncached,
+                reporter,
+                setup_operation_policy,
+                cancelled,
+            )
+            .await?;
+            let pmd_data = required_characteristic_direct(
+                &pmd_service,
+                PMD_DATA,
+                "PMD data",
+                SessionStage::PmdDataDiscoveryUncached,
+                reporter,
+                setup_operation_policy,
+                cancelled,
+            )
+            .await?;
+            (control, pmd_data)
+        } else {
+            let control = required_characteristic(
+                &pmd_service,
+                PMD_CONTROL_POINT,
+                "PMD control point",
+                CharacteristicStages {
+                    access: SessionStage::PmdControlAccess,
+                    uncached: SessionStage::PmdControlDiscoveryUncached,
+                    cached: SessionStage::PmdControlDiscoveryCached,
+                },
+                reporter,
+                setup_operation_policy,
+                cancelled,
+            )
+            .await?;
+            ensure_active(cancelled, "PMD control discovery")?;
+            let pmd_data = required_characteristic(
+                &pmd_service,
+                PMD_DATA,
+                "PMD data",
+                CharacteristicStages {
+                    access: SessionStage::PmdDataAccess,
+                    uncached: SessionStage::PmdDataDiscoveryUncached,
+                    cached: SessionStage::PmdDataDiscoveryCached,
+                },
+                reporter,
+                setup_operation_policy,
+                cancelled,
+            )
+            .await?;
+            (control, pmd_data)
+        };
         ensure_active(cancelled, "PMD data discovery")?;
 
         Ok(opening.finish(
@@ -1723,6 +1778,7 @@ impl WinrtSession {
                 battery: None,
             },
             profile.pmd_operation_policy(),
+            profile.probe_equivalent_sequence(),
         ))
     }
 
@@ -1762,6 +1818,12 @@ impl WinrtSession {
 
     fn report_link_diagnostic(&self, checkpoint: &str) {
         if std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some() {
+            if self.probe_equivalent_sequence {
+                eprintln!(
+                    "POLAR_H10_LINK_DIAGNOSTIC checkpoint={checkpoint} suppressed=probe-equivalent-sequence"
+                );
+                return;
+            }
             eprintln!(
                 "POLAR_H10_LINK_DIAGNOSTIC checkpoint={checkpoint} {}",
                 self.link_diagnostic_snapshot().summary()
@@ -1770,6 +1832,10 @@ impl WinrtSession {
     }
 
     fn link_summary(&self) -> String {
+        if self.probe_equivalent_sequence {
+            return "Direct Windows WinRT GATT · persistent session · probe-equivalent setup diagnostics suppressed"
+                .to_string();
+        }
         let mtu = self.gatt_session.MaxPduSize().ok();
         let observed = self
             .device
@@ -1817,13 +1883,30 @@ impl WinrtSession {
             fault_tx,
             diagnostics,
         } = sink;
-        let properties = characteristic
-            .CharacteristicProperties()
-            .map_err(|error| stage_error("notification properties", error))?;
-        let property_shape = CharacteristicPropertyShape::from_winrt(properties);
-        let mode = select_subscription_mode(property_shape);
-        diagnostics.record_properties(source, property_shape, mode);
-        diagnostics.report("properties-read");
+        let mode = if self.probe_equivalent_sequence {
+            let mode = match source {
+                NotificationSource::PmdControl => SubscriptionMode::Indicate,
+                NotificationSource::PmdData => SubscriptionMode::Notify,
+                NotificationSource::HeartRate => {
+                    return Err(
+                        "Windows WinRT probe-equivalent sequence excludes heart-rate subscription"
+                            .to_string(),
+                    );
+                }
+            };
+            diagnostics.record_explicit_mode(source, mode);
+            diagnostics.report("explicit-mode");
+            mode
+        } else {
+            let properties = characteristic
+                .CharacteristicProperties()
+                .map_err(|error| stage_error("notification properties", error))?;
+            let property_shape = CharacteristicPropertyShape::from_winrt(properties);
+            let mode = select_subscription_mode(property_shape);
+            diagnostics.record_properties(source, property_shape, mode);
+            diagnostics.report("properties-read");
+            mode
+        };
         let call = WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT);
         let operation =
             characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(mode.cccd());
@@ -2099,13 +2182,14 @@ pub(super) async fn prepare(
         let pmd_policy = profile.pmd_operation_policy();
         let setup_policy = profile.setup_operation_policy();
         eprintln!(
-            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={} winrt-when-completion={} close-successful-setup-operations={} winrt-when-all-setup={}",
+            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={} winrt-when-completion={} close-successful-setup-operations={} winrt-when-all-setup={} probe-equivalent-sequence={}",
             profile.name(),
             profile.heart_rate_enabled(),
             pmd_policy.close_after_success,
             matches!(pmd_policy.projection, WinrtCompletionProjection::When),
             setup_policy.close_after_success,
-            matches!(setup_policy.projection, WinrtCompletionProjection::When)
+            matches!(setup_policy.projection, WinrtCompletionProjection::When),
+            profile.probe_equivalent_sequence()
         );
     }
     let reporter = StageReporter::new(
@@ -2163,7 +2247,9 @@ pub(super) async fn prepare(
             )
             .await?;
         ensure_active(cancelled, "PMD control subscription")?;
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        if !session.probe_equivalent_sequence {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         ensure_active(cancelled, "PMD data subscription")?;
         session
             .subscribe(
@@ -2180,7 +2266,9 @@ pub(super) async fn prepare(
             )
             .await?;
         ensure_active(cancelled, "PMD data subscription")?;
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        if !session.probe_equivalent_sequence {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         session.report_link_diagnostic("before-pmd-setup");
         ensure_active(cancelled, "PMD setup")?;
 
@@ -2467,6 +2555,72 @@ async fn service(
         .GetAt(0)
         .map(Some)
         .map_err(|error| stage_error("service enumeration", error))
+}
+
+async fn request_service_access_once(
+    service: &GattDeviceService,
+    stage: SessionStage,
+    reporter: StageReporter,
+    operation_policy: WinrtOperationPolicy,
+    cancelled: &mut watch::Receiver<bool>,
+) -> Result<(), String> {
+    ensure_active(cancelled, "PMD service access")?;
+    let access = await_winrt_stage_with_policy(
+        WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT),
+        service.RequestAccessAsync(),
+        operation_policy,
+        cancelled,
+    )
+    .await?;
+    if access != DeviceAccessStatus::Allowed {
+        return Err(format!(
+            "Windows WinRT PMD service access failed: {access:?}"
+        ));
+    }
+    Ok(())
+}
+
+async fn required_characteristic_direct(
+    service: &GattDeviceService,
+    uuid: uuid::Uuid,
+    label: &str,
+    stage: SessionStage,
+    reporter: StageReporter,
+    operation_policy: WinrtOperationPolicy,
+    cancelled: &mut watch::Receiver<bool>,
+) -> Result<GattCharacteristic, String> {
+    ensure_active(cancelled, "direct characteristic discovery")?;
+    let result = await_winrt_stage_with_policy(
+        WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT),
+        service.GetCharacteristicsForUuidWithCacheModeAsync(
+            GUID::from_u128(uuid.as_u128()),
+            BluetoothCacheMode::Uncached,
+        ),
+        operation_policy,
+        cancelled,
+    )
+    .await?;
+    let status = result
+        .Status()
+        .map_err(|error| stage_error(stage.name(), error))?;
+    if status != GattCommunicationStatus::Success {
+        return Err(format!("Windows WinRT {} failed: {status:?}", stage.name()));
+    }
+    let characteristics = result
+        .Characteristics()
+        .map_err(|error| stage_error("direct characteristic enumeration", error))?;
+    if characteristics
+        .Size()
+        .map_err(|error| stage_error("direct characteristic enumeration", error))?
+        != 1
+    {
+        return Err(format!(
+            "Windows WinRT discovery failed: {label} did not have exactly one match"
+        ));
+    }
+    characteristics
+        .GetAt(0)
+        .map_err(|error| stage_error("direct characteristic enumeration", error))
 }
 
 async fn required_characteristic(
@@ -2991,6 +3145,7 @@ mod tests {
             reference.setup_operation_policy(),
             WinrtOperationPolicy::DEFAULT
         );
+        assert!(!reference.probe_equivalent_sequence());
 
         let pmd_only = SessionProfile::parse(Some(OsStr::new(PMD_ONLY_PROFILE))).unwrap();
         assert_eq!(pmd_only, SessionProfile::PmdOnlyDifferential);
@@ -3004,6 +3159,7 @@ mod tests {
             pmd_only.setup_operation_policy(),
             WinrtOperationPolicy::DEFAULT
         );
+        assert!(!pmd_only.probe_equivalent_sequence());
 
         let retained = SessionProfile::parse(Some(OsStr::new(PMD_RETAIN_SUCCESS_PROFILE))).unwrap();
         assert_eq!(
@@ -3020,6 +3176,7 @@ mod tests {
             retained.setup_operation_policy(),
             WinrtOperationPolicy::DEFAULT
         );
+        assert!(!retained.probe_equivalent_sequence());
 
         let when = SessionProfile::parse(Some(OsStr::new(PMD_WHEN_COMPLETION_PROFILE))).unwrap();
         assert_eq!(when, SessionProfile::PmdOnlyWinrtWhenCompletion);
@@ -3030,6 +3187,7 @@ mod tests {
             WinrtOperationPolicy::WHEN_RETAINED
         );
         assert_eq!(when.setup_operation_policy(), WinrtOperationPolicy::DEFAULT);
+        assert!(!when.probe_equivalent_sequence());
 
         let when_all = SessionProfile::parse(Some(OsStr::new(PMD_WHEN_ALL_SETUP_PROFILE))).unwrap();
         assert_eq!(when_all, SessionProfile::PmdOnlyWinrtWhenAllSetup);
@@ -3043,6 +3201,21 @@ mod tests {
             when_all.setup_operation_policy(),
             WinrtOperationPolicy::WHEN_RETAINED
         );
+        assert!(!when_all.probe_equivalent_sequence());
+
+        let probe = SessionProfile::parse(Some(OsStr::new(PMD_PROBE_SEQUENCE_PROFILE))).unwrap();
+        assert_eq!(probe, SessionProfile::PmdOnlyProbeEquivalentSequence);
+        assert_eq!(probe.name(), PMD_PROBE_SEQUENCE_PROFILE);
+        assert!(!probe.heart_rate_enabled());
+        assert_eq!(
+            probe.pmd_operation_policy(),
+            WinrtOperationPolicy::WHEN_RETAINED
+        );
+        assert_eq!(
+            probe.setup_operation_policy(),
+            WinrtOperationPolicy::WHEN_RETAINED
+        );
+        assert!(probe.probe_equivalent_sequence());
 
         let error = SessionProfile::parse(Some(OsStr::new("pmd-only"))).unwrap_err();
         assert!(error.contains(SESSION_PROFILE_ENV));
@@ -3050,6 +3223,7 @@ mod tests {
         assert!(error.contains(PMD_RETAIN_SUCCESS_PROFILE));
         assert!(error.contains(PMD_WHEN_COMPLETION_PROFILE));
         assert!(error.contains(PMD_WHEN_ALL_SETUP_PROFILE));
+        assert!(error.contains(PMD_PROBE_SEQUENCE_PROFILE));
     }
 
     fn evidence(
@@ -3390,6 +3564,25 @@ mod tests {
         assert_eq!(
             diagnostics.summary(),
             "pmd-control:properties-notify=false,properties-indicate=false,properties-read=false,properties-write=false,properties-write-without-response=false,mode=none,cccd-committed=0,handlers-attached=0,handlers-removed=0,handler-remove-failures=0,callbacks-entered=0,callbacks-decoded=0,callbacks-enqueued=0 pmd-data:properties-notify=true,properties-indicate=true,properties-read=false,properties-write=false,properties-write-without-response=false,mode=indicate,cccd-committed=1,handlers-attached=1,handlers-removed=1,handler-remove-failures=0,callbacks-entered=1,callbacks-decoded=1,callbacks-enqueued=1 heart-rate:properties-notify=false,properties-indicate=false,properties-read=false,properties-write=false,properties-write-without-response=false,mode=none,cccd-committed=0,handlers-attached=0,handlers-removed=0,handler-remove-failures=0,callbacks-entered=0,callbacks-decoded=0,callbacks-enqueued=0 callback-faults=0 queue-full=0 queue-closed=0"
+        );
+
+        let explicit = NotificationDiagnostics::new(true);
+        explicit.record_explicit_mode(NotificationSource::PmdControl, SubscriptionMode::Indicate);
+        explicit.record_explicit_mode(NotificationSource::PmdData, SubscriptionMode::Notify);
+        let snapshot = explicit.snapshot();
+        assert_eq!(
+            snapshot.sources[NotificationSource::PmdControl.diagnostic_index()],
+            SourceNotificationDiagnostics {
+                mode: Some(SubscriptionMode::Indicate),
+                ..SourceNotificationDiagnostics::default()
+            }
+        );
+        assert_eq!(
+            snapshot.sources[NotificationSource::PmdData.diagnostic_index()],
+            SourceNotificationDiagnostics {
+                mode: Some(SubscriptionMode::Notify),
+                ..SourceNotificationDiagnostics::default()
+            }
         );
     }
 
