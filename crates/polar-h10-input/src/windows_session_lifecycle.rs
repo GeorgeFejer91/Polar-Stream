@@ -32,7 +32,6 @@ pub(crate) enum SessionStage {
     PmdDataNotification,
     RequestEcgSettings,
     EcgSettingsResponse,
-    EcgSettingsSettle,
     StartEcg,
     StartEcgResponse,
     StartAcc,
@@ -44,7 +43,7 @@ pub(crate) enum SessionStage {
 
 impl SessionStage {
     #[cfg(test)]
-    const ALL: [Self; 32] = [
+    const ALL: [Self; 31] = [
         Self::AddressToDevice,
         Self::GattSessionCreate,
         Self::MaintainConnection,
@@ -69,7 +68,6 @@ impl SessionStage {
         Self::PmdDataNotification,
         Self::RequestEcgSettings,
         Self::EcgSettingsResponse,
-        Self::EcgSettingsSettle,
         Self::StartEcg,
         Self::StartEcgResponse,
         Self::StartAcc,
@@ -105,7 +103,6 @@ impl SessionStage {
             Self::PmdDataNotification => "pmd-data-notification-subscription",
             Self::RequestEcgSettings => "pmd-request-ecg-settings",
             Self::EcgSettingsResponse => "pmd-ecg-settings-response",
-            Self::EcgSettingsSettle => "pmd-ecg-settings-settle",
             Self::StartEcg => "pmd-start-ecg",
             Self::StartEcgResponse => "pmd-start-ecg-response",
             Self::StartAcc => "pmd-start-acc",
@@ -392,53 +389,6 @@ where
     }
 }
 
-pub(crate) async fn run_delay_stage(
-    reporter: StageReporter,
-    stage: SessionStage,
-    duration: Duration,
-    cancelled: &mut watch::Receiver<bool>,
-) -> Result<(), StageFailure> {
-    let span = reporter.enter(stage, 1);
-    if *cancelled.borrow() {
-        span.finish(StageResultClass::Cancelled);
-        return Err(StageFailure::new(
-            stage,
-            StageResultClass::Cancelled,
-            format!("Windows WinRT {} was cancelled", stage.name()),
-        ));
-    }
-
-    let limited = reporter.limit(duration);
-    let outer_deadline_wins = limited < duration;
-    tokio::select! {
-        changed = cancelled.changed() => {
-            span.finish(StageResultClass::Cancelled);
-            Err(StageFailure::new(
-                stage,
-                StageResultClass::Cancelled,
-                if changed.is_err() {
-                    format!("Windows WinRT {} cancellation owner closed", stage.name())
-                } else {
-                    format!("Windows WinRT {} was cancelled", stage.name())
-                },
-            ))
-        }
-        () = tokio::time::sleep(limited) => {
-            if outer_deadline_wins {
-                span.finish(StageResultClass::Timeout);
-                Err(StageFailure::new(
-                    stage,
-                    StageResultClass::Timeout,
-                    format!("Windows WinRT {} exceeded the session setup deadline", stage.name()),
-                ))
-            } else {
-                span.finish(StageResultClass::Success);
-                Ok(())
-            }
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FirstFrameKind {
     Ecg,
@@ -663,53 +613,6 @@ mod tests {
             assert_eq!(control.cancelled.load(Ordering::SeqCst), 1);
             assert_eq!(control.closed.load(Ordering::SeqCst), 1);
         }
-    }
-
-    #[tokio::test]
-    async fn delay_stage_covers_success_cancellation_and_outer_deadline() {
-        let (_cancel, mut cancelled) = watch::channel(false);
-        assert!(
-            run_delay_stage(
-                StageReporter::new(false, None),
-                SessionStage::EcgSettingsSettle,
-                Duration::from_millis(1),
-                &mut cancelled,
-            )
-            .await
-            .is_ok()
-        );
-
-        let (cancel, mut cancelled) = watch::channel(false);
-        cancel.send_replace(true);
-        assert_eq!(
-            run_delay_stage(
-                StageReporter::new(false, None),
-                SessionStage::EcgSettingsSettle,
-                Duration::from_secs(1),
-                &mut cancelled,
-            )
-            .await
-            .unwrap_err()
-            .class(),
-            StageResultClass::Cancelled
-        );
-
-        let (_cancel, mut cancelled) = watch::channel(false);
-        assert_eq!(
-            run_delay_stage(
-                StageReporter::new(
-                    false,
-                    Some(tokio::time::Instant::now() + Duration::from_millis(1)),
-                ),
-                SessionStage::EcgSettingsSettle,
-                Duration::from_secs(1),
-                &mut cancelled,
-            )
-            .await
-            .unwrap_err()
-            .class(),
-            StageResultClass::Timeout
-        );
     }
 
     #[test]
