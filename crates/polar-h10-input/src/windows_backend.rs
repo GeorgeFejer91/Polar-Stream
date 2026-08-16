@@ -676,6 +676,232 @@ impl NotificationSource {
             Self::HeartRate => SubscriptionKind::HeartRate,
         }
     }
+
+    const fn diagnostic_index(self) -> usize {
+        match self {
+            Self::PmdControl => 0,
+            Self::PmdData => 1,
+            Self::HeartRate => 2,
+        }
+    }
+
+    const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::PmdControl => "pmd-control",
+            Self::PmdData => "pmd-data",
+            Self::HeartRate => "heart-rate",
+        }
+    }
+}
+
+const NOTIFICATION_SOURCES: [NotificationSource; 3] = [
+    NotificationSource::PmdControl,
+    NotificationSource::PmdData,
+    NotificationSource::HeartRate,
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SubscriptionMode {
+    Notify,
+    Indicate,
+}
+
+impl SubscriptionMode {
+    const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::Notify => "notify",
+            Self::Indicate => "indicate",
+        }
+    }
+
+    const fn cccd(self) -> GattClientCharacteristicConfigurationDescriptorValue {
+        match self {
+            Self::Notify => GattClientCharacteristicConfigurationDescriptorValue::Notify,
+            Self::Indicate => GattClientCharacteristicConfigurationDescriptorValue::Indicate,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CharacteristicPropertyShape {
+    notify: bool,
+    indicate: bool,
+    read: bool,
+    write: bool,
+    write_without_response: bool,
+}
+
+impl CharacteristicPropertyShape {
+    fn from_winrt(properties: GattCharacteristicProperties) -> Self {
+        Self {
+            notify: properties.contains(GattCharacteristicProperties::Notify),
+            indicate: properties.contains(GattCharacteristicProperties::Indicate),
+            read: properties.contains(GattCharacteristicProperties::Read),
+            write: properties.contains(GattCharacteristicProperties::Write),
+            write_without_response: properties
+                .contains(GattCharacteristicProperties::WriteWithoutResponse),
+        }
+    }
+}
+
+fn select_subscription_mode(shape: CharacteristicPropertyShape) -> SubscriptionMode {
+    // Preserve the established Windows behavior while making the choice
+    // observable. The physical differential run will show whether the PMD
+    // data characteristic actually advertises both modes.
+    if shape.indicate {
+        SubscriptionMode::Indicate
+    } else {
+        SubscriptionMode::Notify
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SourceNotificationDiagnostics {
+    properties: Option<CharacteristicPropertyShape>,
+    mode: Option<SubscriptionMode>,
+    handlers_attached: usize,
+    handlers_removed: usize,
+    handler_remove_failures: usize,
+    callbacks_entered: usize,
+    callbacks_decoded: usize,
+    callbacks_enqueued: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct NotificationDiagnosticSnapshot {
+    sources: [SourceNotificationDiagnostics; 3],
+    callback_faults: usize,
+    queue_full: usize,
+    queue_closed: usize,
+}
+
+struct NotificationDiagnostics {
+    enabled: bool,
+    state: Mutex<NotificationDiagnosticSnapshot>,
+}
+
+impl NotificationDiagnostics {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            state: Mutex::new(NotificationDiagnosticSnapshot::default()),
+        }
+    }
+
+    fn mutate(&self, operation: impl FnOnce(&mut NotificationDiagnosticSnapshot)) {
+        if !self.enabled {
+            return;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operation(&mut state);
+    }
+
+    fn record_properties(
+        &self,
+        source: NotificationSource,
+        properties: CharacteristicPropertyShape,
+        mode: SubscriptionMode,
+    ) {
+        self.mutate(|state| {
+            let source = &mut state.sources[source.diagnostic_index()];
+            source.properties = Some(properties);
+            source.mode = Some(mode);
+        });
+    }
+
+    fn record_handler_attached(&self, source: NotificationSource) {
+        self.mutate(|state| state.sources[source.diagnostic_index()].handlers_attached += 1);
+    }
+
+    fn record_handler_removed(&self, source: NotificationSource) {
+        self.mutate(|state| state.sources[source.diagnostic_index()].handlers_removed += 1);
+    }
+
+    fn record_handler_remove_failure(&self, source: NotificationSource) {
+        self.mutate(|state| {
+            state.sources[source.diagnostic_index()].handler_remove_failures += 1;
+        });
+    }
+
+    fn record_callback_entered(&self, source: NotificationSource) {
+        self.mutate(|state| state.sources[source.diagnostic_index()].callbacks_entered += 1);
+    }
+
+    fn record_callback_decoded(&self, source: NotificationSource) {
+        self.mutate(|state| state.sources[source.diagnostic_index()].callbacks_decoded += 1);
+    }
+
+    fn record_callback_enqueued(&self, source: NotificationSource) {
+        self.mutate(|state| state.sources[source.diagnostic_index()].callbacks_enqueued += 1);
+    }
+
+    fn record_callback_fault(&self) {
+        self.mutate(|state| state.callback_faults += 1);
+    }
+
+    fn record_queue_full(&self) {
+        self.mutate(|state| state.queue_full += 1);
+    }
+
+    fn record_queue_closed(&self) {
+        self.mutate(|state| state.queue_closed += 1);
+    }
+
+    fn snapshot(&self) -> NotificationDiagnosticSnapshot {
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn summary(&self) -> String {
+        let snapshot = self.snapshot();
+        let sources = NOTIFICATION_SOURCES.map(|source| {
+            let state = snapshot.sources[source.diagnostic_index()];
+            let properties = state.properties.unwrap_or_default();
+            let mode = state
+                .mode
+                .map(SubscriptionMode::diagnostic_name)
+                .unwrap_or("none");
+            format!(
+                "{}:properties-notify={},properties-indicate={},properties-read={},properties-write={},properties-write-without-response={},mode={},handlers-attached={},handlers-removed={},handler-remove-failures={},callbacks-entered={},callbacks-decoded={},callbacks-enqueued={}",
+                source.diagnostic_name(),
+                properties.notify,
+                properties.indicate,
+                properties.read,
+                properties.write,
+                properties.write_without_response,
+                mode,
+                state.handlers_attached,
+                state.handlers_removed,
+                state.handler_remove_failures,
+                state.callbacks_entered,
+                state.callbacks_decoded,
+                state.callbacks_enqueued,
+            )
+        });
+        format!(
+            "{} {} {} callback-faults={} queue-full={} queue-closed={}",
+            sources[0],
+            sources[1],
+            sources[2],
+            snapshot.callback_faults,
+            snapshot.queue_full,
+            snapshot.queue_closed,
+        )
+    }
+
+    fn report(&self, checkpoint: &str) {
+        if self.enabled {
+            eprintln!(
+                "POLAR_H10_NOTIFICATION_DIAGNOSTIC checkpoint={checkpoint} {}",
+                self.summary()
+            );
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -708,18 +934,28 @@ impl ExpectedControlResponse {
 struct NotificationSink {
     raw_tx: mpsc::Sender<RawNotification>,
     fault_tx: watch::Sender<Option<String>>,
+    diagnostics: Arc<NotificationDiagnostics>,
 }
 
 struct Subscription {
     characteristic: GattCharacteristic,
     source: SubscriptionKind,
+    notification_source: NotificationSource,
+    diagnostics: Arc<NotificationDiagnostics>,
     token: Option<i64>,
 }
 
 impl Subscription {
     fn remove_handler(&mut self) {
         if let Some(token) = take_subscription_token(&mut self.token) {
-            let _ = self.characteristic.RemoveValueChanged(token);
+            if self.characteristic.RemoveValueChanged(token).is_ok() {
+                self.diagnostics
+                    .record_handler_removed(self.notification_source);
+            } else {
+                self.diagnostics
+                    .record_handler_remove_failure(self.notification_source);
+            }
+            self.diagnostics.report("handler-removed");
         }
     }
 }
@@ -1149,19 +1385,21 @@ impl WinrtSession {
         cancelled: &mut watch::Receiver<bool>,
         sink: NotificationSink,
     ) -> Result<(), String> {
-        let NotificationSink { raw_tx, fault_tx } = sink;
-        let cccd = if characteristic
+        let NotificationSink {
+            raw_tx,
+            fault_tx,
+            diagnostics,
+        } = sink;
+        let properties = characteristic
             .CharacteristicProperties()
-            .map_err(|error| stage_error("notification properties", error))?
-            .contains(GattCharacteristicProperties::Indicate)
-        {
-            GattClientCharacteristicConfigurationDescriptorValue::Indicate
-        } else {
-            GattClientCharacteristicConfigurationDescriptorValue::Notify
-        };
+            .map_err(|error| stage_error("notification properties", error))?;
+        let property_shape = CharacteristicPropertyShape::from_winrt(properties);
+        let mode = select_subscription_mode(property_shape);
+        diagnostics.record_properties(source, property_shape, mode);
+        diagnostics.report("properties-read");
         let status = await_winrt_stage(
             WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT),
-            characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(cccd),
+            characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(mode.cccd()),
             |operation| operation.Cancel(),
             |operation| operation.Close(),
             cancelled,
@@ -1176,16 +1414,20 @@ impl WinrtSession {
                 // on a physical H10. The non-Send delegate remains confined to
                 // this synchronous scope so later awaits stay Send.
                 let token_result = {
+                    let callback_diagnostics = diagnostics.clone();
                     let handler =
                         TypedEventHandler::<GattCharacteristic, GattValueChangedEventArgs>::new(
                             move |_, args| {
+                                callback_diagnostics.record_callback_entered(source);
                                 let result = (|| {
                                     let args = args.ok()?;
                                     let value = args.CharacteristicValue()?;
                                     let bytes = buffer_to_vec(&value)?;
+                                    callback_diagnostics.record_callback_decoded(source);
                                     enqueue_notification(
                                         &raw_tx,
                                         &fault_tx,
+                                        &callback_diagnostics,
                                         RawNotification {
                                             source,
                                             value: bytes,
@@ -1194,6 +1436,8 @@ impl WinrtSession {
                                     Ok::<(), windows::core::Error>(())
                                 })();
                                 if let Err(error) = result {
+                                    callback_diagnostics.record_callback_fault();
+                                    callback_diagnostics.report("callback-fault");
                                     fault_tx.send_replace(Some(format!(
                                         "Windows WinRT notification callback failed: {error}"
                                     )));
@@ -1219,12 +1463,16 @@ impl WinrtSession {
                         return Err(stage_error("notification handler", error));
                     }
                 };
+                diagnostics.record_handler_attached(source);
                 self.subscriptions.push(Subscription {
                     characteristic: characteristic.clone(),
                     source: source.subscription_kind(),
+                    notification_source: source,
+                    diagnostics: diagnostics.clone(),
                     token: Some(token),
                 });
                 self.cleanup.record_subscription(source.subscription_kind());
+                diagnostics.report("handler-attached");
                 Ok(())
             }
             Ok(status) => Err(format!(
@@ -1382,10 +1630,12 @@ pub(super) async fn prepare(
     event_tx: mpsc::Sender<InputEvent>,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<PreparedConnection, String> {
+    let diagnostics_enabled = std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some();
     let reporter = StageReporter::new(
-        std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some(),
+        diagnostics_enabled,
         Some(tokio::time::Instant::now() + SESSION_SETUP_TIMEOUT),
     );
+    let notification_diagnostics = Arc::new(NotificationDiagnostics::new(diagnostics_enabled));
     let (raw_tx, mut raw_rx) = mpsc::channel(RAW_NOTIFICATION_CAPACITY);
     let (fault_tx, mut fault_rx) = watch::channel(None::<String>);
     let mut session = WinrtSession::open(device_id, reporter, cancelled).await?;
@@ -1414,6 +1664,7 @@ pub(super) async fn prepare(
                     NotificationSink {
                         raw_tx: raw_tx.clone(),
                         fault_tx: fault_tx.clone(),
+                        diagnostics: notification_diagnostics.clone(),
                     },
                 )
                 .await?;
@@ -1429,6 +1680,7 @@ pub(super) async fn prepare(
                 NotificationSink {
                     raw_tx: raw_tx.clone(),
                     fault_tx: fault_tx.clone(),
+                    diagnostics: notification_diagnostics.clone(),
                 },
             )
             .await?;
@@ -1442,7 +1694,11 @@ pub(super) async fn prepare(
                 SessionStage::PmdDataNotification,
                 reporter,
                 cancelled,
-                NotificationSink { raw_tx, fault_tx },
+                NotificationSink {
+                    raw_tx,
+                    fault_tx,
+                    diagnostics: notification_diagnostics.clone(),
+                },
             )
             .await?;
         ensure_active(cancelled, "PMD data subscription")?;
@@ -1469,6 +1725,7 @@ pub(super) async fn prepare(
             fault_rx: &mut fault_rx,
             cancelled: &mut *cancelled,
             reporter,
+            diagnostics: &notification_diagnostics,
             gate: &mut gate,
             frame_stages: &mut frame_stages,
         }
@@ -1491,6 +1748,7 @@ pub(super) async fn prepare(
             fault_rx: &mut fault_rx,
             cancelled: &mut *cancelled,
             reporter,
+            diagnostics: &notification_diagnostics,
             gate: &mut gate,
             frame_stages: &mut frame_stages,
         }
@@ -1505,6 +1763,7 @@ pub(super) async fn prepare(
             fault_rx: &mut fault_rx,
             cancelled: &mut *cancelled,
             reporter,
+            diagnostics: &notification_diagnostics,
             gate: &mut gate,
             frame_stages: &mut frame_stages,
         }
@@ -1524,6 +1783,7 @@ pub(super) async fn prepare(
             fault_rx: &mut fault_rx,
             cancelled: &mut *cancelled,
             reporter,
+            diagnostics: &notification_diagnostics,
             gate: &mut gate,
             frame_stages: &mut frame_stages,
         }
@@ -1538,6 +1798,7 @@ pub(super) async fn prepare(
             fault_rx: &mut fault_rx,
             cancelled: &mut *cancelled,
             reporter,
+            diagnostics: &notification_diagnostics,
             gate: &mut gate,
             frame_stages: &mut frame_stages,
         }
@@ -1968,6 +2229,7 @@ struct SetupWaitContext<'a> {
     fault_rx: &'a mut watch::Receiver<Option<String>>,
     cancelled: &'a mut watch::Receiver<bool>,
     reporter: StageReporter,
+    diagnostics: &'a NotificationDiagnostics,
     gate: &'a mut FirstFrameGate,
     frame_stages: &'a mut FirstFrameStages,
 }
@@ -2028,11 +2290,13 @@ impl SetupWaitContext<'_> {
                             return Err(error);
                         }
                         span.finish(StageResultClass::Success);
+                        self.diagnostics.report(stage.name());
                         return Ok(());
                     }
                 }
                 () = &mut deadline => {
                     span.finish(StageResultClass::Timeout);
+                    self.diagnostics.report(stage.name());
                     return Err(format!("Windows WinRT {} timed out", stage.name()));
                 }
             }
@@ -2046,6 +2310,7 @@ impl SetupWaitContext<'_> {
         };
         self.frame_stages.begin(kind);
         if self.gate.saw(kind) {
+            self.diagnostics.report(stage.name());
             return Ok(());
         }
         if *self.cancelled.borrow() {
@@ -2084,7 +2349,10 @@ impl SetupWaitContext<'_> {
                         return Err(format!("Windows WinRT notifications ended during {}", stage.name()));
                     };
                     match observe_setup_notification(raw, self.gate, self.frame_stages) {
-                        Ok(None) if self.gate.saw(kind) => return Ok(()),
+                        Ok(None) if self.gate.saw(kind) => {
+                            self.diagnostics.report(stage.name());
+                            return Ok(());
+                        }
                         Ok(None) => {}
                         Ok(Some(response)) => {
                             self.frame_stages.finish(kind, StageResultClass::NativeError);
@@ -2101,6 +2369,7 @@ impl SetupWaitContext<'_> {
                 }
                 () = &mut deadline => {
                     self.frame_stages.finish(kind, StageResultClass::Timeout);
+                    self.diagnostics.report(stage.name());
                     return Err(format!("Windows WinRT {} timed out", stage.name()));
                 }
             }
@@ -2154,16 +2423,23 @@ impl FirstFrameGate {
 fn enqueue_notification(
     raw_tx: &mpsc::Sender<RawNotification>,
     fault_tx: &watch::Sender<Option<String>>,
+    diagnostics: &NotificationDiagnostics,
     raw: RawNotification,
 ) {
+    let source = raw.source;
     match raw_tx.try_send(raw) {
-        Ok(()) => {}
+        Ok(()) => diagnostics.record_callback_enqueued(source),
         Err(mpsc::error::TrySendError::Full(_)) => {
+            diagnostics.record_queue_full();
+            diagnostics.report("queue-full");
             fault_tx.send_replace(Some(format!(
                 "Windows WinRT notification queue reached its {RAW_NOTIFICATION_CAPACITY}-batch bound; acquisition stopped without silent loss"
             )));
         }
-        Err(mpsc::error::TrySendError::Closed(_)) => {}
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            diagnostics.record_queue_closed();
+            diagnostics.report("queue-closed");
+        }
     }
 }
 
@@ -2390,6 +2666,75 @@ mod tests {
         assert_eq!(take_subscription_token(&mut token), None);
     }
 
+    #[test]
+    fn subscription_mode_and_identifier_free_diagnostics_are_deterministic() {
+        let both = CharacteristicPropertyShape {
+            notify: true,
+            indicate: true,
+            read: false,
+            write: false,
+            write_without_response: false,
+        };
+        assert_eq!(select_subscription_mode(both), SubscriptionMode::Indicate);
+        assert_eq!(
+            select_subscription_mode(CharacteristicPropertyShape {
+                notify: true,
+                ..CharacteristicPropertyShape::default()
+            }),
+            SubscriptionMode::Notify
+        );
+
+        let diagnostics = NotificationDiagnostics::new(true);
+        diagnostics.record_properties(
+            NotificationSource::PmdData,
+            both,
+            SubscriptionMode::Indicate,
+        );
+        diagnostics.record_handler_attached(NotificationSource::PmdData);
+        diagnostics.record_callback_entered(NotificationSource::PmdData);
+        diagnostics.record_callback_decoded(NotificationSource::PmdData);
+        diagnostics.record_callback_enqueued(NotificationSource::PmdData);
+        diagnostics.record_handler_removed(NotificationSource::PmdData);
+
+        let snapshot = diagnostics.snapshot();
+        assert_eq!(
+            snapshot.sources[NotificationSource::PmdData.diagnostic_index()],
+            SourceNotificationDiagnostics {
+                properties: Some(both),
+                mode: Some(SubscriptionMode::Indicate),
+                handlers_attached: 1,
+                handlers_removed: 1,
+                handler_remove_failures: 0,
+                callbacks_entered: 1,
+                callbacks_decoded: 1,
+                callbacks_enqueued: 1,
+            }
+        );
+        assert_eq!(
+            diagnostics.summary(),
+            "pmd-control:properties-notify=false,properties-indicate=false,properties-read=false,properties-write=false,properties-write-without-response=false,mode=none,handlers-attached=0,handlers-removed=0,handler-remove-failures=0,callbacks-entered=0,callbacks-decoded=0,callbacks-enqueued=0 pmd-data:properties-notify=true,properties-indicate=true,properties-read=false,properties-write=false,properties-write-without-response=false,mode=indicate,handlers-attached=1,handlers-removed=1,handler-remove-failures=0,callbacks-entered=1,callbacks-decoded=1,callbacks-enqueued=1 heart-rate:properties-notify=false,properties-indicate=false,properties-read=false,properties-write=false,properties-write-without-response=false,mode=none,handlers-attached=0,handlers-removed=0,handler-remove-failures=0,callbacks-entered=0,callbacks-decoded=0,callbacks-enqueued=0 callback-faults=0 queue-full=0 queue-closed=0"
+        );
+    }
+
+    #[test]
+    fn closed_notification_queue_is_counted_without_becoming_a_fault() {
+        let (raw_tx, raw_rx) = mpsc::channel(1);
+        let (fault_tx, fault_rx) = watch::channel(None);
+        let diagnostics = NotificationDiagnostics::new(true);
+        drop(raw_rx);
+        enqueue_notification(
+            &raw_tx,
+            &fault_tx,
+            &diagnostics,
+            RawNotification {
+                source: NotificationSource::PmdData,
+                value: vec![1],
+            },
+        );
+        assert_eq!(diagnostics.snapshot().queue_closed, 1);
+        assert!(fault_rx.borrow().is_none());
+    }
+
     fn ecg_event() -> InputEvent {
         InputEvent::Ecg {
             sensor_timestamp_ns: 10,
@@ -2518,12 +2863,14 @@ mod tests {
             }
             let mut gate = FirstFrameGate::default();
             let reporter = StageReporter::new(false, None);
+            let diagnostics = NotificationDiagnostics::new(false);
             let mut stages = FirstFrameStages::new(reporter);
             SetupWaitContext {
                 raw_rx: &mut raw_rx,
                 fault_rx: &mut fault_rx,
                 cancelled: &mut cancelled,
                 reporter,
+                diagnostics: &diagnostics,
                 gate: &mut gate,
                 frame_stages: &mut stages,
             }
@@ -2585,6 +2932,7 @@ mod tests {
             let (_fault_tx, mut fault_rx) = watch::channel(None);
             let (_cancel_tx, mut cancelled) = watch::channel(false);
             let reporter = StageReporter::new(false, None);
+            let diagnostics = NotificationDiagnostics::new(false);
             let mut gate = FirstFrameGate::default();
             let mut stages = FirstFrameStages::new(reporter);
             SetupWaitContext {
@@ -2592,6 +2940,7 @@ mod tests {
                 fault_rx: &mut fault_rx,
                 cancelled: &mut cancelled,
                 reporter,
+                diagnostics: &diagnostics,
                 gate: &mut gate,
                 frame_stages: &mut stages,
             }
@@ -2623,9 +2972,11 @@ mod tests {
     fn full_notification_queue_fails_closed() {
         let (raw_tx, _raw_rx) = mpsc::channel(1);
         let (fault_tx, fault_rx) = watch::channel(None);
+        let diagnostics = NotificationDiagnostics::new(true);
         enqueue_notification(
             &raw_tx,
             &fault_tx,
+            &diagnostics,
             RawNotification {
                 source: NotificationSource::PmdControl,
                 value: vec![1],
@@ -2634,6 +2985,7 @@ mod tests {
         enqueue_notification(
             &raw_tx,
             &fault_tx,
+            &diagnostics,
             RawNotification {
                 source: NotificationSource::PmdControl,
                 value: vec![2],
@@ -2643,6 +2995,9 @@ mod tests {
         assert!(fault_rx.borrow().as_deref().is_some_and(|message| {
             message.contains("acquisition stopped without silent loss")
         }));
+        let snapshot = diagnostics.snapshot();
+        assert_eq!(snapshot.sources[0].callbacks_enqueued, 1);
+        assert_eq!(snapshot.queue_full, 1);
     }
 
     #[test]

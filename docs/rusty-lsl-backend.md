@@ -84,8 +84,12 @@ source/consumer collection retains its two-minute bound. The worker must close
 before the source is stopped. Native session setup has its own 45-second total
 budget, so a typed native stage exits before the outer source-readiness bound.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` is enabled by this verifier and records
-only stage name, attempt, entry/exit, duration, and result class. PMD settings
-and start responses are separate stages from their GATT writes and first frames.
+stage name, attempt, entry/exit, duration, and result class. It also records
+identifier-free characteristic property/CCCD choices, handler lifetime counts,
+per-source callback/decode/enqueue counts, callback faults, and queue outcomes.
+It never records addresses, names, payload bytes or sizes, manufacturer data, or
+stable device identities. PMD settings and start responses are separate stages
+from their GATT writes and first frames.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
@@ -102,18 +106,24 @@ enumeration before the exact local-name route used by the reference. Those
 predicates are now independent, and unnamed service candidates require bounded
 direct WinRT exact-model confirmation. A subsequent same-lease physical run
 was reference-positive and the repaired candidate selected one exact H10, so
-discovery and predicate selection are no longer the blocker. That run physically
-passed device/session acquisition, service and characteristic discovery, all
-three CCCDs, and both GATT start writes, but neither first sensor frame arrived.
-Rusty outlets and official physical inlets were not reached. The remaining gate
-is therefore the PMD response/data boundary, not scanner or GATT setup. An
+discovery and predicate selection are no longer the blocker. A same-device
+reference doctor then consumed ECG, ACC, and heart-rate notifications. The
+response-gated candidate passed device/session acquisition, service and
+characteristic discovery, all three CCCDs, and successful ECG settings/start
+responses, but timed out before its first ECG data callback; ACC start was not
+attempted. Rusty outlets and official physical inlets were not reached. Handler
+order, a reference-style settings delay, and a pre-stream preferred-connection
+request were separately eliminated as causes. The remaining gate is therefore
+the WinRT PMD data-notification delivery/lifetime boundary, not scanner, GATT
+setup, the physical H10, or Rusty LSL. An
 earlier zero from the published reference CLI wrapper is invalid
 because that wrapper returns immediately after starting its asynchronous
 watcher and is not device-state evidence.
 
 The typed trace proved address/device acquisition, persistent session setup,
-service/characteristic access, all three CCCDs, and both GATT start writes
-succeeded. A GATT result does not prove the PMD protocol admitted a stream, so
+service/characteristic access, all three CCCDs, and the ECG settings/start
+writes and responses succeeded. A GATT result does not prove the PMD protocol
+admitted a stream, so
 the host candidate now requests ECG settings and requires its exact successful
 control response, then requires the ECG start response and first ECG frame
 before issuing ACC start and requiring its response and first ACC frame.

@@ -42,9 +42,13 @@ the verifier's 60-second outer readiness deadline cannot be the first failure
 classification. Partial subscriptions roll back in reverse order; callback
 tokens and session cleanup are claimed once.
 
-`POLAR_STREAM_H10_SESSION_DIAGNOSTICS` emits only stage, attempt, transition,
-duration, and result class. It never emits an address, name, payload,
-manufacturer value, or stable device identity. The subsequent physical run
+`POLAR_STREAM_H10_SESSION_DIAGNOSTICS` emits stage, attempt, transition,
+duration, and result class plus aggregate notification diagnostics. The latter
+records each characteristic's Notify/Indicate/read/write property shape, the
+selected CCCD mode, handler attachment/removal counts, and per-source callback,
+decode, enqueue, fault, and queue outcomes. It never emits an address, name,
+payload, manufacturer value, payload size, or stable device identity. The
+subsequent physical run
 stopped at the first typed non-success stage and compared that ordering with the
 exact published reference behavior before the response-gated change above. The
 reference uses persistent `GattSession`, uncached service discovery,

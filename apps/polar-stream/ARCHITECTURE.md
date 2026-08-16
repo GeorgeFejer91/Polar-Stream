@@ -204,11 +204,14 @@ counters for advertisement shape, exact-name/service routes, duplicates,
 property confirmation, rejection, and overflow. Those diagnostics contain no
 address, name, payload bytes, manufacturer value, or stable device identity.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` separately emits ordered setup stage
-entry/exit records with attempt, duration, and result class only. It covers
-device acquisition, persistent session creation, PMD service/characteristics,
-CCCD subscriptions, ECG settings/start responses, ACC start responses, and
-first ECG/ACC frames without emitting the selected name/address or notification
-payload.
+entry/exit records with attempt, duration, and result class. At subscription
+and qualification checkpoints it also emits aggregate, identifier-free
+characteristic property/CCCD choices, callback entry/decode/enqueue counts,
+handler attachment/removal counts, callback faults, and bounded-queue outcomes.
+It covers device acquisition, persistent session creation, PMD
+service/characteristics, CCCD subscriptions, ECG settings/start responses, ACC
+start responses, and first ECG/ACC frames without emitting the selected
+name/address, payload bytes, payload size, or stable device identity.
 
 [WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
 read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).
@@ -243,13 +246,17 @@ published CLI `scan` wrapper returns after starting its asynchronous watcher,
 so an earlier zero-result invocation was discarded and is not device-state
 evidence. The candidate borrows only the observed predicate contract; it does
 not copy the reference implementation or treat generic advertisements as H10s.
-A later same-lease run was reference-positive and the candidate selected one
-exact H10. Device/session acquisition, services, characteristics, CCCDs, and
-both GATT start writes succeeded, but neither first sensor frame arrived. This
-proved the failure was after GATT write acceptance and motivated the
-response-gated sequence above; that repair remains host-only until another
-attended run. Physical ECG, ACC, Rusty outlet, and official-inlet acceptance
-remain open.
+A later same-device differential run proved the reference doctor consumed ECG,
+ACC, and heart-rate notifications while the candidate selected that H10 and
+passed device/session acquisition, services, characteristics, and all three
+CCCDs. Under the response-gated sequence, the candidate received successful ECG
+settings and ECG start responses, then timed out before its first ECG data
+callback; ACC start was intentionally not attempted. Handler-order, a
+reference-style settings delay, and a pre-stream preferred-connection request
+were each eliminated as causes. Identifier-free callback/property/lifetime
+counters now distinguish a missing WinRT event from buffer conversion, queue,
+or frame qualification failure on the next attended run. Physical ECG, ACC,
+Rusty outlet, and official-inlet acceptance remain open.
 
 ## Stable discovery names
 
