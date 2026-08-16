@@ -180,12 +180,15 @@ and handle closure. Other operating systems retain the cross-platform
 `btleplug` scan and connection path.
 
 Setup does not emit `Connected` until it has decoded both an ECG frame and a
-three-axis ACC frame. Every external setup operation has a deadline,
-cancellation is checked at every stage boundary, the raw-notification and
+three-axis ACC frame. Every native async setup operation has its own deadline,
+cancel/close ownership, typed result class, and a shared 45-second setup budget
+that expires before the physical verifier's outer readiness deadline.
+Cancellation is checked during each operation, the raw-notification and
 first-frame queues have fixed capacities, and overflow stops acquisition rather
-than hiding loss. Shutdown has one global deadline before synchronous handler
-removal and WinRT handle closure; `GattSession.MaintainConnection` is always
-cleared. The scanner coalesces advertisements by address for four seconds and
+than hiding loss. Shutdown gives every best-effort GATT cleanup operation a
+500 ms bound before synchronous handler removal and WinRT handle closure;
+callbacks and session closure are claimed exactly once, and
+`GattSession.MaintainConnection` is always cleared. The scanner coalesces advertisements by address for four seconds and
 admits at most 256 strong candidates. An exact `Polar H10` local-name packet is
 sufficient even when that packet's service-UUID collection is unavailable. A
 PMD/heart-rate service packet without an exact name remains provisional and is
@@ -200,6 +203,11 @@ Setting `POLAR_STREAM_H10_SCAN_DIAGNOSTICS` emits opt-in aggregate predicate
 counters for advertisement shape, exact-name/service routes, duplicates,
 property confirmation, rejection, and overflow. Those diagnostics contain no
 address, name, payload bytes, manufacturer value, or stable device identity.
+`POLAR_STREAM_H10_SESSION_DIAGNOSTICS` separately emits ordered setup stage
+entry/exit records with attempt, duration, and result class only. It covers
+device acquisition, persistent session creation, PMD service/characteristics,
+CCCD subscriptions, start commands, and first ECG/ACC frames without emitting
+the selected name/address or notification payload.
 
 [WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
 read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).
@@ -216,6 +224,17 @@ access, retry, subscription, and cleanup. No C# source is copied. Cross-platform
 tests remain host evidence only; the physical Windows gate requires advancing
 130 Hz ECG and 200 Hz three-axis ACC evidence from Polar Stream itself.
 
+The published reference opens the device and persistent session, waits 500 ms,
+optionally configures heart rate, then resolves PMD control/data and enables
+their notifications before its doctor issues stream commands. Polar Stream
+currently opens the device/session, resolves required PMD first, resolves
+optional heart-rate/battery paths, then subscribes heart-rate, PMD control, and
+PMD data before starting ECG followed by ACC. Both routes use uncached service
+discovery, `RequestAccessAsync` before characteristic lookup, bounded retries
+with cached fallback, and direct CCCD writes. This ordering difference is
+recorded rather than changed until the typed physical trace identifies the
+first non-success stage.
+
 The discovery predicate repair additionally uses a black-box, identifier-free
 observation of that exact published watcher: one physical H10 was admitted by
 an exact local-name shape without requiring advertised service UUIDs. The
@@ -223,6 +242,13 @@ published CLI `scan` wrapper returns after starting its asynchronous watcher,
 so an earlier zero-result invocation was discarded and is not device-state
 evidence. The candidate borrows only the observed predicate contract; it does
 not copy the reference implementation or treat generic advertisements as H10s.
+A later same-lease run was reference-positive and the candidate selected one
+exact H10, then failed to qualify both first sensor frames after entering WinRT
+session setup. This proves the repaired discovery boundary only; physical ECG,
+ACC, Rusty outlet, and official-inlet acceptance remain open. The published
+reference order and cache/access/session settings are retained as behavioral
+comparison evidence while the new typed trace identifies the first
+non-returning session stage before any functional ordering change.
 
 ## Stable discovery names
 

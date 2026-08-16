@@ -1,5 +1,33 @@
 # Decision log
 
+## 2026-08-16 — WinRT session setup owns typed stages before physical acceptance
+
+A same-lease differential physical run observed one exact H10 through the
+published `MesmerPrism/PolarH10` watcher and the repaired Polar Stream watcher.
+Polar Stream selected the candidate and entered WinRT session setup, but did not
+qualify both first sensor frames before its outer readiness deadline. This is
+positive evidence for discovery and exact-model selection only. It is not ECG,
+ACC, Rusty outlet, official-inlet, or complete device-acceptance evidence.
+
+The existing session order remains unchanged while the first failing stage is
+diagnosed. Address-to-device acquisition, `GattSession` creation,
+maintain-connection, uncached service discovery, per-characteristic access and
+uncached/cached resolution, CCCD subscription, ECG/ACC start commands, and each
+first frame now have separate typed observations. Every WinRT async operation
+has its own deadline and cancel/close owner inside a 45-second setup budget, so
+the verifier's 60-second outer readiness deadline cannot be the first failure
+classification. Partial subscriptions roll back in reverse order; callback
+tokens and session cleanup are claimed once.
+
+`POLAR_STREAM_H10_SESSION_DIAGNOSTICS` emits only stage, attempt, transition,
+duration, and result class. It never emits an address, name, payload,
+manufacturer value, or stable device identity. The next physical run must stop
+at the first typed non-success stage and compare that ordering with the exact
+published reference behavior before any protocol or ordering change. The
+reference uses persistent `GattSession`, uncached service discovery,
+`RequestAccessAsync`, bounded uncached/cached characteristic lookup, direct
+CCCD subscription, and explicit cleanup; no reference source is copied.
+
 ## 2026-08-16 — H10 advertisement evidence is route-independent and confirmed
 
 The Windows watcher keeps its four-second start/stop/callback lifecycle, but

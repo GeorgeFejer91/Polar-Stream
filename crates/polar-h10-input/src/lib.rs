@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_os = "windows")]
 mod windows_backend;
+#[cfg(any(target_os = "windows", test))]
+mod windows_session_lifecycle;
 
 #[cfg(not(target_os = "windows"))]
 use btleplug::api::WriteType;

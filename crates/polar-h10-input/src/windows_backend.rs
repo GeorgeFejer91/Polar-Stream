@@ -42,6 +42,10 @@ use windows::{
 use super::{
     BATTERY_LEVEL, DeviceSummary, HEART_RATE_MEASUREMENT, HEART_RATE_SERVICE, InputEvent,
     InputManager, PMD_CONTROL_POINT, PMD_DATA, PMD_SERVICE, parse_bluetooth_address,
+    windows_session_lifecycle::{
+        FirstFrameKind, FirstFrameStages, SessionCleanup, SessionStage, StageControl,
+        StageReporter, StageResultClass, SubscriptionKind, run_controlled_stage, run_sync_stage,
+    },
 };
 
 const SCAN_DURATION: Duration = Duration::from_secs(4);
@@ -50,12 +54,14 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const GATT_TIMEOUT: Duration = Duration::from_secs(5);
 const FIRST_FRAMES_TIMEOUT: Duration = Duration::from_secs(12);
+const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(45);
 const EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
-const CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
+const CLEANUP_OPERATION_TIMEOUT: Duration = Duration::from_millis(500);
 const CHARACTERISTIC_ATTEMPTS: usize = 3;
 const RAW_NOTIFICATION_CAPACITY: usize = 128;
 const FIRST_FRAME_BUFFER_CAPACITY: usize = 64;
 const SCAN_DIAGNOSTICS_ENV: &str = "POLAR_STREAM_H10_SCAN_DIAGNOSTICS";
+const SESSION_DIAGNOSTICS_ENV: &str = "POLAR_STREAM_H10_SESSION_DIAGNOSTICS";
 const PROPERTY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(6);
 const PROPERTY_CONFIRMATION_CONCURRENCY: usize = 8;
@@ -660,15 +666,45 @@ enum NotificationSource {
     HeartRate,
 }
 
+impl NotificationSource {
+    const fn subscription_kind(self) -> SubscriptionKind {
+        match self {
+            Self::PmdControl => SubscriptionKind::PmdControl,
+            Self::PmdData => SubscriptionKind::PmdData,
+            Self::HeartRate => SubscriptionKind::HeartRate,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RawNotification {
     source: NotificationSource,
     value: Vec<u8>,
 }
 
+struct NotificationSink {
+    raw_tx: mpsc::Sender<RawNotification>,
+    fault_tx: watch::Sender<Option<String>>,
+}
+
 struct Subscription {
     characteristic: GattCharacteristic,
-    token: i64,
+    source: SubscriptionKind,
+    token: Option<i64>,
+}
+
+impl Subscription {
+    fn remove_handler(&mut self) {
+        if let Some(token) = take_subscription_token(&mut self.token) {
+            let _ = self.characteristic.RemoveValueChanged(token);
+        }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.remove_handler();
+    }
 }
 
 struct WinrtSession {
@@ -683,7 +719,7 @@ struct WinrtSession {
     heart_rate: Option<GattCharacteristic>,
     battery: Option<GattCharacteristic>,
     subscriptions: Vec<Subscription>,
-    closed: bool,
+    cleanup: SessionCleanup,
 }
 
 struct OpeningSession {
@@ -740,7 +776,7 @@ impl OpeningSession {
             heart_rate: handles.heart_rate,
             battery: handles.battery,
             subscriptions: Vec::new(),
-            closed: false,
+            cleanup: SessionCleanup::default(),
         }
     }
 }
@@ -760,64 +796,246 @@ impl Drop for OpeningSession {
     }
 }
 
+struct WinrtStageControl<O, C, X> {
+    operation: O,
+    cancel: C,
+    close: X,
+}
+
+#[derive(Clone, Copy)]
+struct WinrtStageCall {
+    reporter: StageReporter,
+    stage: SessionStage,
+    attempt: usize,
+    timeout: Duration,
+}
+
+#[derive(Clone, Copy)]
+struct CharacteristicStages {
+    access: SessionStage,
+    uncached: SessionStage,
+    cached: SessionStage,
+}
+
+impl WinrtStageCall {
+    const fn new(
+        reporter: StageReporter,
+        stage: SessionStage,
+        attempt: usize,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            reporter,
+            stage,
+            attempt,
+            timeout,
+        }
+    }
+}
+
+impl<O, C, X> StageControl for WinrtStageControl<O, C, X>
+where
+    C: Fn(&O) -> windows::core::Result<()>,
+    X: Fn(&O) -> windows::core::Result<()>,
+{
+    fn cancel(&self) -> Result<(), String> {
+        (self.cancel)(&self.operation).map_err(|error| error.to_string())
+    }
+
+    fn close(&self) -> Result<(), String> {
+        (self.close)(&self.operation).map_err(|error| error.to_string())
+    }
+}
+
+async fn await_winrt_stage<T, O, C, X>(
+    call: WinrtStageCall,
+    operation: windows::core::Result<O>,
+    cancel: C,
+    close: X,
+    cancelled: &mut watch::Receiver<bool>,
+) -> Result<T, String>
+where
+    O: Clone + IntoFuture<Output = windows::core::Result<T>>,
+    C: Fn(&O) -> windows::core::Result<()>,
+    X: Fn(&O) -> windows::core::Result<()>,
+{
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(error) => {
+            call.reporter
+                .record_immediate(call.stage, call.attempt, StageResultClass::NativeError);
+            return Err(format!(
+                "Windows WinRT {} failed: {error}",
+                call.stage.name()
+            ));
+        }
+    };
+    let future_operation = operation.clone();
+    run_controlled_stage(
+        call.reporter,
+        call.stage,
+        call.attempt,
+        call.timeout,
+        cancelled,
+        async move {
+            future_operation
+                .into_future()
+                .await
+                .map_err(|error| error.to_string())
+        },
+        WinrtStageControl {
+            operation,
+            cancel,
+            close,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+async fn await_cleanup_operation<T, O, C, X>(
+    operation: windows::core::Result<O>,
+    cancel: C,
+    close: X,
+) -> Result<T, String>
+where
+    O: Clone + IntoFuture<Output = windows::core::Result<T>>,
+    C: Fn(&O) -> windows::core::Result<()>,
+    X: Fn(&O) -> windows::core::Result<()>,
+{
+    let operation = operation.map_err(|error| error.to_string())?;
+    let future_operation = operation.clone();
+    let result =
+        tokio::time::timeout(CLEANUP_OPERATION_TIMEOUT, future_operation.into_future()).await;
+    if result.is_err() {
+        let _ = cancel(&operation);
+    }
+    let _ = close(&operation);
+    result
+        .map_err(|_| "cleanup operation timed out and was cancelled".to_string())?
+        .map_err(|error| error.to_string())
+}
+
 impl WinrtSession {
-    async fn open(device_id: &str, cancelled: &watch::Receiver<bool>) -> Result<Self, String> {
-        ensure_active(cancelled, "open")?;
+    async fn open(
+        device_id: &str,
+        reporter: StageReporter,
+        cancelled: &mut watch::Receiver<bool>,
+    ) -> Result<Self, String> {
+        ensure_active(cancelled, "address-to-device")?;
         let address = parse_bluetooth_address(device_id).ok_or_else(|| {
-            "Windows WinRT open failed: the Bluetooth address was not recognized".to_string()
+            reporter.record_immediate(
+                SessionStage::AddressToDevice,
+                1,
+                StageResultClass::NativeError,
+            );
+            "Windows WinRT address-to-device failed: the Bluetooth address was not recognized"
+                .to_string()
         })?;
-        let device = await_stage(
-            "open",
-            OPEN_TIMEOUT,
-            BluetoothLEDevice::FromBluetoothAddressAsync(address)
-                .map_err(|error| stage_error("open", error))?,
+        let device = await_winrt_stage(
+            WinrtStageCall::new(reporter, SessionStage::AddressToDevice, 1, OPEN_TIMEOUT),
+            BluetoothLEDevice::FromBluetoothAddressAsync(address),
+            |operation| operation.Cancel(),
+            |operation| operation.Close(),
+            cancelled,
         )
         .await?;
-        ensure_active(cancelled, "open")?;
+        ensure_active(cancelled, "address-to-device")?;
         let bluetooth_device_id = device
             .BluetoothDeviceId()
-            .map_err(|error| stage_error("session", error))?;
-        let gatt_session = await_stage(
-            "session",
-            OPEN_TIMEOUT,
-            GattSession::FromDeviceIdAsync(&bluetooth_device_id)
-                .map_err(|error| stage_error("session", error))?,
+            .map_err(|error| stage_error(SessionStage::GattSessionCreate.name(), error))?;
+        let gatt_session = await_winrt_stage(
+            WinrtStageCall::new(reporter, SessionStage::GattSessionCreate, 1, OPEN_TIMEOUT),
+            GattSession::FromDeviceIdAsync(&bluetooth_device_id),
+            |operation| operation.Cancel(),
+            |operation| operation.Close(),
+            cancelled,
         )
         .await?;
-        ensure_active(cancelled, "session")?;
-        gatt_session
-            .SetMaintainConnection(true)
-            .map_err(|error| stage_error("session", error))?;
+        ensure_active(cancelled, "gatt-session-create")?;
+        run_sync_stage(reporter, SessionStage::MaintainConnection, || {
+            gatt_session
+                .SetMaintainConnection(true)
+                .map_err(|error| error.to_string())
+        })
+        .map_err(|error| error.to_string())?;
 
-        let preferred_request = BluetoothLEPreferredConnectionParameters::ThroughputOptimized()
-            .ok()
-            .and_then(|parameters| {
-                device
-                    .RequestPreferredConnectionParameters(&parameters)
-                    .ok()
-            });
+        let preferred_request =
+            run_sync_stage(reporter, SessionStage::PreferredConnectionRequest, || {
+                Ok(
+                    BluetoothLEPreferredConnectionParameters::ThroughputOptimized()
+                        .ok()
+                        .and_then(|parameters| {
+                            device
+                                .RequestPreferredConnectionParameters(&parameters)
+                                .ok()
+                        }),
+                )
+            })
+            .map_err(|error| error.to_string())?;
 
         let opening = OpeningSession::new(device, gatt_session, preferred_request);
-        let pmd_service =
-            required_service(opening.device(), PMD_SERVICE, "PMD service", cancelled).await?;
+        let pmd_service = required_service(
+            opening.device(),
+            PMD_SERVICE,
+            "PMD service",
+            SessionStage::PmdServiceDiscovery,
+            reporter,
+            cancelled,
+        )
+        .await?;
         ensure_active(cancelled, "PMD service discovery")?;
         let control = required_characteristic(
             &pmd_service,
             PMD_CONTROL_POINT,
             "PMD control point",
+            CharacteristicStages {
+                access: SessionStage::PmdControlAccess,
+                uncached: SessionStage::PmdControlDiscoveryUncached,
+                cached: SessionStage::PmdControlDiscoveryCached,
+            },
+            reporter,
             cancelled,
         )
         .await?;
         ensure_active(cancelled, "PMD control discovery")?;
-        let pmd_data =
-            required_characteristic(&pmd_service, PMD_DATA, "PMD data", cancelled).await?;
+        let pmd_data = required_characteristic(
+            &pmd_service,
+            PMD_DATA,
+            "PMD data",
+            CharacteristicStages {
+                access: SessionStage::PmdDataAccess,
+                uncached: SessionStage::PmdDataDiscoveryUncached,
+                cached: SessionStage::PmdDataDiscoveryCached,
+            },
+            reporter,
+            cancelled,
+        )
+        .await?;
         ensure_active(cancelled, "PMD data discovery")?;
 
-        let heart_rate_service =
-            optional_service(opening.device(), HEART_RATE_SERVICE, cancelled).await;
+        let heart_rate_service = optional_service(
+            opening.device(),
+            HEART_RATE_SERVICE,
+            SessionStage::HeartRateServiceDiscovery,
+            reporter,
+            cancelled,
+        )
+        .await;
         ensure_active(cancelled, "heart-rate service discovery")?;
         let heart_rate = if let Some(service) = &heart_rate_service {
-            optional_characteristic(service, HEART_RATE_MEASUREMENT, cancelled).await
+            optional_characteristic(
+                service,
+                HEART_RATE_MEASUREMENT,
+                CharacteristicStages {
+                    access: SessionStage::HeartRateAccess,
+                    uncached: SessionStage::HeartRateDiscoveryUncached,
+                    cached: SessionStage::HeartRateDiscoveryCached,
+                },
+                reporter,
+                cancelled,
+            )
+            .await
         } else {
             None
         };
@@ -825,12 +1043,25 @@ impl WinrtSession {
         let battery_service = optional_service(
             opening.device(),
             uuid::Uuid::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb),
+            SessionStage::BatteryServiceDiscovery,
+            reporter,
             cancelled,
         )
         .await;
         ensure_active(cancelled, "battery service discovery")?;
         let battery = if let Some(service) = &battery_service {
-            optional_characteristic(service, BATTERY_LEVEL, cancelled).await
+            optional_characteristic(
+                service,
+                BATTERY_LEVEL,
+                CharacteristicStages {
+                    access: SessionStage::BatteryAccess,
+                    uncached: SessionStage::BatteryDiscoveryUncached,
+                    cached: SessionStage::BatteryDiscoveryCached,
+                },
+                reporter,
+                cancelled,
+            )
+            .await
         } else {
             None
         };
@@ -884,9 +1115,12 @@ impl WinrtSession {
         &mut self,
         characteristic: &GattCharacteristic,
         source: NotificationSource,
-        raw_tx: mpsc::Sender<RawNotification>,
-        fault_tx: watch::Sender<Option<String>>,
+        stage: SessionStage,
+        reporter: StageReporter,
+        cancelled: &mut watch::Receiver<bool>,
+        sink: NotificationSink,
     ) -> Result<(), String> {
+        let NotificationSink { raw_tx, fault_tx } = sink;
         // The WinRT event source retains the delegate after registration. Keep
         // the non-Send delegate itself inside this synchronous scope so the
         // surrounding Tauri command future remains Send across later awaits.
@@ -928,20 +1162,22 @@ impl WinrtSession {
         } else {
             GattClientCharacteristicConfigurationDescriptorValue::Notify
         };
-        let status = await_stage(
-            "notification subscription",
-            GATT_TIMEOUT,
-            characteristic
-                .WriteClientCharacteristicConfigurationDescriptorAsync(cccd)
-                .map_err(|error| stage_error("notification subscription", error))?,
+        let status = await_winrt_stage(
+            WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT),
+            characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(cccd),
+            |operation| operation.Cancel(),
+            |operation| operation.Close(),
+            cancelled,
         )
         .await;
         match status {
             Ok(GattCommunicationStatus::Success) => {
                 self.subscriptions.push(Subscription {
                     characteristic: characteristic.clone(),
-                    token,
+                    source: source.subscription_kind(),
+                    token: Some(token),
                 });
+                self.cleanup.record_subscription(source.subscription_kind());
                 Ok(())
             }
             Ok(status) => {
@@ -957,36 +1193,51 @@ impl WinrtSession {
         }
     }
 
-    async fn write_control(&self, bytes: &[u8], stage: &str) -> Result<(), String> {
-        let operation = {
-            let writer = DataWriter::new().map_err(|error| stage_error(stage, error))?;
-            writer
-                .WriteBytes(bytes)
-                .map_err(|error| stage_error(stage, error))?;
-            let buffer = writer
-                .DetachBuffer()
-                .map_err(|error| stage_error(stage, error))?;
-            self.control
-                .WriteValueWithResultAsync(&buffer)
-                .map_err(|error| stage_error(stage, error))?
-        };
-        let result = await_stage(stage, GATT_TIMEOUT, operation).await?;
-        let status = result.Status().map_err(|error| stage_error(stage, error))?;
+    async fn write_control(
+        &self,
+        bytes: &[u8],
+        stage: SessionStage,
+        reporter: StageReporter,
+        cancelled: &mut watch::Receiver<bool>,
+    ) -> Result<(), String> {
+        let operation = (|| {
+            let writer = DataWriter::new()?;
+            writer.WriteBytes(bytes)?;
+            let buffer = writer.DetachBuffer()?;
+            self.control.WriteValueWithResultAsync(&buffer)
+        })();
+        let result = await_winrt_stage(
+            WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT),
+            operation,
+            |operation| operation.Cancel(),
+            |operation| operation.Close(),
+            cancelled,
+        )
+        .await?;
+        let status = result
+            .Status()
+            .map_err(|error| stage_error(stage.name(), error))?;
         if status != GattCommunicationStatus::Success {
-            return Err(format!("Windows WinRT {stage} failed: {status:?}"));
+            return Err(format!("Windows WinRT {} failed: {status:?}", stage.name()));
         }
         Ok(())
     }
 
-    async fn read_battery(&self) -> Option<u8> {
+    async fn read_battery(
+        &self,
+        reporter: StageReporter,
+        cancelled: &mut watch::Receiver<bool>,
+    ) -> Option<u8> {
         let characteristic = self.battery.as_ref()?;
-        let operation = characteristic
-            .ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)
-            .ok()?;
-        let result = tokio::time::timeout(GATT_TIMEOUT, operation.into_future())
-            .await
-            .ok()?
-            .ok()?;
+        let result = await_winrt_stage(
+            WinrtStageCall::new(reporter, SessionStage::BatteryRead, 1, GATT_TIMEOUT),
+            characteristic.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached),
+            |operation| operation.Cancel(),
+            |operation| operation.Close(),
+            cancelled,
+        )
+        .await
+        .ok()?;
         if result.Status().ok()? != GattCommunicationStatus::Success {
             return None;
         }
@@ -994,45 +1245,37 @@ impl WinrtSession {
         buffer_to_vec(&value).ok()?.first().copied()
     }
 
-    async fn shutdown(&mut self) {
-        if self.closed {
-            return;
-        }
-        self.closed = true;
-
-        // Teardown has one global deadline, rather than a fresh deadline for
-        // every best-effort GATT operation. Synchronous handler removal and
-        // handle closure still run after that deadline.
-        let _ = tokio::time::timeout(CLEANUP_TIMEOUT, async {
-            let _ = self
-                .write_control(&stop_command(ECG_MEASUREMENT), "stop ECG")
-                .await;
-            let _ = self
-                .write_control(&stop_command(ACC_MEASUREMENT), "stop accelerometer")
-                .await;
-
-            while let Some(subscription) = self.subscriptions.pop() {
-                let _ = subscription
-                    .characteristic
-                    .RemoveValueChanged(subscription.token);
-                if let Ok(operation) = subscription
-                    .characteristic
-                    .WriteClientCharacteristicConfigurationDescriptorAsync(
-                        GattClientCharacteristicConfigurationDescriptorValue::None,
-                    )
-                {
-                    let _ = operation.await;
-                }
-            }
-        })
+    async fn write_control_cleanup(&self, bytes: &[u8]) {
+        let operation = (|| {
+            let writer = DataWriter::new()?;
+            writer.WriteBytes(bytes)?;
+            let buffer = writer.DetachBuffer()?;
+            self.control.WriteValueWithResultAsync(&buffer)
+        })();
+        let _ = await_cleanup_operation(
+            operation,
+            |operation| operation.Cancel(),
+            |operation| operation.Close(),
+        )
         .await;
+    }
 
-        for subscription in self.subscriptions.drain(..).rev() {
-            let _ = subscription
-                .characteristic
-                .RemoveValueChanged(subscription.token);
-        }
+    async fn disable_subscription(subscription: &mut Subscription) {
+        subscription.remove_handler();
+        let operation = subscription
+            .characteristic
+            .WriteClientCharacteristicConfigurationDescriptorAsync(
+                GattClientCharacteristicConfigurationDescriptorValue::None,
+            );
+        let _ = await_cleanup_operation(
+            operation,
+            |operation| operation.Cancel(),
+            |operation| operation.Close(),
+        )
+        .await;
+    }
 
+    fn close_native_handles(&mut self) {
         let _ = self.gatt_session.SetMaintainConnection(false);
         if let Some(request) = self.preferred_request.take() {
             let _ = request.Close();
@@ -1047,31 +1290,48 @@ impl WinrtSession {
         let _ = self.gatt_session.Close();
         let _ = self.device.Close();
     }
+
+    async fn shutdown(&mut self) {
+        let Some(plan) = self.cleanup.begin() else {
+            return;
+        };
+        debug_assert_eq!(
+            plan.subscriptions,
+            self.subscriptions
+                .iter()
+                .rev()
+                .map(|subscription| subscription.source)
+                .collect::<Vec<_>>()
+        );
+        debug_assert!(plan.close_session);
+
+        self.write_control_cleanup(&stop_command(ECG_MEASUREMENT))
+            .await;
+        self.write_control_cleanup(&stop_command(ACC_MEASUREMENT))
+            .await;
+        while let Some(mut subscription) = self.subscriptions.pop() {
+            Self::disable_subscription(&mut subscription).await;
+        }
+        self.close_native_handles();
+    }
 }
 
 impl Drop for WinrtSession {
     fn drop(&mut self) {
-        if self.closed {
+        let Some(plan) = self.cleanup.begin() else {
             return;
-        }
-        for subscription in self.subscriptions.drain(..).rev() {
-            let _ = subscription
-                .characteristic
-                .RemoveValueChanged(subscription.token);
-        }
-        let _ = self.gatt_session.SetMaintainConnection(false);
-        if let Some(request) = self.preferred_request.take() {
-            let _ = request.Close();
-        }
-        if let Some(service) = &self.battery_service {
-            let _ = service.Close();
-        }
-        if let Some(service) = &self.heart_rate_service {
-            let _ = service.Close();
-        }
-        let _ = self.pmd_service.Close();
-        let _ = self.gatt_session.Close();
-        let _ = self.device.Close();
+        };
+        debug_assert_eq!(
+            plan.subscriptions,
+            self.subscriptions
+                .iter()
+                .rev()
+                .map(|subscription| subscription.source)
+                .collect::<Vec<_>>()
+        );
+        debug_assert!(plan.close_session);
+        self.subscriptions.clear();
+        self.close_native_handles();
     }
 }
 
@@ -1081,9 +1341,13 @@ pub(super) async fn prepare(
     event_tx: mpsc::Sender<InputEvent>,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<PreparedConnection, String> {
+    let reporter = StageReporter::new(
+        std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some(),
+        Some(tokio::time::Instant::now() + SESSION_SETUP_TIMEOUT),
+    );
     let (raw_tx, mut raw_rx) = mpsc::channel(RAW_NOTIFICATION_CAPACITY);
     let (fault_tx, mut fault_rx) = watch::channel(None::<String>);
-    let mut session = WinrtSession::open(device_id, cancelled).await?;
+    let mut session = WinrtSession::open(device_id, reporter, cancelled).await?;
 
     if let Err(error) = async {
         ensure_active(cancelled, "status publication")?;
@@ -1101,8 +1365,13 @@ pub(super) async fn prepare(
                 .subscribe(
                     &heart_rate,
                     NotificationSource::HeartRate,
-                    raw_tx.clone(),
-                    fault_tx.clone(),
+                    SessionStage::HeartRateNotification,
+                    reporter,
+                    cancelled,
+                    NotificationSink {
+                        raw_tx: raw_tx.clone(),
+                        fault_tx: fault_tx.clone(),
+                    },
                 )
                 .await?;
         }
@@ -1111,8 +1380,13 @@ pub(super) async fn prepare(
             .subscribe(
                 &session.control.clone(),
                 NotificationSource::PmdControl,
-                raw_tx.clone(),
-                fault_tx.clone(),
+                SessionStage::PmdControlNotification,
+                reporter,
+                cancelled,
+                NotificationSink {
+                    raw_tx: raw_tx.clone(),
+                    fault_tx: fault_tx.clone(),
+                },
             )
             .await?;
         ensure_active(cancelled, "PMD control subscription")?;
@@ -1122,8 +1396,10 @@ pub(super) async fn prepare(
             .subscribe(
                 &session.pmd_data.clone(),
                 NotificationSource::PmdData,
-                raw_tx,
-                fault_tx,
+                SessionStage::PmdDataNotification,
+                reporter,
+                cancelled,
+                NotificationSink { raw_tx, fault_tx },
             )
             .await?;
         ensure_active(cancelled, "PMD data subscription")?;
@@ -1137,11 +1413,21 @@ pub(super) async fn prepare(
         )
         .await?;
         session
-            .write_control(&start_ecg_command(), "start ECG")
+            .write_control(
+                &start_ecg_command(),
+                SessionStage::StartEcg,
+                reporter,
+                cancelled,
+            )
             .await?;
         ensure_active(cancelled, "start ECG")?;
         session
-            .write_control(&start_accelerometer_command(), "start accelerometer")
+            .write_control(
+                &start_accelerometer_command(),
+                SessionStage::StartAcc,
+                reporter,
+                cancelled,
+            )
             .await?;
         ensure_active(cancelled, "start accelerometer")?;
         Ok::<(), String>(())
@@ -1153,27 +1439,49 @@ pub(super) async fn prepare(
     }
 
     let mut gate = FirstFrameGate::default();
-    let first_frames = tokio::time::timeout(FIRST_FRAMES_TIMEOUT, async {
+    let mut frame_stages = FirstFrameStages::new(reporter);
+    let first_frames = tokio::time::timeout(reporter.limit(FIRST_FRAMES_TIMEOUT), async {
         loop {
             tokio::select! {
                 changed = cancelled.changed() => {
                     if changed.is_err() || *cancelled.borrow() {
+                        frame_stages.finish_pending(StageResultClass::Cancelled);
                         return Err("Windows WinRT setup was cancelled during first-frame qualification".to_string());
                     }
                 }
                 changed = fault_rx.changed() => {
                     if changed.is_err() {
+                        frame_stages.finish_pending(StageResultClass::NativeError);
                         return Err("Windows WinRT notification fault channel closed".to_string());
                     }
                     if let Some(error) = fault_rx.borrow().clone() {
+                        frame_stages.finish_pending(StageResultClass::NativeError);
                         return Err(error);
                     }
                 }
                 raw = raw_rx.recv() => {
-                    let raw = raw.ok_or_else(|| "Windows WinRT notifications ended before first ECG/ACC frames".to_string())?;
-                    if let Some(event) = decode_notification(raw)
-                        && gate.push(event)? {
-                        return Ok(());
+                    let Some(raw) = raw else {
+                        frame_stages.finish_pending(StageResultClass::NativeError);
+                        return Err("Windows WinRT notifications ended before first ECG/ACC frames".to_string());
+                    };
+                    if let Some(event) = decode_notification(raw) {
+                        match &event {
+                            InputEvent::Ecg { microvolts, .. } if !microvolts.is_empty() => {
+                                frame_stages.observe(FirstFrameKind::Ecg);
+                            }
+                            InputEvent::Accelerometer { samples, .. } if !samples.is_empty() => {
+                                frame_stages.observe(FirstFrameKind::Acc);
+                            }
+                            _ => {}
+                        }
+                        match gate.push(event) {
+                            Ok(true) => return Ok(()),
+                            Ok(false) => {}
+                            Err(error) => {
+                                frame_stages.finish_pending(StageResultClass::NativeError);
+                                return Err(error);
+                            }
+                        }
                     }
                 }
             }
@@ -1188,6 +1496,7 @@ pub(super) async fn prepare(
             return Err(error);
         }
         Err(_) => {
+            frame_stages.finish_pending(StageResultClass::Timeout);
             session.shutdown().await;
             return Err(
                 "Windows WinRT first-frame qualification timed out before both ECG and ACC arrived"
@@ -1200,7 +1509,7 @@ pub(super) async fn prepare(
         session.shutdown().await;
         return Err(error);
     }
-    let battery_percent = session.read_battery().await;
+    let battery_percent = session.read_battery(reporter, cancelled).await;
     if let Err(error) = ensure_active(cancelled, "battery read") {
         session.shutdown().await;
         return Err(error);
@@ -1303,9 +1612,11 @@ async fn required_service(
     device: &BluetoothLEDevice,
     uuid: uuid::Uuid,
     label: &str,
-    cancelled: &watch::Receiver<bool>,
+    stage: SessionStage,
+    reporter: StageReporter,
+    cancelled: &mut watch::Receiver<bool>,
 ) -> Result<GattDeviceService, String> {
-    service(device, uuid, cancelled)
+    service(device, uuid, stage, reporter, cancelled)
         .await?
         .ok_or_else(|| format!("Windows WinRT discovery failed: {label} was not exposed"))
 }
@@ -1313,35 +1624,40 @@ async fn required_service(
 async fn optional_service(
     device: &BluetoothLEDevice,
     uuid: uuid::Uuid,
-    cancelled: &watch::Receiver<bool>,
+    stage: SessionStage,
+    reporter: StageReporter,
+    cancelled: &mut watch::Receiver<bool>,
 ) -> Option<GattDeviceService> {
-    service(device, uuid, cancelled).await.ok().flatten()
+    service(device, uuid, stage, reporter, cancelled)
+        .await
+        .ok()
+        .flatten()
 }
 
 async fn service(
     device: &BluetoothLEDevice,
     uuid: uuid::Uuid,
-    cancelled: &watch::Receiver<bool>,
+    stage: SessionStage,
+    reporter: StageReporter,
+    cancelled: &mut watch::Receiver<bool>,
 ) -> Result<Option<GattDeviceService>, String> {
     ensure_active(cancelled, "service discovery")?;
-    let result = await_stage(
-        "service discovery",
-        DISCOVERY_TIMEOUT,
-        device
-            .GetGattServicesForUuidWithCacheModeAsync(
-                GUID::from_u128(uuid.as_u128()),
-                BluetoothCacheMode::Uncached,
-            )
-            .map_err(|error| stage_error("service discovery", error))?,
+    let result = await_winrt_stage(
+        WinrtStageCall::new(reporter, stage, 1, DISCOVERY_TIMEOUT),
+        device.GetGattServicesForUuidWithCacheModeAsync(
+            GUID::from_u128(uuid.as_u128()),
+            BluetoothCacheMode::Uncached,
+        ),
+        |operation| operation.Cancel(),
+        |operation| operation.Close(),
+        cancelled,
     )
     .await?;
     let status = result
         .Status()
-        .map_err(|error| stage_error("service discovery", error))?;
+        .map_err(|error| stage_error(stage.name(), error))?;
     if status != GattCommunicationStatus::Success {
-        return Err(format!(
-            "Windows WinRT service discovery failed: {status:?}"
-        ));
+        return Err(format!("Windows WinRT {} failed: {status:?}", stage.name()));
     }
     let services = result
         .Services()
@@ -1363,9 +1679,11 @@ async fn required_characteristic(
     service: &GattDeviceService,
     uuid: uuid::Uuid,
     label: &str,
-    cancelled: &watch::Receiver<bool>,
+    stages: CharacteristicStages,
+    reporter: StageReporter,
+    cancelled: &mut watch::Receiver<bool>,
 ) -> Result<GattCharacteristic, String> {
-    characteristic(service, uuid, cancelled)
+    characteristic(service, uuid, stages, reporter, cancelled)
         .await?
         .ok_or_else(|| format!("Windows WinRT discovery failed: {label} was not exposed"))
 }
@@ -1373,9 +1691,11 @@ async fn required_characteristic(
 async fn optional_characteristic(
     service: &GattDeviceService,
     uuid: uuid::Uuid,
-    cancelled: &watch::Receiver<bool>,
+    stages: CharacteristicStages,
+    reporter: StageReporter,
+    cancelled: &mut watch::Receiver<bool>,
 ) -> Option<GattCharacteristic> {
-    characteristic(service, uuid, cancelled)
+    characteristic(service, uuid, stages, reporter, cancelled)
         .await
         .ok()
         .flatten()
@@ -1384,35 +1704,40 @@ async fn optional_characteristic(
 async fn characteristic(
     service: &GattDeviceService,
     uuid: uuid::Uuid,
-    cancelled: &watch::Receiver<bool>,
+    stages: CharacteristicStages,
+    reporter: StageReporter,
+    cancelled: &mut watch::Receiver<bool>,
 ) -> Result<Option<GattCharacteristic>, String> {
     let guid = GUID::from_u128(uuid.as_u128());
     let mut last_error = "characteristic did not become reachable".to_string();
 
     for attempt in 0..CHARACTERISTIC_ATTEMPTS {
         ensure_active(cancelled, "characteristic discovery")?;
-        let access = await_stage(
-            "service access",
-            GATT_TIMEOUT,
-            service
-                .RequestAccessAsync()
-                .map_err(|error| stage_error("service access", error))?,
+        let access = await_winrt_stage(
+            WinrtStageCall::new(reporter, stages.access, attempt + 1, GATT_TIMEOUT),
+            service.RequestAccessAsync(),
+            |operation| operation.Cancel(),
+            |operation| operation.Close(),
+            cancelled,
         )
         .await?;
         if access != DeviceAccessStatus::Allowed {
             last_error = format!("service access returned {access:?}");
         } else {
-            let result = await_stage(
-                "characteristic discovery",
-                GATT_TIMEOUT,
-                service
-                    .GetCharacteristicsForUuidWithCacheModeAsync(guid, BluetoothCacheMode::Uncached)
-                    .map_err(|error| stage_error("characteristic discovery", error))?,
+            let result = await_winrt_stage(
+                WinrtStageCall::new(reporter, stages.uncached, attempt + 1, GATT_TIMEOUT),
+                service.GetCharacteristicsForUuidWithCacheModeAsync(
+                    guid,
+                    BluetoothCacheMode::Uncached,
+                ),
+                |operation| operation.Cancel(),
+                |operation| operation.Close(),
+                cancelled,
             )
             .await?;
             let status = result
                 .Status()
-                .map_err(|error| stage_error("characteristic discovery", error))?;
+                .map_err(|error| stage_error(stages.uncached.name(), error))?;
             if status == GattCommunicationStatus::Success {
                 let discovered =
                     {
@@ -1434,7 +1759,9 @@ async fn characteristic(
                 if discovered.is_some() {
                     return Ok(discovered);
                 }
-                if let Some(cached) = cached_characteristic(service, guid, cancelled).await? {
+                if let Some(cached) =
+                    cached_characteristic(service, guid, stages.cached, reporter, cancelled).await?
+                {
                     return Ok(Some(cached));
                 }
                 return Ok(None);
@@ -1461,15 +1788,17 @@ async fn characteristic(
 async fn cached_characteristic(
     service: &GattDeviceService,
     guid: GUID,
-    cancelled: &watch::Receiver<bool>,
+    stage: SessionStage,
+    reporter: StageReporter,
+    cancelled: &mut watch::Receiver<bool>,
 ) -> Result<Option<GattCharacteristic>, String> {
     ensure_active(cancelled, "cached characteristic discovery")?;
-    let result = await_stage(
-        "cached characteristic discovery",
-        GATT_TIMEOUT,
-        service
-            .GetCharacteristicsForUuidWithCacheModeAsync(guid, BluetoothCacheMode::Cached)
-            .map_err(|error| stage_error("cached characteristic discovery", error))?,
+    let result = await_winrt_stage(
+        WinrtStageCall::new(reporter, stage, 1, GATT_TIMEOUT),
+        service.GetCharacteristicsForUuidWithCacheModeAsync(guid, BluetoothCacheMode::Cached),
+        |operation| operation.Cancel(),
+        |operation| operation.Close(),
+        cancelled,
     )
     .await?;
     if result
@@ -1500,6 +1829,10 @@ fn retryable_gatt_status(status: GattCommunicationStatus) -> bool {
         status,
         GattCommunicationStatus::AccessDenied | GattCommunicationStatus::Unreachable
     )
+}
+
+fn take_subscription_token(token: &mut Option<i64>) -> Option<i64> {
+    token.take()
 }
 
 fn decode_notification(raw: RawNotification) -> Option<InputEvent> {
@@ -1615,17 +1948,6 @@ fn ensure_active(cancelled: &watch::Receiver<bool>, stage: &str) -> Result<(), S
         Err(format!("Windows WinRT setup was cancelled during {stage}"))
     } else {
         Ok(())
-    }
-}
-
-async fn await_stage<T, O>(stage: &str, duration: Duration, operation: O) -> Result<T, String>
-where
-    O: IntoFuture<Output = windows::core::Result<T>>,
-{
-    match tokio::time::timeout(duration, operation.into_future()).await {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(stage_error(stage, error)),
-        Err(_) => Err(format!("Windows WinRT {stage} timed out")),
     }
 }
 
@@ -1809,6 +2131,13 @@ mod tests {
             watcher_status_name(BluetoothLEAdvertisementWatcherStatus::Aborted),
             "aborted"
         );
+    }
+
+    #[test]
+    fn notification_callback_token_is_removed_exactly_once() {
+        let mut token = Some(17);
+        assert_eq!(take_subscription_token(&mut token), Some(17));
+        assert_eq!(take_subscription_token(&mut token), None);
     }
 
     fn ecg_event() -> InputEvent {

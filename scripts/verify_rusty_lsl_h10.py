@@ -20,6 +20,8 @@ RUSTY_LSL_REVISION = "74f7d0ea2cce9b3d049ea24602527a5f52360554"
 BASE = "polar_stream_h10_acceptance"
 SCAN_SELECTION_TIMEOUT_SECONDS = 20.0
 POST_SELECTION_SOURCE_READY_TIMEOUT_SECONDS = 60.0
+SCAN_DIAGNOSTICS_ENV = "POLAR_STREAM_H10_SCAN_DIAGNOSTICS"
+SESSION_DIAGNOSTICS_ENV = "POLAR_STREAM_H10_SESSION_DIAGNOSTICS"
 EXPECTED = {
     "ecg": (f"{BASE}_rawECG", "ECG", 1, 130.0, f"polar-h10-{BASE}_rawECG"),
     "acc": (
@@ -30,6 +32,13 @@ EXPECTED = {
         f"polar-h10-{BASE}_rawACC",
     ),
 }
+
+
+def physical_source_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment[SCAN_DIAGNOSTICS_ENV] = "1"
+    environment[SESSION_DIAGNOSTICS_ENV] = "1"
+    return environment
 
 
 def descriptor(info):
@@ -286,6 +295,7 @@ def main() -> int:
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        env=physical_source_environment(),
     )
     lines: list[str] = []
     events: queue.Queue[str] = queue.Queue()

@@ -81,7 +81,10 @@ advancing ECG/ACC source frames. It runs in a daemon worker so a native liblsl
 call cannot defeat the outer deadline; selection has a separate 20-second
 fail-fast bound, post-selection source readiness has a 60-second bound, and
 source/consumer collection retains its two-minute bound. The worker must close
-before the source is stopped.
+before the source is stopped. Native session setup has its own 45-second total
+budget, so a typed native stage exits before the outer source-readiness bound.
+`POLAR_STREAM_H10_SESSION_DIAGNOSTICS` is enabled by this verifier and records
+only stage name, attempt, entry/exit, duration, and result class.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
@@ -96,14 +99,34 @@ watcher could observe one H10 while the candidate received advertisements but
 admitted none. Source diagnosis found that the candidate evaluated service-UUID
 enumeration before the exact local-name route used by the reference. Those
 predicates are now independent, and unnamed service candidates require bounded
-direct WinRT exact-model confirmation; this repair remains host-only until the
-next explicitly authorized physical run. An earlier zero from the published
-reference CLI wrapper is invalid because that wrapper returns immediately after
-starting its asynchronous watcher and is not device-state evidence.
-That implementation is still host evidence until this exact Polar Stream path
-passes the physical runner. No identifiers or physiological recordings are
+direct WinRT exact-model confirmation. A subsequent same-lease physical run
+was reference-positive and the repaired candidate selected one exact H10, so
+discovery and predicate selection are no longer the blocker. That run then
+stopped after entering WinRT session setup without producing both first sensor
+frames; Rusty outlets and official physical inlets were not reached. The
+remaining gate is therefore the ordered WinRT session boundary, not scanner
+admission. An earlier zero from the published reference CLI wrapper is invalid
+because that wrapper returns immediately after starting its asynchronous
+watcher and is not device-state evidence.
+
+The session verifier now distinguishes address-to-device acquisition,
+`GattSession` creation and maintain-connection, uncached PMD service discovery,
+per-characteristic access plus uncached/cached resolution, each CCCD
+subscription, each PMD start command, and the first ECG and ACC frames. Each
+WinRT async operation owns a bounded cancel/close path; partial setup rolls back
+registered callbacks in reverse order and closes the session once. A future
+attended run must identify the first typed non-success stage before any
+functional ordering change. No identifiers or physiological recordings are
 committed, and neither the reference-doctor runs nor compilation may be
-substituted for the pending acceptance.
+substituted for the pending end-to-end acceptance.
+
+The comparison is explicit: the published reference inserts a 500 ms delay and
+configures optional heart rate before required PMD, while Polar Stream resolves
+required PMD before optional heart-rate/battery work and then subscribes
+heart-rate, PMD control, and PMD data before issuing ECG then ACC start. Their
+persistent-session, uncached-service, service-access, retry/cached-fallback, and
+CCCD settings otherwise align. The source-only diagnostic slice preserves that
+existing Polar Stream order.
 
 The browser application is outside this transport. Its same-origin
 `BroadcastChannel`, event API, and CSV recorder are not LSL and remain unable

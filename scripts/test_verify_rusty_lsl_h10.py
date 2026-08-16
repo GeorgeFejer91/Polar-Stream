@@ -7,7 +7,13 @@ import queue
 import threading
 import unittest
 
-from verify_rusty_lsl_h10 import EXPECTED, collect_official_inlets
+from verify_rusty_lsl_h10 import (
+    EXPECTED,
+    SCAN_DIAGNOSTICS_ENV,
+    SESSION_DIAGNOSTICS_ENV,
+    collect_official_inlets,
+    physical_source_environment,
+)
 
 
 class FakeInfo:
@@ -81,6 +87,11 @@ class FakePylsl:
 
 
 class OfficialInletWorkerTests(unittest.TestCase):
+    def test_physical_source_enables_identifier_free_stage_diagnostics(self):
+        environment = physical_source_environment()
+        self.assertEqual(environment[SCAN_DIAGNOSTICS_ENV], "1")
+        self.assertEqual(environment[SESSION_DIAGNOSTICS_ENV], "1")
+
     def test_collects_exact_shapes_and_waits_for_explicit_close(self):
         pylsl = FakePylsl()
         results = queue.Queue()
