@@ -1144,38 +1144,6 @@ impl WinrtSession {
         sink: NotificationSink,
     ) -> Result<(), String> {
         let NotificationSink { raw_tx, fault_tx } = sink;
-        // The WinRT event source retains the delegate after registration. Keep
-        // the non-Send delegate itself inside this synchronous scope so the
-        // surrounding Tauri command future remains Send across later awaits.
-        let token = {
-            let handler = TypedEventHandler::<GattCharacteristic, GattValueChangedEventArgs>::new(
-                move |_, args| {
-                    let result = (|| {
-                        let args = args.ok()?;
-                        let value = args.CharacteristicValue()?;
-                        let bytes = buffer_to_vec(&value)?;
-                        enqueue_notification(
-                            &raw_tx,
-                            &fault_tx,
-                            RawNotification {
-                                source,
-                                value: bytes,
-                            },
-                        );
-                        Ok::<(), windows::core::Error>(())
-                    })();
-                    if let Err(error) = result {
-                        fault_tx.send_replace(Some(format!(
-                            "Windows WinRT notification callback failed: {error}"
-                        )));
-                    }
-                    Ok(())
-                },
-            );
-            characteristic
-                .ValueChanged(&handler)
-                .map_err(|error| stage_error("notification handler", error))?
-        };
         let cccd = if characteristic
             .CharacteristicProperties()
             .map_err(|error| stage_error("notification properties", error))?
@@ -1195,6 +1163,56 @@ impl WinrtSession {
         .await;
         match status {
             Ok(GattCommunicationStatus::Success) => {
+                // Match the proven Windows reference lifecycle: commit the
+                // CCCD first, then attach the WinRT event handler before any
+                // PMD command can produce data. Registering the handler first
+                // yielded accepted PMD start responses but no data callbacks
+                // on a physical H10. The non-Send delegate remains confined to
+                // this synchronous scope so later awaits stay Send.
+                let token_result = {
+                    let handler =
+                        TypedEventHandler::<GattCharacteristic, GattValueChangedEventArgs>::new(
+                            move |_, args| {
+                                let result = (|| {
+                                    let args = args.ok()?;
+                                    let value = args.CharacteristicValue()?;
+                                    let bytes = buffer_to_vec(&value)?;
+                                    enqueue_notification(
+                                        &raw_tx,
+                                        &fault_tx,
+                                        RawNotification {
+                                            source,
+                                            value: bytes,
+                                        },
+                                    );
+                                    Ok::<(), windows::core::Error>(())
+                                })();
+                                if let Err(error) = result {
+                                    fault_tx.send_replace(Some(format!(
+                                        "Windows WinRT notification callback failed: {error}"
+                                    )));
+                                }
+                                Ok(())
+                            },
+                        );
+                    characteristic.ValueChanged(&handler)
+                };
+                let token = match token_result {
+                    Ok(token) => token,
+                    Err(error) => {
+                        let rollback = characteristic
+                            .WriteClientCharacteristicConfigurationDescriptorAsync(
+                                GattClientCharacteristicConfigurationDescriptorValue::None,
+                            );
+                        let _ = await_cleanup_operation(
+                            rollback,
+                            |operation| operation.Cancel(),
+                            |operation| operation.Close(),
+                        )
+                        .await;
+                        return Err(stage_error("notification handler", error));
+                    }
+                };
                 self.subscriptions.push(Subscription {
                     characteristic: characteristic.clone(),
                     source: source.subscription_kind(),
@@ -1203,16 +1221,10 @@ impl WinrtSession {
                 self.cleanup.record_subscription(source.subscription_kind());
                 Ok(())
             }
-            Ok(status) => {
-                let _ = characteristic.RemoveValueChanged(token);
-                Err(format!(
-                    "Windows WinRT notification subscription failed: {status:?}"
-                ))
-            }
-            Err(error) => {
-                let _ = characteristic.RemoveValueChanged(token);
-                Err(error)
-            }
+            Ok(status) => Err(format!(
+                "Windows WinRT notification subscription failed: {status:?}"
+            )),
+            Err(error) => Err(error),
         }
     }
 
