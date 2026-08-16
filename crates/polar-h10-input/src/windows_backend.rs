@@ -45,7 +45,8 @@ use super::{
     InputManager, PMD_CONTROL_POINT, PMD_DATA, PMD_SERVICE, parse_bluetooth_address,
     windows_session_lifecycle::{
         FirstFrameKind, FirstFrameStages, SessionCleanup, SessionStage, StageControl,
-        StageReporter, StageResultClass, SubscriptionKind, run_controlled_stage, run_sync_stage,
+        StageReporter, StageResultClass, SubscriptionKind, run_controlled_stage, run_delay_stage,
+        run_sync_stage,
     },
 };
 
@@ -55,6 +56,7 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const GATT_TIMEOUT: Duration = Duration::from_secs(5);
 const PMD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const ECG_SETTINGS_SETTLE: Duration = Duration::from_millis(1_500);
 const FIRST_STREAM_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(45);
 const EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
@@ -1472,6 +1474,19 @@ pub(super) async fn prepare(
             PMD_RESPONSE_TIMEOUT,
         )
         .await?;
+        // The exact published Windows reference receives the settings response
+        // and then gives the H10 1.5 seconds before issuing the ECG start. Two
+        // same-device Polar Stream runs that started immediately received an
+        // accepted start response but no PMD data callback. Keep this bounded,
+        // cancellation-aware, and separately observable.
+        run_delay_stage(
+            reporter,
+            SessionStage::EcgSettingsSettle,
+            ECG_SETTINGS_SETTLE,
+            cancelled,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         session
             .write_control(
                 &start_ecg_command(),
