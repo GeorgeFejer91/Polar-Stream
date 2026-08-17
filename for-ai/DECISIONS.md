@@ -1,5 +1,25 @@
 # Decision log
 
+## 2026-08-17 — Reopen the reference settings dwell after a full-doctor pass
+
+In one exact lease the published PolarH10 doctor reached PMD ready, a control
+response, ECG frames, ACC frames, and heart-rate notification with no failure.
+Polar Stream's PMD-only synchronous-owner profile then timed out with zero PMD
+data callbacks, and its full reference-compatible profile did the same. In the
+immediately preceding epochs, the minimal Rust PMD probe also timed out after
+accepted settings/start responses despite having passed once earlier. That
+single minimal-probe pass is therefore not stable authority for removing the
+published reference's setup dwell.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=reference-settings-dwell`. It preserves the
+full default reference-compatible lifecycle and changes only one timing edge:
+after validating the exact ECG-settings response, it holds a typed,
+cancellable 1.5-second settle before issuing the ECG start command, matching
+the physically passing full doctor. The default product path, scanner,
+subscription modes, response/frame validation, commands, output transports,
+and publication hold remain unchanged.
+
 ## 2026-08-17 — Give the passing lifecycle one synchronous MTA owner
 
 The reference watcher observed exactly one H10 immediately before the

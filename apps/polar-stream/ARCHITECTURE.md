@@ -343,6 +343,15 @@ operation, response/frame wait, steady receive, and reverse cleanup. Bounded
 native channels remain inside that owner; only decoded events cross into the
 application. It does not alter the default profile or weaken physical
 acceptance.
+That synchronous-owner differential also timed out. A later same-lease full
+published-doctor run received ECG, ACC, and HR, while both Polar Stream's
+PMD-only synchronous owner and full reference-compatible profile received no
+PMD data. Because the minimal probe failed in adjacent epochs, its earlier
+single pass no longer justifies removing the full doctor's timing edge. The
+closed `reference-settings-dwell` profile therefore changes only one edge in
+the full product lifecycle: a typed, cancellable 1.5-second settle follows the
+validated ECG-settings response before ECG start. Default behavior remains
+unchanged pending physical qualification.
 
 ## Stable discovery names
 

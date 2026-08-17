@@ -60,10 +60,12 @@ Last verified: 2026-08-16
   control responses with zero PMD-data callbacks, eliminating that setup shape.
   Keeping that setup while moving callback handoff to a bounded
   standard-library channel still produced zero data callbacks, eliminating the
-  callback-to-queue transport. The current closed profile removes the last
-  execution-model difference: the entire WinRT operation/response/frame and
-  cleanup lifecycle runs synchronously on its dedicated MTA thread with bounded
-  standard-library channels. Default product behavior, scanner confirmation,
+  callback-to-queue transport. Moving the entire lifecycle to the synchronous
+  MTA owner also timed out. A same-lease run then proved the full published
+  doctor received ECG, ACC, and HR while the full Polar Stream profile did not;
+  the minimal probe also failed in adjacent epochs. The current closed profile
+  therefore restores only the full doctor's typed, cancellable 1.5-second
+  post-settings dwell. Default product behavior, scanner confirmation,
   error/timeout cleanup, and battery-after-qualification remain unchanged.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
   parameter request and reports the request status, observed interval,

@@ -70,13 +70,14 @@ items into the dated history instead of silently deleting them.
   still timed out with zero PMD-data callbacks. Reconcile the product session
   with the passing minimal lifecycle one difference at a time. The prepared
   probe-equivalent setup candidate still received zero PMD-data callbacks. The
-  next callback-handoff differential retained that setup and still received no
-  PMD data. The prepared final candidate therefore gives the whole GATT
-  operation/response/frame/cleanup lifecycle the same synchronous plain-MTA
-  ownership as the passing probe while preserving bounded event delivery. Run
-  it through the physical input-only gate and then the full official-inlet
-  gate. Rusty outlets and official inlets remain unaccepted; the probe pass is
-  not product acceptance.
+  next callback-handoff and synchronous-owner differentials retained that setup
+  and still received no PMD data. A later same-lease full published doctor pass
+  proved ECG, ACC, and HR while Polar Stream still timed out, and the minimal
+  probe failed in adjacent epochs. The prepared candidate now restores exactly
+  the full doctor's 1.5-second post-settings dwell while retaining exact
+  response validation. Run it through the physical input-only gate and then
+  the full official-inlet gate. Rusty outlets and official inlets remain
+  unaccepted.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that
   decision and physical/cross-platform gates close.

@@ -9,7 +9,7 @@ import unittest
 
 from verify_rusty_lsl_h10 import (
     EXPECTED,
-    PMD_PROBE_SYNC_OWNER_PROFILE,
+    REFERENCE_SETTINGS_DWELL_PROFILE,
     SCAN_DIAGNOSTICS_ENV,
     SESSION_DIAGNOSTICS_ENV,
     SESSION_PROFILE_ENV,
@@ -94,7 +94,7 @@ class OfficialInletWorkerTests(unittest.TestCase):
         self.assertEqual(environment[SCAN_DIAGNOSTICS_ENV], "1")
         self.assertEqual(environment[SESSION_DIAGNOSTICS_ENV], "1")
         self.assertEqual(
-            environment[SESSION_PROFILE_ENV], PMD_PROBE_SYNC_OWNER_PROFILE
+            environment[SESSION_PROFILE_ENV], REFERENCE_SETTINGS_DWELL_PROFILE
         )
 
     def test_collects_exact_shapes_and_waits_for_explicit_close(self):

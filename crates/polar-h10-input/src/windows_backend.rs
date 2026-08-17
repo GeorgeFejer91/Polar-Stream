@@ -84,6 +84,7 @@ const PMD_WHEN_ALL_SETUP_PROFILE: &str = "pmd-only-winrt-when-all-setup";
 const PMD_PROBE_SEQUENCE_PROFILE: &str = "pmd-only-probe-equivalent-sequence";
 const PMD_PROBE_STD_HANDOFF_PROFILE: &str = "pmd-only-probe-std-handoff";
 const PMD_PROBE_SYNC_OWNER_PROFILE: &str = "pmd-only-probe-synchronous-owner";
+const REFERENCE_SETTINGS_DWELL_PROFILE: &str = "reference-settings-dwell";
 const PROPERTY_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(6);
 const PROPERTY_CONFIRMATION_CONCURRENCY: usize = 8;
@@ -98,6 +99,7 @@ enum SessionProfile {
     PmdOnlyProbeEquivalentSequence,
     PmdOnlyProbeStdHandoff,
     PmdOnlyProbeSynchronousOwner,
+    ReferenceSettingsDwell,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,8 +152,11 @@ impl SessionProfile {
             Some(value) if value == OsStr::new(PMD_PROBE_SYNC_OWNER_PROFILE) => {
                 Ok(Self::PmdOnlyProbeSynchronousOwner)
             }
+            Some(value) if value == OsStr::new(REFERENCE_SETTINGS_DWELL_PROFILE) => {
+                Ok(Self::ReferenceSettingsDwell)
+            }
             Some(_) => Err(format!(
-                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, {PMD_WHEN_COMPLETION_PROFILE}, {PMD_WHEN_ALL_SETUP_PROFILE}, {PMD_PROBE_SEQUENCE_PROFILE}, {PMD_PROBE_STD_HANDOFF_PROFILE}, or {PMD_PROBE_SYNC_OWNER_PROFILE} when set"
+                "Windows H10 session profile is invalid; {SESSION_PROFILE_ENV} must be exactly {PMD_ONLY_PROFILE}, {PMD_RETAIN_SUCCESS_PROFILE}, {PMD_WHEN_COMPLETION_PROFILE}, {PMD_WHEN_ALL_SETUP_PROFILE}, {PMD_PROBE_SEQUENCE_PROFILE}, {PMD_PROBE_STD_HANDOFF_PROFILE}, {PMD_PROBE_SYNC_OWNER_PROFILE}, or {REFERENCE_SETTINGS_DWELL_PROFILE} when set"
             )),
         }
     }
@@ -162,7 +167,10 @@ impl SessionProfile {
     }
 
     const fn heart_rate_enabled(self) -> bool {
-        matches!(self, Self::ReferenceCompatible)
+        matches!(
+            self,
+            Self::ReferenceCompatible | Self::ReferenceSettingsDwell
+        )
     }
 
     const fn pmd_operation_policy(self) -> WinrtOperationPolicy {
@@ -175,7 +183,9 @@ impl SessionProfile {
             | Self::PmdOnlyProbeEquivalentSequence
             | Self::PmdOnlyProbeStdHandoff
             | Self::PmdOnlyProbeSynchronousOwner => WinrtOperationPolicy::WHEN_RETAINED,
-            Self::ReferenceCompatible | Self::PmdOnlyDifferential => WinrtOperationPolicy::DEFAULT,
+            Self::ReferenceCompatible
+            | Self::ReferenceSettingsDwell
+            | Self::PmdOnlyDifferential => WinrtOperationPolicy::DEFAULT,
         }
     }
 
@@ -210,6 +220,10 @@ impl SessionProfile {
         matches!(self, Self::PmdOnlyProbeSynchronousOwner)
     }
 
+    const fn reference_settings_dwell(self) -> bool {
+        matches!(self, Self::ReferenceSettingsDwell)
+    }
+
     const fn name(self) -> &'static str {
         match self {
             Self::ReferenceCompatible => "reference-compatible",
@@ -220,6 +234,7 @@ impl SessionProfile {
             Self::PmdOnlyProbeEquivalentSequence => PMD_PROBE_SEQUENCE_PROFILE,
             Self::PmdOnlyProbeStdHandoff => PMD_PROBE_STD_HANDOFF_PROFILE,
             Self::PmdOnlyProbeSynchronousOwner => PMD_PROBE_SYNC_OWNER_PROFILE,
+            Self::ReferenceSettingsDwell => REFERENCE_SETTINGS_DWELL_PROFILE,
         }
     }
 }
@@ -3163,7 +3178,7 @@ pub(super) async fn prepare(
         let pmd_policy = profile.pmd_operation_policy();
         let setup_policy = profile.setup_operation_policy();
         eprintln!(
-            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={} winrt-when-completion={} close-successful-setup-operations={} winrt-when-all-setup={} probe-equivalent-sequence={} probe-std-handoff={}",
+            "POLAR_H10_SESSION_PROFILE name={} heart-rate-enabled={} close-successful-gatt-operations={} winrt-when-completion={} close-successful-setup-operations={} winrt-when-all-setup={} probe-equivalent-sequence={} probe-std-handoff={} reference-settings-dwell={}",
             profile.name(),
             profile.heart_rate_enabled(),
             pmd_policy.close_after_success,
@@ -3171,7 +3186,8 @@ pub(super) async fn prepare(
             setup_policy.close_after_success,
             matches!(setup_policy.projection, WinrtCompletionProjection::When),
             profile.probe_equivalent_sequence(),
-            profile.probe_std_handoff()
+            profile.probe_std_handoff(),
+            profile.reference_settings_dwell()
         );
     }
     let reporter = StageReporter::new(
@@ -3298,6 +3314,22 @@ pub(super) async fn prepare(
             PMD_RESPONSE_TIMEOUT,
         )
         .await?;
+        if profile.reference_settings_dwell() {
+            let span = reporter.enter(SessionStage::EcgSettingsSettle, 1);
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(1_500)) => {
+                    span.finish(StageResultClass::Success);
+                }
+                changed = cancelled.changed() => {
+                    span.finish(StageResultClass::Cancelled);
+                    return Err(if changed.is_err() {
+                        "Windows WinRT ECG settings-settle cancellation owner closed".to_string()
+                    } else {
+                        "Windows WinRT ECG settings settle was cancelled".to_string()
+                    });
+                }
+            }
+        }
         session
             .write_control(
                 &start_ecg_command(),
@@ -4251,6 +4283,23 @@ mod tests {
         assert!(!synchronous_owner.probe_std_handoff());
         assert!(synchronous_owner.probe_synchronous_owner());
 
+        let reference_dwell =
+            SessionProfile::parse(Some(OsStr::new(REFERENCE_SETTINGS_DWELL_PROFILE))).unwrap();
+        assert_eq!(reference_dwell, SessionProfile::ReferenceSettingsDwell);
+        assert_eq!(reference_dwell.name(), REFERENCE_SETTINGS_DWELL_PROFILE);
+        assert!(reference_dwell.heart_rate_enabled());
+        assert_eq!(
+            reference_dwell.pmd_operation_policy(),
+            WinrtOperationPolicy::DEFAULT
+        );
+        assert_eq!(
+            reference_dwell.setup_operation_policy(),
+            WinrtOperationPolicy::DEFAULT
+        );
+        assert!(!reference_dwell.probe_equivalent_sequence());
+        assert!(!reference_dwell.probe_synchronous_owner());
+        assert!(reference_dwell.reference_settings_dwell());
+
         let error = SessionProfile::parse(Some(OsStr::new("pmd-only"))).unwrap_err();
         assert!(error.contains(SESSION_PROFILE_ENV));
         assert!(error.contains(PMD_ONLY_PROFILE));
@@ -4260,6 +4309,7 @@ mod tests {
         assert!(error.contains(PMD_PROBE_SEQUENCE_PROFILE));
         assert!(error.contains(PMD_PROBE_STD_HANDOFF_PROFILE));
         assert!(error.contains(PMD_PROBE_SYNC_OWNER_PROFILE));
+        assert!(error.contains(REFERENCE_SETTINGS_DWELL_PROFILE));
     }
 
     fn evidence(

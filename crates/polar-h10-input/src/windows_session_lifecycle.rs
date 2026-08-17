@@ -33,6 +33,7 @@ pub(crate) enum SessionStage {
     PmdDataNotification,
     RequestEcgSettings,
     EcgSettingsResponse,
+    EcgSettingsSettle,
     StartEcg,
     StartEcgResponse,
     StartAcc,
@@ -44,7 +45,7 @@ pub(crate) enum SessionStage {
 
 impl SessionStage {
     #[cfg(test)]
-    const ALL: [Self; 32] = [
+    const ALL: [Self; 33] = [
         Self::AddressToDevice,
         Self::GattSessionCreate,
         Self::MaintainConnection,
@@ -70,6 +71,7 @@ impl SessionStage {
         Self::PmdDataNotification,
         Self::RequestEcgSettings,
         Self::EcgSettingsResponse,
+        Self::EcgSettingsSettle,
         Self::StartEcg,
         Self::StartEcgResponse,
         Self::StartAcc,
@@ -106,6 +108,7 @@ impl SessionStage {
             Self::PmdDataNotification => "pmd-data-notification-subscription",
             Self::RequestEcgSettings => "pmd-request-ecg-settings",
             Self::EcgSettingsResponse => "pmd-ecg-settings-response",
+            Self::EcgSettingsSettle => "pmd-ecg-settings-settle",
             Self::StartEcg => "pmd-start-ecg",
             Self::StartEcgResponse => "pmd-start-ecg-response",
             Self::StartAcc => "pmd-start-acc",

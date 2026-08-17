@@ -140,6 +140,14 @@ steady receive, cancellation, and reverse cleanup are synchronous and bounded.
 Decoded events alone cross to the application channel. This remains a
 verifier-only differential until both input-only and official-inlet physical
 qualification pass.
+The synchronous-owner profile also timed out. In a later exact lease the full
+published PolarH10 doctor received ECG, ACC, and HR, while both Polar Stream's
+PMD-only synchronous and full reference-compatible profiles received no PMD
+data. Adjacent minimal-probe failures make its earlier single pass insufficient
+authority for deleting the full doctor's fixed timing edge. The next closed
+profile, `reference-settings-dwell`, retains the full product lifecycle and
+adds only a typed, cancellable 1.5-second dwell after the validated settings
+response and before ECG start. It remains diagnostic-only.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while
