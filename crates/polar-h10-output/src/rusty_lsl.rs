@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     io::{self, ErrorKind},
-    net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket},
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
@@ -474,36 +474,39 @@ impl RustyLslPublisher {
 
 fn bind_dual_protocol_listener(advertised_ipv4: Ipv4Addr) -> io::Result<(TcpListener, UdpSocket)> {
     bind_dual_protocol_listener_with(
-        || UdpSocket::bind((advertised_ipv4, 0)),
+        || TcpListener::bind((advertised_ipv4, 0)),
+        UdpSocket::bind,
         DUAL_PROTOCOL_BIND_ATTEMPTS,
     )
 }
 
-fn bind_dual_protocol_listener_with<F>(
-    mut reserve_udp: F,
+fn bind_dual_protocol_listener_with<T, U>(
+    mut reserve_tcp: T,
+    mut reserve_udp: U,
     attempts: usize,
 ) -> io::Result<(TcpListener, UdpSocket)>
 where
-    F: FnMut() -> io::Result<UdpSocket>,
+    T: FnMut() -> io::Result<TcpListener>,
+    U: FnMut(SocketAddr) -> io::Result<UdpSocket>,
 {
     let mut last_error = None;
     for _ in 0..attempts {
-        let reservation = match reserve_udp() {
-            Ok(reservation) => reservation,
+        let listener = match reserve_tcp() {
+            Ok(listener) => listener,
             Err(error) => {
                 last_error = Some(error);
                 continue;
             }
         };
-        let local = match reservation.local_addr() {
+        let local = match listener.local_addr() {
             Ok(local) => local,
             Err(error) => {
                 last_error = Some(error);
                 continue;
             }
         };
-        match TcpListener::bind(local) {
-            Ok(listener) => return Ok((listener, reservation)),
+        match reserve_udp(local) {
+            Ok(reservation) => return Ok((listener, reservation)),
             Err(error) => last_error = Some(error),
         }
     }
@@ -783,19 +786,19 @@ mod tests {
     }
 
     #[test]
-    fn outlet_port_selection_retries_tcp_conflict_and_releases_both_protocols() {
-        let tcp_conflict = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let conflict_port = tcp_conflict.local_addr().unwrap().port();
-        let conflict_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, conflict_port)).unwrap();
-        let success_udp = loop {
-            let candidate = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    fn outlet_port_selection_retries_udp_conflict_and_releases_both_protocols() {
+        let conflict_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let conflict_port = conflict_udp.local_addr().unwrap().port();
+        let conflict_tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, conflict_port)).unwrap();
+        let success_tcp = loop {
+            let candidate = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             let port = candidate.local_addr().unwrap().port();
-            if port != conflict_port && TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
+            if port != conflict_port && UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
                 break candidate;
             }
         };
-        let expected_port = success_udp.local_addr().unwrap().port();
-        let mut candidates = VecDeque::from([conflict_udp, success_udp]);
+        let expected_port = success_tcp.local_addr().unwrap().port();
+        let mut candidates = VecDeque::from([conflict_tcp, success_tcp]);
 
         let (listener, reservation) = bind_dual_protocol_listener_with(
             || {
@@ -803,6 +806,7 @@ mod tests {
                     io::Error::new(ErrorKind::AddrNotAvailable, "test candidates exhausted")
                 })
             },
+            UdpSocket::bind,
             2,
         )
         .unwrap();
@@ -817,7 +821,7 @@ mod tests {
         let released_tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, expected_port)).unwrap();
         drop(released_tcp);
         drop(released_udp);
-        drop(tcp_conflict);
+        drop(conflict_udp);
     }
 
     #[test]

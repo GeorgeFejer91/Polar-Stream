@@ -45,11 +45,12 @@ route without sending a probe datagram. Set
 `POLAR_STREAM_RUSTY_LSL_IPV4=<concrete-unicast-IPv4>` to make that choice
 explicit. Unspecified, multicast, broadcast, malformed, or unbindable values
 fail visibly; the backend does not silently advertise an unrelated interface.
-Windows can assign a TCP ephemeral port that is excluded or unavailable for
-the paired UDP timedata socket. Setup therefore reserves an eligible UDP port
-first, binds TCP to that same numeric port while the reservation remains held,
-and releases the probe immediately before registry admission. Pair selection
-is bounded to 16 attempts, and registry admission retries only the exact
+Windows can assign a TCP ephemeral port whose paired UDP timedata port is
+excluded or unavailable. Setup therefore asks Windows for a valid TCP listener
+first, reserves UDP on that same numeric port while the listener remains held,
+and retries the complete pair when UDP is unavailable. The UDP reservation is
+released immediately before registry admission. Pair selection is bounded to
+16 attempts, and registry admission retries only the exact
 `AddrInUse`/`PermissionDenied` release-to-bind race, at most four times, before
 failing. Tests cover deterministic conflict, retry, release, and rebind without
 a leaked listener.
