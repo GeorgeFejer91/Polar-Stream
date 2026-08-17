@@ -15,6 +15,7 @@ from verify_rusty_lsl_h10 import (
     SESSION_PROFILE_ENV,
     collect_official_inlets,
     physical_source_environment,
+    wait_for_physical_source_ready,
 )
 
 
@@ -136,6 +137,40 @@ class OfficialInletWorkerTests(unittest.TestCase):
         worker.join(timeout=1.0)
         self.assertFalse(worker.is_alive())
         self.assertTrue(all(inlet.closed for inlet in pylsl.inlets))
+
+    def test_starts_official_inlets_at_lsl_readiness_before_source_readiness(self):
+        class RunningProcess:
+            @staticmethod
+            def poll():
+                return None
+
+        events = queue.Queue()
+        events.put("POLAR_H10_LSL_INITIALIZED ready\n")
+        events.put("POLAR_H10_SELECTED {}\n")
+        events.put("POLAR_H10_SOURCE_READY ready\n")
+        starts = []
+
+        wait_for_physical_source_ready(
+            RunningProcess(), events, lambda: starts.append("official")
+        )
+
+        self.assertEqual(starts, ["official"])
+
+    def test_rejects_source_readiness_before_official_inlet_startup(self):
+        class RunningProcess:
+            @staticmethod
+            def poll():
+                return None
+
+        events = queue.Queue()
+        events.put("POLAR_H10_SELECTED {}\n")
+        events.put("POLAR_H10_SOURCE_READY ready\n")
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "sensor readiness before official inlet startup",
+        ):
+            wait_for_physical_source_ready(RunningProcess(), events, lambda: None)
 
 
 if __name__ == "__main__":

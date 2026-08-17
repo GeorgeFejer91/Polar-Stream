@@ -61,23 +61,14 @@ items into the dated history instead of silently deleting them.
   one exact session, advancing sensor timestamps, ECG 1ch/130 Hz and ACC
   3ch/200 Hz, nonzero bounded axes, two exact official pylsl/liblsl inlets,
   loss/reorder/rate evidence, and clean process/socket shutdown. The direct
-  Windows WinRT scanner now has same-epoch reference-positive physical selection
-  evidence plus physical success through CCCD subscription and both GATT start
-  writes. A standalone Windows PMD probe removes scanning, Tauri, Tokio, LSL,
-  heart rate, UI, and application queues from the differential. A
-  reference-positive attended run proved PMD settings → ECG → ACC through both
-  first frames in that probe, while the full product path in the same lease
-  still timed out with zero PMD-data callbacks. Reconcile the product session
-  with the passing minimal lifecycle one difference at a time. The prepared
-  probe-equivalent setup candidate still received zero PMD-data callbacks. The
-  next callback-handoff and synchronous-owner differentials retained that setup
-  and still received no PMD data. A later same-lease full published doctor pass
-  proved ECG, ACC, and HR while Polar Stream still timed out, and the minimal
-  probe failed in adjacent epochs. The prepared candidate now restores exactly
-  the full doctor's 1.5-second post-settings dwell while retaining exact
-  response validation. Run it through the physical input-only gate and then
-  the full official-inlet gate. Rusty outlets and official inlets remain
-  unaccepted.
+  Windows WinRT scanner/session now has physical success through both advancing
+  first sensor frames, and both Rusty outlets were resolved and opened by the
+  pinned official consumers. The incomplete edge was verifier sequencing: the
+  official inlet workers started after source readiness instead of immediately
+  after outlet initialization as in the passing synthetic gate. Run one fresh
+  attended same-epoch qualification with those receivers waiting first, then
+  require the complete counts/rates/loss/reorder and cleanup evidence. Rusty
+  physical transport remains unaccepted until that run passes.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that
   decision and physical/cross-platform gates close.

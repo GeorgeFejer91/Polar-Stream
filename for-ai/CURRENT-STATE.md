@@ -81,6 +81,11 @@ Last verified: 2026-08-17
   consumer; a second concurrent data consumer rejects without disturbing the
   admitted one. The synchronous poll loop runs on Tokio's blocking pool with
   explicit stop and bounded join. Default/package behavior remains liblsl.
+- The physical Rusty LSL qualifier starts its two pinned official inlet workers
+  as soon as the independent outlets report initialization, before BLE
+  selection or source-frame qualification. Source readiness is a later gate;
+  reaching it before official inlet startup fails closed. This receiver-first
+  order now matches the passing synthetic official-consumer gate.
 - A native **Save local CSV** destination records every received raw ECG/ACC
   sample, HR/RR, and every produced selected metric under `Downloads/Polar
   Stream` (app-data fallback). Its 128-notification writer queue is non-blocking
@@ -194,35 +199,18 @@ Last verified: 2026-08-17
 - Physical-device latency percentiles, queue high-water marks, and transport
   drop/error counters are not yet captured as a single end-to-end benchmark.
 - The optional Rusty LSL backend is host-qualified but not yet physically
-  accepted. Prior Windows `btleplug` acquisition attempts stopped at scan,
-  connect, notification-receiver setup, or before the first PMD frame. The new
-  direct WinRT scanner/session backend is compiled and deterministically tested.
-  A same-lease physical differential run subsequently proved the published
-  reference watcher and repaired candidate both selected an exact H10; the
-  candidate then physically passed device/session acquisition, service and
-  characteristic discovery, all subscriptions, and both GATT start writes, but
-  neither first sensor frame arrived. Scanner and GATT setup are proven for that
-  epoch. Response gating, exact CCCD readback, explicit delegate ownership, a
-  232-byte PDU, and reference-aligned settle/discovery ordering were then proven
-  while PMD control and heart-rate events advanced, but PMD data entered zero
-  callbacks. Confining all WinRT work to one explicit MTA/current-thread owner
-  produced the same physical result, ruling out runtime-worker migration. The
-  subsequent candidate removed the extra descriptor readback and retained the
-  actual event handler, exactly matching the passing reference's one-write then
-  one-handler projection; an attended run again received both exact PMD control
-  responses but zero PMD data callbacks. A standalone identifier-free Windows
-  PMD probe isolates the remaining projection boundary from discovery, Tauri,
-  Tokio, LSL, heart rate, UI, and application queues. In one reference-positive
-  attended epoch it received a 73-sample ECG frame and a 36-sample three-axis
-  ACC frame after all exact PMD responses. The full Polar Stream verifier in
-  that same lease still received both ECG control responses but zero PMD-data
-  callbacks before its first-frame timeout. The remaining defect is therefore
-  confined to an extra production-session behavior rather than the H10, PMD
-  commands, scanner, Rusty LSL, or generic `windows-rs` event delivery. Official
-  inlet delivery remains open. The current verifier uses a closed, opt-in
-  probe-style standard-library callback handoff while the normal product
-  profile remains unchanged. Retain the publication and release hold until one
-  full Polar Stream run supplies the complete evidence.
+  accepted. The latest attended run selected an exact H10 and physically passed
+  the complete direct-WinRT session boundary: service/characteristic discovery,
+  notification subscriptions, PMD responses, and advancing first ECG and ACC
+  frames. Both independent Rusty outlets initialized and pinned official
+  pylsl/liblsl consumers resolved and opened them, but the physical verifier
+  did not complete its source/consumer thresholds before its outer deadline.
+  Review found a verifier-only ordering mismatch: unlike the passing synthetic
+  gate, it did not start official consumers until after BLE source readiness.
+  The prepared correction starts them at outlet initialization and leaves BLE,
+  output, product, and default-package behavior unchanged. Retain the
+  publication and release hold until a fresh same-epoch run proves bounded ECG
+  and ACC counts/rates/order plus exact cleanup through that corrected chain.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also

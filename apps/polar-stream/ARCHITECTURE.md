@@ -169,6 +169,12 @@ client-side; server-side property predicate conformance is not claimed. See
 `docs/rusty-lsl-backend.md` for the exact revision, shapes, limits, evidence,
 and licensing/release holds.
 
+The physical qualifier starts official inlet resolution when the independent
+outlets initialize, before BLE selection or source-frame readiness. It then
+awaits source and consumer thresholds as separate gates. This receiver-first
+order is verifier orchestration, not an application buffering or publication
+policy.
+
 ## Windows BLE link policy
 
 Windows uses an active `BluetoothLEAdvertisementWatcher` for a bounded scan and

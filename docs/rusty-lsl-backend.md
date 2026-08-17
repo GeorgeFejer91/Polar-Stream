@@ -78,9 +78,13 @@ ECG/ACC sensor timestamps, nonzero bounded X/Y/Z data, exact descriptors,
 distinct official inlets, and count/rate/loss/reorder plus cleanup evidence.
 Its output may contain a device identifier and must remain ignored/private; it
 records bounded aggregates, not physiological samples. Official inlet
-collection starts only after exact selection, the direct WinRT session, and
-advancing ECG/ACC source frames. It runs in a daemon worker so a native liblsl
-call cannot defeat the outer deadline; selection has a separate 30-second
+collection starts as soon as both independent outlets report initialization,
+before BLE selection and source-frame qualification. Source readiness is then
+awaited independently and cannot pass before the official worker has started.
+This receiver-first order matches the synthetic official-consumer gate and
+prevents consumer admission from depending on later physical-frame delivery.
+The worker is a daemon so a native liblsl call cannot defeat the outer
+deadline; selection has a separate 30-second
 fail-fast bound, post-selection source readiness has a 60-second bound, and
 source/consumer collection retains its two-minute bound. The worker must close
 before the source is stopped. Native session setup has its own 45-second total
@@ -95,6 +99,14 @@ interval units, and peripheral latency.
 It never records addresses, names, payload bytes or sizes, manufacturer data, or
 stable device identities. PMD settings and start responses are separate stages
 from their GATT writes and first frames.
+
+The latest attended run physically passed exact H10 selection, the complete
+direct-WinRT setup, both first sensor frames, two independent outlet
+initializations, and official descriptor resolution/open. It timed out before
+the verifier completed all source/consumer thresholds. The receiver-first
+ordering above is the prepared source-only correction; it is not physical
+acceptance until a new same-epoch run completes bounded ECG/ACC delivery,
+rate/order/loss evidence, and exact cleanup.
 
 An attended differential set
 `POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential`. This closed,

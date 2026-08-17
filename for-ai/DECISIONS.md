@@ -1,5 +1,24 @@
 # Decision log
 
+## 2026-08-17 — Physical qualification is receiver-first at outlet readiness
+
+The latest attended physical run reached both advancing H10 sensor streams,
+initialized independent ECG and ACC Rusty outlets, and let pinned official
+pylsl 1.18.2/liblsl 1.17.7 consumers resolve and open both descriptors. It did
+not complete the source/consumer thresholds before the outer deadline. The
+synthetic gate, which passes the same producer lifecycle and official consumers,
+starts those consumers immediately after outlet initialization; the physical
+verifier instead waited for BLE source readiness first.
+
+The physical verifier now starts its official inlet worker on
+`POLAR_H10_LSL_INITIALIZED`, before selection/session/source readiness, and then
+independently awaits `POLAR_H10_SOURCE_READY`. Reaching source readiness before
+official startup fails closed. Deterministic tests bind this order. This is a
+qualification-orchestration correction only: BLE, Rusty LSL, outlet data,
+product behavior, and the default liblsl package path are unchanged. Physical
+acceptance and publication remain held until a fresh same-epoch run completes
+both official streams and exact cleanup.
+
 ## 2026-08-17 — Bind physical qualification to the landed two-inlet merge
 
 The default-off Rusty LSL backend is now pinned to reviewed upstream merge

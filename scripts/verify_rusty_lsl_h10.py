@@ -256,6 +256,35 @@ def collect_official_inlets(pylsl, results, close_requested, progress=None):
         report("inlets-closed")
 
 
+def wait_for_physical_source_ready(process, events, start_official_inlets):
+    """Start official consumers at outlet readiness, then await the H10 source."""
+    selected = False
+    official_started = False
+    ready_deadline = time.monotonic() + SCAN_SELECTION_TIMEOUT_SECONDS
+    while time.monotonic() < ready_deadline:
+        try:
+            line = events.get(timeout=0.25)
+        except queue.Empty:
+            if process.poll() is not None:
+                raise RuntimeError("physical source exited before source readiness")
+            continue
+        if line.startswith("POLAR_H10_LSL_INITIALIZED ") and not official_started:
+            start_official_inlets()
+            official_started = True
+        if line.startswith("POLAR_H10_SELECTED "):
+            selected = True
+            ready_deadline = time.monotonic() + POST_SELECTION_SOURCE_READY_TIMEOUT_SECONDS
+        if line.startswith("POLAR_H10_SOURCE_READY "):
+            if not official_started:
+                raise RuntimeError(
+                    "physical source reached sensor readiness before official inlet startup"
+                )
+            return
+    if not selected:
+        raise RuntimeError("candidate scan did not select an H10 within its bounded window")
+    raise RuntimeError("physical source did not reach readiness after candidate selection")
+
+
 def main() -> int:
     try:
         import pylsl
@@ -328,39 +357,17 @@ def main() -> int:
     official_results = queue.Queue()
     official_progress = queue.Queue()
     close_official = threading.Event()
-    official_thread = None
+    official_thread = threading.Thread(
+        target=collect_official_inlets,
+        args=(pylsl, official_results, close_official, official_progress),
+        daemon=True,
+    )
     try:
-        selected = False
-        ready_deadline = time.monotonic() + SCAN_SELECTION_TIMEOUT_SECONDS
-        while time.monotonic() < ready_deadline:
-            try:
-                line = events.get(timeout=0.25)
-            except queue.Empty:
-                if process.poll() is not None:
-                    raise RuntimeError("physical source exited before source readiness")
-                continue
-            if line.startswith("POLAR_H10_SELECTED "):
-                selected = True
-                ready_deadline = (
-                    time.monotonic() + POST_SELECTION_SOURCE_READY_TIMEOUT_SECONDS
-                )
-            if line.startswith("POLAR_H10_SOURCE_READY "):
-                break
-        else:
-            if not selected:
-                raise RuntimeError(
-                    "candidate scan did not select an H10 within its bounded window"
-                )
-            raise RuntimeError(
-                "physical source did not reach readiness after candidate selection"
-            )
-
-        official_thread = threading.Thread(
-            target=collect_official_inlets,
-            args=(pylsl, official_results, close_official, official_progress),
-            daemon=True,
+        wait_for_physical_source_ready(
+            process,
+            events,
+            official_thread.start,
         )
-        official_thread.start()
         source_result = None
         official_result = None
         collection_deadline = time.monotonic() + 120.0
@@ -455,7 +462,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5.0)
-        if official_thread is not None:
+        if official_thread.ident is not None:
             official_thread.join(timeout=2.0)
         reader.join(timeout=2.0)
         print("".join(lines), file=sys.stderr)
