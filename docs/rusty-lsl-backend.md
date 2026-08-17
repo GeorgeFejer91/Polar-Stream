@@ -107,6 +107,12 @@ the verifier completed all source/consumer thresholds. The receiver-first
 ordering above is the prepared source-only correction; it is not physical
 acceptance until a new same-epoch run completes bounded ECG/ACC delivery,
 rate/order/loss evidence, and exact cleanup.
+The first run with that order admitted both official consumers before source
+readiness, then failed to complete either source or consumer thresholds after
+the first-frame-to-steady-state handoff. With session diagnostics enabled, the
+steady-state owner now emits identifier-free link and cumulative
+callback/decode/enqueue/fault/queue checkpoints every five seconds. Those
+checkpoints diagnose the remaining input boundary; they do not alter it.
 
 An attended differential set
 `POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential`. This closed,

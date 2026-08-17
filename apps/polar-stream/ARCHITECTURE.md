@@ -174,6 +174,10 @@ outlets initialize, before BLE selection or source-frame readiness. It then
 awaits source and consumer thresholds as separate gates. This receiver-first
 order is verifier orchestration, not an application buffering or publication
 policy.
+Opt-in session diagnostics continue across the first-frame-to-steady-state
+handoff, reporting only aggregate link and callback/queue counters every five
+seconds so native notification loss and internal forwarding stalls remain
+distinguishable without exposing a device identity.
 
 ## Windows BLE link policy
 

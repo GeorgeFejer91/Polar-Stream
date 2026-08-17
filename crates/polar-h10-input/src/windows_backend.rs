@@ -832,6 +832,7 @@ pub(super) struct PreparedConnection {
     session: WinrtSession,
     raw_rx: mpsc::Receiver<RawNotification>,
     fault_rx: watch::Receiver<Option<String>>,
+    notification_diagnostics: Arc<NotificationDiagnostics>,
     buffered_events: VecDeque<InputEvent>,
     event_tx: mpsc::Sender<InputEvent>,
     device_name: String,
@@ -3426,6 +3427,7 @@ pub(super) async fn prepare(
         session,
         raw_rx,
         fault_rx,
+        notification_diagnostics,
         buffered_events: gate.into_events(),
         event_tx,
         device_name,
@@ -3472,6 +3474,15 @@ async fn run_connection(
     }
 
     if output_open {
+        prepared
+            .session
+            .report_link_diagnostic("steady-state-enter");
+        prepared
+            .notification_diagnostics
+            .report("steady-state-enter");
+        let mut diagnostic_tick = tokio::time::interval(Duration::from_secs(5));
+        diagnostic_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        diagnostic_tick.tick().await;
         loop {
             tokio::select! {
                 changed = cancelled.changed() => {
@@ -3496,6 +3507,10 @@ async fn run_connection(
                     {
                         break;
                     }
+                }
+                _ = diagnostic_tick.tick() => {
+                    prepared.session.report_link_diagnostic("steady-state");
+                    prepared.notification_diagnostics.report("steady-state");
                 }
             }
         }

@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-17 — Observe the first-frame-to-steady-state handoff directly
+
+The first receiver-first physical run was reference-positive, reached both
+first sensor frames, opened both pinned official inlets, and reported two
+admitted Rusty consumers at source readiness. Neither the source frame
+thresholds nor official sample thresholds then completed. This proves the
+consumer-start correction while locating the remaining uncertainty after the
+WinRT first-frame gate and before sustained application delivery; it does not
+attribute the stop to Rusty LSL because the source threshold also failed.
+
+The existing WinRT session behavior remains unchanged. While session
+diagnostics are explicitly enabled, the steady-state owner now reports its
+identifier-free connection snapshot and accumulated per-source
+callback/decode/enqueue/fault/queue counters at entry and every five seconds.
+The next attended run can therefore separate absent native notifications from
+a callback-to-application handoff defect without another speculative transport
+change. Physical acceptance and publication remain held.
+
 ## 2026-08-17 — Physical qualification is receiver-first at outlet readiness
 
 The latest attended physical run reached both advancing H10 sensor streams,

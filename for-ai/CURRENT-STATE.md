@@ -208,7 +208,12 @@ Last verified: 2026-08-17
   Review found a verifier-only ordering mismatch: unlike the passing synthetic
   gate, it did not start official consumers until after BLE source readiness.
   The prepared correction starts them at outlet initialization and leaves BLE,
-  output, product, and default-package behavior unchanged. Retain the
+  output, product, and default-package behavior unchanged. Its first attended
+  run proved both consumers were admitted before source readiness, but neither
+  source nor official thresholds completed after the setup-to-steady-state
+  handoff. Identifier-free five-second link and callback/queue checkpoints now
+  distinguish native notification loss from an internal forwarding stall.
+  Retain the
   publication and release hold until a fresh same-epoch run proves bounded ECG
   and ACC counts/rates/order plus exact cleanup through that corrected chain.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
