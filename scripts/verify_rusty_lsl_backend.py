@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RUSTY_LSL_REVISION = "74f7d0ea2cce9b3d049ea24602527a5f52360554"
+RUSTY_LSL_REVISION = "8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd"
 
 
 @dataclass(frozen=True)

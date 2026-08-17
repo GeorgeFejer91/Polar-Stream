@@ -29,7 +29,7 @@ use rusty_lsl::{
 
 use crate::{CustomFormulaConfig, MetricSpec, custom_output_stream_name, output_stream_name};
 
-const RUSTY_LSL_REVISION: &str = "74f7d0ea2cce9b3d049ea24602527a5f52360554";
+const RUSTY_LSL_REVISION: &str = "8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd";
 const ACTIVATION_CONSUMER: &str = "polar-stream-rusty-lsl-optional-backend-v1";
 const INTERFACE_ENV: &str = "POLAR_STREAM_RUSTY_LSL_IPV4";
 const MAX_OUTLETS: usize = 64;

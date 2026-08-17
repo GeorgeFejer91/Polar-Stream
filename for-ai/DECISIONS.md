@@ -1,5 +1,22 @@
 # Decision log
 
+## 2026-08-17 — Bind physical qualification to the landed two-inlet merge
+
+The default-off Rusty LSL backend is now pinned to reviewed upstream merge
+`8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. Its exact reviewed tree preserves
+the one-channel initialization contract, admits the three-channel ACC shape,
+and routes simultaneous official ECG/ACC full-info requests independently from
+their data-consumer slots. Polar Stream retains its stricter deployment bound
+of one official data consumer per outlet and continues to use broad discovery
+plus exact client-side descriptor matching; predicate-filter conformance is not
+claimed.
+
+This dependency advancement prepares the existing synthetic and physical H10
+verifiers against the only landed Rusty LSL authority. It is not physical H10,
+browser, LabRecorder, package, licensing, or release evidence. Default and
+packaged builds continue to use liblsl, and the physical publication hold
+remains until one same-epoch ECG/ACC official-inlet chain passes cleanly.
+
 ## 2026-08-17 — Reopen the reference settings dwell after a full-doctor pass
 
 In one exact lease the published PolarH10 doctor reached PMD ready, a control
@@ -450,7 +467,7 @@ a native WinRT backend is separately scoped.
 
 Packaged and default builds retain liblsl. Source developers may select exactly
 one mutually exclusive `rusty-lsl-backend`, pinned to reviewed Rusty LSL merge
-`74f7d0ea2cce9b3d049ea24602527a5f52360554`. It stays inside
+`8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. It stays inside
 `polar-h10-output`, preserves the canonical names/metadata and independent
 ECG/ACC outlets, and never enters the browser runtime.
 

@@ -9,11 +9,12 @@ cargo run -p polar-stream --no-default-features --features rusty-lsl-backend
 ```
 
 The dependency is commit-pinned to Rusty LSL
-`74f7d0ea2cce9b3d049ea24602527a5f52360554`. This is the reviewed merge that
-adds official-consumer initialization for one-channel ECG and three-channel
-ACC without changing its one-channel behavior. Updating that revision requires
-a new exact interoperability and physical-device review; a floating branch or
-tag is not accepted.
+`8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. This is the reviewed merge that
+preserves one-channel initialization, admits three-channel initialization, and
+routes concurrent ECG and ACC official-inlet full-info requests independently
+from their data-consumer slots. Updating that revision requires a new exact
+interoperability and physical-device review; a floating branch or tag is not
+accepted.
 
 ## Transport contract
 

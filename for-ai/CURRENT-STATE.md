@@ -1,6 +1,6 @@
 # Current state
 
-Last verified: 2026-08-16
+Last verified: 2026-08-17
 
 ## Implemented
 
@@ -73,13 +73,14 @@ Last verified: 2026-08-16
   continue with system-managed timing.
 - Immediate raw LSL/OSC publication with canonical names.
 - A default-off, mutually exclusive Rusty LSL source backend is pinned to merge
-  `74f7d0ea2cce9b3d049ea24602527a5f52360554`. Pinned pylsl
+  `8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. Pinned pylsl
   1.18.2/liblsl 1.17.7 broadly discovered and exactly matched independent
-  1-channel/130 Hz ECG and 3-channel/200 Hz ACC outlets in the synthetic host
-  gate. Each outlet admits one official consumer; a second concurrent consumer
-  rejects without disturbing the admitted one. The synchronous poll loop runs
-  on Tokio's blocking pool with explicit stop and bounded join. Default/package
-  behavior remains liblsl.
+  1-channel/130 Hz ECG and 3-channel/200 Hz ACC outlets concurrently in the
+  synthetic host gate. Exact full-info requests are routed independently from
+  each outlet's data-consumer slot. Each outlet still admits one official data
+  consumer; a second concurrent data consumer rejects without disturbing the
+  admitted one. The synchronous poll loop runs on Tokio's blocking pool with
+  explicit stop and bounded join. Default/package behavior remains liblsl.
 - A native **Save local CSV** destination records every received raw ECG/ACC
   sample, HR/RR, and every produced selected metric under `Downloads/Polar
   Stream` (app-data fallback). Its 128-notification writer queue is non-blocking

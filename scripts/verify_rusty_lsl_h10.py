@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RUSTY_LSL_REVISION = "74f7d0ea2cce9b3d049ea24602527a5f52360554"
+RUSTY_LSL_REVISION = "8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd"
 BASE = "polar_stream_h10_acceptance"
 SCAN_SELECTION_TIMEOUT_SECONDS = 30.0
 POST_SELECTION_SOURCE_READY_TIMEOUT_SECONDS = 60.0
