@@ -787,9 +787,14 @@ mod tests {
 
     #[test]
     fn outlet_port_selection_retries_udp_conflict_and_releases_both_protocols() {
-        let conflict_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let conflict_port = conflict_udp.local_addr().unwrap().port();
-        let conflict_tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, conflict_port)).unwrap();
+        let (conflict_tcp, conflict_udp) = loop {
+            let candidate = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let local = candidate.local_addr().unwrap();
+            if let Ok(conflict) = UdpSocket::bind(local) {
+                break (candidate, conflict);
+            }
+        };
+        let conflict_port = conflict_tcp.local_addr().unwrap().port();
         let success_tcp = loop {
             let candidate = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             let port = candidate.local_addr().unwrap().port();
