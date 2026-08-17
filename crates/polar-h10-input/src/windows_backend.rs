@@ -220,7 +220,10 @@ impl SessionProfile {
     }
 
     const fn reference_settings_dwell(self) -> bool {
-        matches!(self, Self::ReferenceSettingsDwell)
+        matches!(
+            self,
+            Self::ReferenceCompatible | Self::ReferenceSettingsDwell
+        )
     }
 
     const fn name(self) -> &'static str {
@@ -4275,6 +4278,10 @@ mod tests {
         assert!(!reference_dwell.probe_equivalent_sequence());
         assert!(!reference_dwell.probe_synchronous_owner());
         assert!(reference_dwell.reference_settings_dwell());
+
+        let default = SessionProfile::parse(None).unwrap();
+        assert_eq!(default, SessionProfile::ReferenceCompatible);
+        assert!(default.reference_settings_dwell());
 
         let error = SessionProfile::parse(Some(OsStr::new("pmd-only"))).unwrap_err();
         assert!(error.contains(SESSION_PROFILE_ENV));

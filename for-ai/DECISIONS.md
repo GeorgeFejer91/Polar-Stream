@@ -1,5 +1,21 @@
 # Decision log
 
+## 2026-08-17 — Promote the proven settings dwell into the Windows default
+
+The closed `reference-settings-dwell` candidate completed one reference-positive
+physical chain through exact H10 selection, both advancing sensor streams, both
+Rusty outlets, pinned official consumers, zero loss/reorder, and exact cleanup.
+That evidence proves the published-reference timing edge, but an environment
+override is not production-default acceptance.
+
+The ordinary reference-compatible Windows profile now owns the same typed,
+cancellable 1.5-second settle after the validated ECG-settings response and
+before ECG start. The physical verifier removes any inherited session-profile
+override so it can qualify only the default lifecycle. Other diagnostic
+profiles remain closed and unchanged. Host gates pass; publication remains held
+until a fresh reference-positive run proves this exact default through both
+official inlets and cleanup.
+
 ## 2026-08-17 — Map raw H10 sensor time into the local LSL clock
 
 Leaving Windows connection timing system-managed restored sustained delivery:

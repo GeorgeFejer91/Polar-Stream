@@ -170,7 +170,10 @@ data. Adjacent minimal-probe failures make its earlier single pass insufficient
 authority for deleting the full doctor's fixed timing edge. The next closed
 profile, `reference-settings-dwell`, retains the full product lifecycle and
 adds only a typed, cancellable 1.5-second dwell after the validated settings
-response and before ECG start. It remains diagnostic-only.
+response and before ECG start. That candidate subsequently completed the full
+physical source-to-official-inlet chain without loss or reorder. The dwell is
+therefore part of the normal reference-compatible Windows lifecycle, and the
+verifier clears any inherited profile override before default qualification.
 
 The synthetic host qualification passed. Earlier bounded physical Windows
 testing found two straps with the separate native WinRT reference doctor, while

@@ -31,14 +31,12 @@ Last verified: 2026-08-17
   minimal probe's execution model; only decoded events cross to the application
   channel. A completion guard keeps disconnect signalling bounded if either
   owner unwinds.
-- The current local verifier-only differential uses the physically passing
-  minimal probe's `windows-future` `.when` completion callback for PMD
-  CCCD/control operations, then crosses a bounded Tokio oneshot into the
-  existing per-stage deadline owner. The preceding HR-free and unclosed-success
-  physical runs both received zero PMD-data callbacks, so optional heart-rate
-  setup and success-time explicit operation close are no longer candidate
-  causes. Failure/timeout/cancellation cleanup and the default product lifecycle
-  remain unchanged; physical acceptance remains open.
+- The default reference-compatible Windows lifecycle owns the published
+  reference's typed, cancellable 1.5-second settle after the validated ECG
+  settings response and before ECG start. The closed diagnostic version of this
+  timing edge completed one full physical source-to-official-inlet chain. The
+  physical verifier now clears any inherited diagnostic profile so the next
+  same-epoch run qualifies only the ordinary product default.
 - An identifier-free input-only differential now drives the same product
   `InputManager`/WinRT session without constructing any output transport. It
   requires a connected session, two advancing ECG frames, two advancing ACC
