@@ -35,8 +35,11 @@ Last verified: 2026-08-17
   reference's typed, cancellable 1.5-second settle after the validated ECG
   settings response and before ECG start. The closed diagnostic version of this
   timing edge completed one full physical source-to-official-inlet chain. The
-  physical verifier now clears any inherited diagnostic profile so the next
-  same-epoch run qualifies only the ordinary product default.
+  physical verifier clears any inherited diagnostic profile; the accepted
+  same-epoch run therefore qualified only the ordinary product default.
+- The temporary standalone WinRT probe used during diagnosis is not shipped.
+  Physical qualification uses the bounded product verifier and exact default
+  backend; identifier-free staged diagnostics remain opt-in.
 - An identifier-free input-only differential now drives the same product
   `InputManager`/WinRT session without constructing any output transport. It
   requires a connected session, two advancing ECG frames, two advancing ACC

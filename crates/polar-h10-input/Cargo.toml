@@ -7,10 +7,6 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "polar-h10-winrt-probe"
-path = "src/polar_h10_winrt_probe.rs"
-
 [dependencies]
 btleplug = "0.12"
 futures-util.workspace = true

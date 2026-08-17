@@ -1,5 +1,18 @@
 # Decision log
 
+## 2026-08-17 — Remove the standalone WinRT probe from the publication surface
+
+The temporary `polar-h10-winrt-probe` binary isolated Windows projection and
+device behavior during diagnosis, but it is not part of the accepted Polar
+Stream runtime or its physical qualification chain. Its target and source are
+removed before publication so the product does not ship a second device owner
+or an ad-hoc hardware executable. The accepted direct-WinRT backend, bounded
+physical verifier, fake-backend lifecycle coverage, and identifier-free staged
+diagnostics remain. Closed differential profiles remain only as deterministic
+failure-regression evidence; the production-default verifier explicitly clears
+their environment selector and the accepted run used the ordinary
+reference-compatible lifecycle.
+
 ## 2026-08-17 — Accept the production-default physical H10 chain
 
 An attended reference-first Windows run observed exactly one H10 at 100% battery.
