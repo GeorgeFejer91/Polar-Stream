@@ -3,7 +3,7 @@ use std::{
     io::{self, BufRead, Write},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -183,6 +183,16 @@ fn flush_stdout() {
     let _ = io::stdout().flush();
 }
 
+fn validate_lsl_poll_progress(polls: u64, task_finished: bool) -> Result<(), &'static str> {
+    if task_finished {
+        Err("Rusty LSL blocking poll task exited before shutdown")
+    } else if polls == 0 {
+        Err("Rusty LSL blocking poll task made no progress before source readiness")
+    } else {
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let output = Arc::new(OutputRouter::new());
@@ -199,14 +209,17 @@ async fn main() -> Result<(), String> {
     }
 
     let poll_stop = Arc::new(AtomicBool::new(false));
+    let poll_count = Arc::new(AtomicU64::new(0));
     let poll_output = output.clone();
     let poll_task = {
         let stop = poll_stop.clone();
+        let polls = poll_count.clone();
         tokio::task::spawn_blocking(move || {
             while !stop.load(Ordering::Acquire) {
                 if let Some(message) = poll_output.poll_lsl() {
                     eprintln!("POLAR_H10_LSL_WARNING {message}");
                 }
+                polls.fetch_add(1, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(2));
             }
         })
@@ -310,6 +323,9 @@ async fn main() -> Result<(), String> {
             && ecg.reordered_frames == 0
             && acc.reordered_frames == 0;
         if source_ready && !source_ready_announced {
+            let polls = poll_count.load(Ordering::Relaxed);
+            validate_lsl_poll_progress(polls, poll_task.is_finished())?;
+            eprintln!("POLAR_H10_LSL_POLL_DIAGNOSTIC polls={polls} task_finished=false");
             println!("POLAR_H10_SOURCE_READY {}", output.health().lsl);
             flush_stdout();
             source_ready_announced = true;
@@ -407,5 +423,18 @@ mod tests {
         stats.observe(1_100_000_000, 10, 100.0);
         assert_eq!(stats.estimated_missing_samples, 10);
         assert_eq!(stats.reordered_frames, 1);
+    }
+
+    #[test]
+    fn poll_progress_guard_rejects_zero_and_early_exit() {
+        assert!(validate_lsl_poll_progress(1, false).is_ok());
+        assert_eq!(
+            validate_lsl_poll_progress(0, false),
+            Err("Rusty LSL blocking poll task made no progress before source readiness")
+        );
+        assert_eq!(
+            validate_lsl_poll_progress(1, true),
+            Err("Rusty LSL blocking poll task exited before shutdown")
+        );
     }
 }
