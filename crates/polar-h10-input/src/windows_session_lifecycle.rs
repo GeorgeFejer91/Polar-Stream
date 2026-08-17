@@ -208,6 +208,7 @@ impl StageReporter {
         }
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) fn record_immediate(
         self,
         stage: SessionStage,
@@ -375,6 +376,7 @@ fn cancel_operation<C: StageControl>(
     )
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) fn run_sync_stage<T, F>(
     reporter: StageReporter,
     stage: SessionStage,
@@ -486,6 +488,7 @@ impl FirstFrameStages {
 pub(crate) enum SubscriptionKind {
     HeartRate,
     PmdControl,
+    #[cfg(target_os = "windows")]
     PmdData,
 }
 
