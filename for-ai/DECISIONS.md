@@ -1,5 +1,25 @@
 # Decision log
 
+## 2026-08-17 — Accept the production-default physical H10 chain
+
+An attended reference-first Windows run observed exactly one H10 at 100% battery.
+With no session-profile override, the exact clean production-default candidate
+then selected one session, advanced ECG and three-axis ACC sensor timestamps,
+published two distinct Rusty outlets, and admitted one pinned pylsl
+1.18.2/liblsl 1.17.7 consumer per outlet. Official collection measured 365 ECG
+samples at 130.14 Hz and 432 ACC samples at 202.22 Hz with zero estimated loss,
+zero reorder, advancing LSL timestamps, nonzero values on every ACC axis, and no
+cross-stream match. Source evidence independently measured 584 ECG and 720 ACC
+samples with zero loss/reorder.
+
+Both official inlets closed before source stop, the source reported clean stop,
+the process exited zero, and no worker, listener, or Bluetooth lease remained.
+This accepts the bounded production-default Windows H10 → Rusty LSL → official
+consumer chain. It is not a long-duration latency benchmark, generic
+multi-consumer claim, predicate-filter conformance, browser transport proof, or
+release authorization. The backend remains optional/default-off and enabled
+distribution remains subject to the documented AGPL decision.
+
 ## 2026-08-17 — Promote the proven settings dwell into the Windows default
 
 The closed `reference-settings-dwell` candidate completed one reference-positive

@@ -198,21 +198,14 @@ Last verified: 2026-08-17
   infrastructure states otherwise.
 - Physical-device latency percentiles, queue high-water marks, and transport
   drop/error counters are not yet captured as a single end-to-end benchmark.
-- The optional Rusty LSL backend is host-qualified but not yet physically
-  accepted. The latest attended run selected an exact H10 and physically passed
-  the complete direct-WinRT session boundary: service/characteristic discovery,
-  notification subscriptions, PMD responses, and advancing first ECG and ACC
-  frames. Both independent Rusty outlets initialized and pinned official
-  pylsl/liblsl consumers resolved and opened them. Receiver-first startup and
-  identifier-free handoff diagnostics isolated a post-qualification callback
-  stop to the Windows preferred-connection request; leaving connection timing
-  system-managed restored sustained delivery. That run then failed the strict
-  official gate on four ECG and five ACC timestamp reversals. The prepared
-  per-stream sensor-to-local-clock mapping fixes the setup-buffer burst without
-  weakening reorder validation and is host-qualified in both output backends.
-  Retain the
-  publication and release hold until a fresh same-epoch run proves bounded ECG
-  and ACC counts/rates/order plus exact cleanup through that corrected chain.
+- The optional Rusty LSL backend has bounded production-default Windows H10
+  acceptance. One reference-first run with no diagnostic session override
+  advanced ECG and all three ACC axes, published two distinct outlets, and let
+  pinned pylsl 1.18.2/liblsl 1.17.7 consume 365 ECG samples at 130.14 Hz and
+  432 ACC samples at 202.22 Hz with zero estimated loss/reorder, advancing LSL
+  timestamps, no cross-stream match, and exact cleanup. This is not a
+  long-duration latency benchmark or release authorization; the backend remains
+  optional/default-off and no package enables it.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also

@@ -265,8 +265,13 @@ drained rapidly and each chunk had been independently stamped at host receipt
 time, so their nominal-rate backfilled ranges overlapped. Both output backends
 now map each raw stream's H10 sensor timestamps through an independent fixed
 offset into local LSL time before the existing within-chunk backfill. This is
-host-qualified but remains physically unaccepted until the complete same-epoch
-chain passes without loss, reorder, or residual resources.
+host-qualified and the subsequent production-default physical run completed the
+same-epoch chain. With no diagnostic session override, pinned pylsl
+1.18.2/liblsl 1.17.7 consumed 365 ECG samples at 130.14 Hz and 432 ACC samples at
+202.22 Hz with zero estimated loss/reorder, advancing timestamps, nonzero X/Y/Z,
+distinct outlets, no cross-stream mismatch, and exact cleanup. This bounded
+acceptance is not a long-duration latency benchmark, generic multi-consumer
+claim, predicate-filter conformance, or release authorization.
 
 The browser application is outside this transport. Its same-origin
 `BroadcastChannel`, event API, and CSV recorder are not LSL and remain unable
