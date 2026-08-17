@@ -67,10 +67,9 @@ Last verified: 2026-08-17
   therefore restores only the full doctor's typed, cancellable 1.5-second
   post-settings dwell. Default product behavior, scanner confirmation,
   error/timeout cleanup, and battery-after-qualification remain unchanged.
-- On Windows 11+, native BLE makes a best-effort throughput-optimized connection
-  parameter request and reports the request status, observed interval,
-  peripheral latency, and read-only negotiated MTU. Older Windows versions
-  continue with system-managed timing.
+- Native Windows BLE leaves connection parameters system-managed and reports
+  the observed interval, peripheral latency, and negotiated MTU read-only. It
+  does not mutate connection timing after sensor-frame qualification.
 - Immediate raw LSL/OSC publication with canonical names.
 - A default-off, mutually exclusive Rusty LSL source backend is pinned to merge
   `8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. Pinned pylsl
@@ -188,9 +187,8 @@ Last verified: 2026-08-17
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.
 - Windows CI validates the WinRT integration and the non-Windows `btleplug` path at compile and unit-test
-  level only. It does not prove that a particular adapter/H10 accepted the
-  preferred connection parameters; retain the reported link values and sample
-  counts from a physical Windows run before making that claim.
+  level only. Retain the system-managed link values and sample counts from a
+  physical Windows run before making timing claims.
 - liblsl availability and packaging differ by platform; follow `RELEASING.md`.
 - Both public ACC-derived respiration outputs are unvalidated and require
   comparison with a reference respiratory sensor before interpretation.

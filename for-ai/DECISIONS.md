@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-17 — Leave Windows connection timing system-managed
+
+Moving optional battery access before subscriptions did not restore sustained
+notifications, so that candidate was reverted. The resulting trace again kept
+a connected 232-byte session, healthy queues, and admitted official consumers
+while every native notification counter stopped after the initial sensor
+frames. With battery access restored to its prior location, the only remaining
+mutation between first-frame qualification and steady state was the
+best-effort `ThroughputOptimized` preferred-connection request.
+
+Polar Stream now follows the published reference boundary and leaves connection
+parameters under Windows ownership. It retains read-only connection interval,
+peripheral latency, and MTU diagnostics, but no longer creates or retains a
+preferred-parameter request after the sensor streams start. This is a bounded
+Windows acquisition change; PMD commands, response gates, callbacks, battery,
+Rusty LSL, default liblsl, and cleanup remain unchanged. Physical acceptance
+remains held for a fresh same-epoch run.
+
 ## 2026-08-17 — Observe the first-frame-to-steady-state handoff directly
 
 The first receiver-first physical run was reference-positive, reached both

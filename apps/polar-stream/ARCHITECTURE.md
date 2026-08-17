@@ -244,10 +244,9 @@ name/address, payload bytes, payload size, or stable device identity.
 
 [WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
 read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).
-The adapter makes a best-effort
-[`ThroughputOptimized` preferred connection request](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.requestpreferredconnectionparameters),
-then reports its status plus the observed interval, latency, and MTU. It neither
-forces MTU nor treats a rejected optimization request as an acquisition error.
+The adapter leaves connection parameters under Windows ownership and reports
+the observed interval, latency, and MTU read-only. It neither forces MTU nor
+mutates connection timing after sensor-frame qualification.
 
 The original safe-Rust implementation uses the public MIT-licensed
 [`MesmerPrism/PolarH10`](https://github.com/MesmerPrism/PolarH10) transport at

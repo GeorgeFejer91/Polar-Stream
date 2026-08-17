@@ -33,8 +33,7 @@ use windows::{
                 BluetoothLEAdvertisementReceivedEventArgs, BluetoothLEAdvertisementWatcher,
                 BluetoothLEAdvertisementWatcherStatus, BluetoothLEScanningMode,
             },
-            BluetoothCacheMode, BluetoothLEDevice, BluetoothLEPreferredConnectionParameters,
-            BluetoothLEPreferredConnectionParametersRequest,
+            BluetoothCacheMode, BluetoothLEDevice,
             GenericAttributeProfile::{
                 GattCharacteristic, GattCharacteristicProperties,
                 GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
@@ -2211,7 +2210,6 @@ impl Drop for Subscription {
 struct WinrtSession {
     device: BluetoothLEDevice,
     gatt_session: GattSession,
-    preferred_request: Option<BluetoothLEPreferredConnectionParametersRequest>,
     pmd_service: GattDeviceService,
     heart_rate_service: Option<GattDeviceService>,
     battery_service: Option<GattDeviceService>,
@@ -2261,7 +2259,6 @@ impl LinkDiagnosticSnapshot {
 struct OpeningSession {
     device: Option<BluetoothLEDevice>,
     gatt_session: Option<GattSession>,
-    preferred_request: Option<BluetoothLEPreferredConnectionParametersRequest>,
 }
 
 struct DiscoveredHandles {
@@ -2275,15 +2272,10 @@ struct DiscoveredHandles {
 }
 
 impl OpeningSession {
-    fn new(
-        device: BluetoothLEDevice,
-        gatt_session: GattSession,
-        preferred_request: Option<BluetoothLEPreferredConnectionParametersRequest>,
-    ) -> Self {
+    fn new(device: BluetoothLEDevice, gatt_session: GattSession) -> Self {
         Self {
             device: Some(device),
             gatt_session: Some(gatt_session),
-            preferred_request,
         }
     }
 
@@ -2308,7 +2300,6 @@ impl OpeningSession {
                 .gatt_session
                 .take()
                 .expect("opening GATT session is present"),
-            preferred_request: self.preferred_request.take(),
             pmd_service: handles.pmd_service,
             heart_rate_service: handles.heart_rate_service,
             battery_service: handles.battery_service,
@@ -2330,9 +2321,6 @@ impl Drop for OpeningSession {
         if let Some(session) = self.gatt_session.take() {
             let _ = session.SetMaintainConnection(false);
             let _ = session.Close();
-        }
-        if let Some(request) = self.preferred_request.take() {
-            let _ = request.Close();
         }
         if let Some(device) = self.device.take() {
             let _ = device.Close();
@@ -2627,8 +2615,8 @@ impl WinrtSession {
         // PMD differential skips that optional branch so its next physical run
         // changes exactly one production-session behavior. Battery discovery
         // remains outside required sensor qualification. Throughput
-        // optimization is requested only after both first frames.
-        let opening = OpeningSession::new(device, gatt_session, None);
+        // timing remains owned by Windows and is observed read-only.
+        let opening = OpeningSession::new(device, gatt_session);
         let (heart_rate_service, heart_rate) = if profile.heart_rate_enabled() {
             let service = optional_service(
                 opening.device(),
@@ -2753,23 +2741,6 @@ impl WinrtSession {
         ))
     }
 
-    fn request_preferred_connection(&mut self, reporter: StageReporter) -> Result<(), String> {
-        let request = run_sync_stage(reporter, SessionStage::PreferredConnectionRequest, || {
-            Ok(
-                BluetoothLEPreferredConnectionParameters::ThroughputOptimized()
-                    .ok()
-                    .and_then(|parameters| {
-                        self.device
-                            .RequestPreferredConnectionParameters(&parameters)
-                            .ok()
-                    }),
-            )
-        })
-        .map_err(|error| error.to_string())?;
-        self.preferred_request = request;
-        Ok(())
-    }
-
     fn link_diagnostic_snapshot(&self) -> LinkDiagnosticSnapshot {
         let connected = self.device.ConnectionStatus().ok().map(|status| {
             status == windows::Devices::Bluetooth::BluetoothConnectionStatus::Connected
@@ -2818,12 +2789,7 @@ impl WinrtSession {
                     parameters.ConnectionLatency().ok()?,
                 ))
             });
-        let requested = self
-            .preferred_request
-            .as_ref()
-            .and_then(|request| request.Status().ok())
-            .map(|status| format!("{status:?}"))
-            .unwrap_or_else(|| "system-managed".to_string());
+        let requested = "system-managed";
 
         match (observed, mtu) {
             (Some((interval, latency)), Some(mtu)) => format!(
@@ -3103,9 +3069,6 @@ impl WinrtSession {
 
     fn close_native_handles(&mut self) {
         let _ = self.gatt_session.SetMaintainConnection(false);
-        if let Some(request) = self.preferred_request.take() {
-            let _ = request.Close();
-        }
         if let Some(service) = &self.battery_service {
             let _ = service.Close();
         }
@@ -3401,8 +3364,6 @@ pub(super) async fn prepare(
         }
         .first_frame(FirstFrameKind::Acc, FIRST_STREAM_FRAME_TIMEOUT)
         .await?;
-        ensure_active(cancelled, "preferred connection request")?;
-        session.request_preferred_connection(reporter)?;
         send_status(&event_tx, "optimizing", session.link_summary()).await?;
         Ok::<(), String>(())
     }

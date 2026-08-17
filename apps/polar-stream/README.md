@@ -124,9 +124,9 @@ then owns the selected H10 through one persistent WinRT GATT session. It request
 discovers PMD uncached with bounded retry, subscribes directly, and waits for
 both decoded ECG and three-axis ACC before reporting a successful connection.
 Setup, queues, cancellation, and cleanup are bounded. The best-effort
-throughput-optimized connection request and observed interval/latency are
-reported in the activity log. Windows still owns MTU negotiation and exposes
-the negotiated value read-only.
+observed connection interval/latency are reported in the activity log, while
+Windows retains connection-parameter ownership. Windows also owns MTU
+negotiation and exposes the negotiated value read-only.
 
 ## Outputs
 
