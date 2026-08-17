@@ -178,16 +178,26 @@ class InletEvidence:
         }
 
 
-def collect_official_inlets(pylsl, results, close_requested):
+def collect_official_inlets(pylsl, results, close_requested, progress=None):
     """Collect in a daemon thread so native inlet calls cannot defeat the outer deadline."""
     inlets = {}
+
+    def report(stage: str):
+        if progress is not None:
+            progress.put(stage)
+
     try:
+        report("resolving-exact-outlets")
         streams = resolve_exact_streams(pylsl, timeout=15.0)
+        report("resolved-exact-outlets")
         for role in ("ecg", "acc"):
+            report(f"opening-{role}-inlet")
             inlet = pylsl.StreamInlet(streams[role], max_buflen=30, recover=False)
             inlet.open_stream(timeout=10.0)
             inlets[role] = inlet
+            report(f"opened-{role}-inlet")
 
+        report("collecting-samples")
         evidence = {
             "ecg": InletEvidence(channels=1, nominal_rate=130.0),
             "acc": InletEvidence(channels=3, nominal_rate=200.0),
@@ -234,12 +244,16 @@ def collect_official_inlets(pylsl, results, close_requested):
                 },
             )
         )
+        report("sample-thresholds-passed")
         close_requested.wait(timeout=150.0)
     except Exception as error:
+        report("worker-error")
         results.put(("error", f"{error}\n{traceback.format_exc()}"))
     finally:
+        report("closing-inlets")
         for inlet in inlets.values():
             inlet.close_stream()
+        report("inlets-closed")
 
 
 def main() -> int:
@@ -312,6 +326,7 @@ def main() -> int:
     reader = threading.Thread(target=read_output, daemon=True)
     reader.start()
     official_results = queue.Queue()
+    official_progress = queue.Queue()
     close_official = threading.Event()
     official_thread = None
     try:
@@ -342,7 +357,7 @@ def main() -> int:
 
         official_thread = threading.Thread(
             target=collect_official_inlets,
-            args=(pylsl, official_results, close_official),
+            args=(pylsl, official_results, close_official, official_progress),
             daemon=True,
         )
         official_thread.start()
@@ -350,6 +365,12 @@ def main() -> int:
         official_result = None
         collection_deadline = time.monotonic() + 120.0
         while time.monotonic() < collection_deadline:
+            while True:
+                try:
+                    progress_stage = official_progress.get_nowait()
+                except queue.Empty:
+                    break
+                print(f"POLAR_H10_OFFICIAL_STAGE {progress_stage}", file=sys.stderr)
             while True:
                 try:
                     line = events.get_nowait()

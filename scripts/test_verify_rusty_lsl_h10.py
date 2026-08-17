@@ -100,10 +100,11 @@ class OfficialInletWorkerTests(unittest.TestCase):
     def test_collects_exact_shapes_and_waits_for_explicit_close(self):
         pylsl = FakePylsl()
         results = queue.Queue()
+        progress = queue.Queue()
         close_requested = threading.Event()
         worker = threading.Thread(
             target=collect_official_inlets,
-            args=(pylsl, results, close_requested),
+            args=(pylsl, results, close_requested, progress),
             daemon=True,
         )
         worker.start()
@@ -114,6 +115,22 @@ class OfficialInletWorkerTests(unittest.TestCase):
         self.assertEqual(result["inlets"]["acc"]["samples"], 400)
         self.assertTrue(result["outlet_uids_distinct"])
         self.assertTrue(worker.is_alive())
+        stages = []
+        while not progress.empty():
+            stages.append(progress.get_nowait())
+        self.assertEqual(
+            stages,
+            [
+                "resolving-exact-outlets",
+                "resolved-exact-outlets",
+                "opening-ecg-inlet",
+                "opened-ecg-inlet",
+                "opening-acc-inlet",
+                "opened-acc-inlet",
+                "collecting-samples",
+                "sample-thresholds-passed",
+            ],
+        )
 
         close_requested.set()
         worker.join(timeout=1.0)

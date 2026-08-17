@@ -243,6 +243,7 @@ async fn main() -> Result<(), String> {
     let mut consumer_ecg_samples = 0_u64;
     let mut consumer_acc_samples = 0_u64;
     let mut source_ready_announced = false;
+    let mut last_lsl_health = output.health().lsl;
 
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -293,6 +294,12 @@ async fn main() -> Result<(), String> {
             }
         }
         flush_stdout();
+
+        let lsl_health = output.health().lsl;
+        if lsl_health != last_lsl_health {
+            eprintln!("POLAR_H10_LSL_HEALTH {lsl_health}");
+            last_lsl_health = lsl_health;
+        }
 
         let source_ready = connected_name.is_some()
             && ecg.frames >= 2
