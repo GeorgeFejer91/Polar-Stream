@@ -243,10 +243,8 @@ may be substituted for the pending end-to-end acceptance.
 
 The comparison is explicit: the published reference inserts a 500 ms delay and
 configures optional heart rate before required PMD. Polar Stream now uses that
-cancellable settle and heart-rate-first discovery order. Optional battery
-discovery/read completes before all notification subscriptions and PMD stream
-commands; an uncached service-table operation is never interposed between
-first-frame qualification and steady-state delivery. Their persistent-session,
+cancellable settle and heart-rate-first discovery order, and defers battery
+discovery until both required sensor streams qualify. Their persistent-session,
 uncached-service, service-access, retry/cached-fallback, and CCCD settings align.
 The adopted lesson is the reference lifecycle and staged settings → ECG → ACC
 control/data sequence. No implementation source is copied; the bounded settle
