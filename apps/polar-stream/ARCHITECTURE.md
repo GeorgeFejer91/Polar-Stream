@@ -262,7 +262,9 @@ optionally configures heart rate, then resolves PMD control/data and enables
 their notifications. Its known-working doctor requests ECG settings, observes
 the control/data phase for ECG, and only then starts ACC. Polar Stream now
 matches that settle and heart-rate-first discovery order while keeping optional
-battery discovery outside required sensor qualification. It gates startup on
+battery discovery outside required sensor qualification. Battery access occurs
+before every notification subscription and stream command so uncached service
+discovery cannot invalidate active callback owners. Startup then gates on
 the exact PMD settings response, ECG start response, first decoded ECG frame,
 ACC start response, and first decoded ACC frame. Malformed, rejected, missing, or
 out-of-order control responses fail closed. Both routes use uncached service

@@ -65,8 +65,13 @@ Last verified: 2026-08-17
   doctor received ECG, ACC, and HR while the full Polar Stream profile did not;
   the minimal probe also failed in adjacent epochs. The current closed profile
   therefore restores only the full doctor's typed, cancellable 1.5-second
-  post-settings dwell. Default product behavior, scanner confirmation,
-  error/timeout cleanup, and battery-after-qualification remain unchanged.
+  post-settings dwell. Default product behavior, scanner confirmation, and
+  error/timeout cleanup remain unchanged. The latest receiver-first trace
+  showed that PMD and heart-rate callbacks stopped only after the optional
+  uncached battery operation ran between first-frame qualification and steady
+  state. Battery discovery/read now completes before any notification
+  subscription or stream start, so it cannot invalidate active characteristic
+  objects.
 - On Windows 11+, native BLE makes a best-effort throughput-optimized connection
   parameter request and reports the request status, observed interval,
   peripheral latency, and read-only negotiated MTU. Older Windows versions

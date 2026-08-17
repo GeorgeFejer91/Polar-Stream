@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-17 — Complete optional battery access before stream subscriptions
+
+The reference-positive steady-state trace entered with a connected 232-byte
+session, two official consumers, no callback/queue faults, and successful ECG
+and ACC first frames. PMD-data callbacks advanced once more and then remained
+fixed at seven; heart-rate callbacks remained fixed at five for the full
+two-minute window while the connection stayed active. The callback-to-queue
+path was therefore healthy, but native notifications stopped after setup.
+
+The optional uncached battery service discovery/read was the only service-table
+operation between first-frame qualification and steady-state entry. It now
+completes immediately after session/service discovery and before any CCCD,
+handler, PMD command, or sensor frame. Battery remains optional and bounded;
+failure still does not block required sensor acquisition. This changes only
+the ordering of an existing Windows operation and preserves the reference
+settle, PMD response gates, session owner, cleanup, and transport behavior.
+Physical acceptance remains held for a fresh same-epoch run.
+
 ## 2026-08-17 — Observe the first-frame-to-steady-state handoff directly
 
 The first receiver-first physical run was reference-positive, reached both

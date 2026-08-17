@@ -1831,6 +1831,30 @@ struct SubscriptionActivation {
     handler_attached: bool,
 }
 
+#[derive(Default)]
+struct SessionSetupOrder {
+    battery_complete: bool,
+    subscriptions_started: bool,
+}
+
+impl SessionSetupOrder {
+    fn complete_battery(&mut self) -> Result<(), &'static str> {
+        if self.battery_complete || self.subscriptions_started {
+            return Err("optional battery access must complete exactly once before subscriptions");
+        }
+        self.battery_complete = true;
+        Ok(())
+    }
+
+    fn begin_subscriptions(&mut self) -> Result<(), &'static str> {
+        if !self.battery_complete || self.subscriptions_started {
+            return Err("subscriptions require completed optional battery access");
+        }
+        self.subscriptions_started = true;
+        Ok(())
+    }
+}
+
 impl SubscriptionActivation {
     fn commit_cccd(&mut self) -> Result<(), &'static str> {
         if self.cccd_committed {
@@ -3199,6 +3223,28 @@ pub(super) async fn prepare(
     let (raw_tx, mut raw_rx) = mpsc::channel(RAW_NOTIFICATION_CAPACITY);
     let (fault_tx, mut fault_rx) = watch::channel(None::<String>);
     let mut session = WinrtSession::open(device_id, profile, reporter, cancelled).await?;
+    let mut setup_order = SessionSetupOrder::default();
+    // Discover/read the optional battery characteristic before any stream
+    // subscription exists. An uncached service-table operation after PMD and
+    // heart-rate notifications have started can leave their existing WinRT
+    // characteristic objects connected but no longer delivering callbacks.
+    let battery_percent = match async {
+        ensure_active(cancelled, "battery read")?;
+        let battery_percent = session.read_battery(reporter, cancelled).await;
+        ensure_active(cancelled, "battery read")?;
+        Ok::<_, String>(battery_percent)
+    }
+    .await
+    {
+        Ok(battery_percent) => battery_percent,
+        Err(error) => {
+            session.shutdown().await;
+            return Err(error);
+        }
+    };
+    setup_order
+        .complete_battery()
+        .map_err(|error| format!("Windows WinRT setup-order invariant failed: {error}"))?;
     let probe_tx = if profile.probe_std_handoff() {
         let (bridge, probe_tx) = ProbeNotificationBridge::start(
             raw_tx.clone(),
@@ -3215,6 +3261,9 @@ pub(super) async fn prepare(
     let mut frame_stages = FirstFrameStages::new(reporter);
 
     if let Err(error) = async {
+        setup_order
+            .begin_subscriptions()
+            .map_err(|error| format!("Windows WinRT setup-order invariant failed: {error}"))?;
         ensure_active(cancelled, "status publication")?;
         send_status(&event_tx, "optimizing", session.link_summary()).await?;
         send_status(
@@ -3414,15 +3463,6 @@ pub(super) async fn prepare(
         return Err(error);
     }
 
-    if let Err(error) = ensure_active(cancelled, "battery read") {
-        session.shutdown().await;
-        return Err(error);
-    }
-    let battery_percent = session.read_battery(reporter, cancelled).await;
-    if let Err(error) = ensure_active(cancelled, "battery read") {
-        session.shutdown().await;
-        return Err(error);
-    }
     Ok(PreparedConnection {
         session,
         raw_rx,
@@ -4589,6 +4629,28 @@ mod tests {
         assert_eq!(
             activation.attach_handler(),
             Err("handler was attached more than once")
+        );
+    }
+
+    #[test]
+    fn optional_battery_access_precedes_every_stream_subscription() {
+        let mut order = SessionSetupOrder::default();
+        assert_eq!(
+            order.begin_subscriptions(),
+            Err("subscriptions require completed optional battery access")
+        );
+
+        order.complete_battery().expect("first battery phase");
+        assert_eq!(
+            order.complete_battery(),
+            Err("optional battery access must complete exactly once before subscriptions")
+        );
+        order
+            .begin_subscriptions()
+            .expect("first subscription phase");
+        assert_eq!(
+            order.begin_subscriptions(),
+            Err("subscriptions require completed optional battery access")
         );
     }
 
