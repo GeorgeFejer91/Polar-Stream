@@ -2762,6 +2762,7 @@ dependencies = [
  "tokio",
  "uuid",
  "windows 0.62.2",
+ "windows-future 0.3.2",
 ]
 
 [[package]]
@@ -3102,7 +3103,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 [[package]]
 name = "rusty-lsl"
 version = "0.0.0"
-source = "git+https://github.com/MesmerPrism/rusty-lsl?rev=74f7d0ea2cce9b3d049ea24602527a5f52360554#74f7d0ea2cce9b3d049ea24602527a5f52360554"
+source = "git+https://github.com/MesmerPrism/rusty-lsl?rev=8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd#8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd"
 
 [[package]]
 name = "same-file"

@@ -4,18 +4,25 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import queue
 import subprocess
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RUSTY_LSL_REVISION = "74f7d0ea2cce9b3d049ea24602527a5f52360554"
+RUSTY_LSL_REVISION = "8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd"
 BASE = "polar_stream_h10_acceptance"
+SCAN_SELECTION_TIMEOUT_SECONDS = 30.0
+POST_SELECTION_SOURCE_READY_TIMEOUT_SECONDS = 60.0
+SCAN_DIAGNOSTICS_ENV = "POLAR_STREAM_H10_SCAN_DIAGNOSTICS"
+SESSION_DIAGNOSTICS_ENV = "POLAR_STREAM_H10_SESSION_DIAGNOSTICS"
+SESSION_PROFILE_ENV = "POLAR_STREAM_H10_SESSION_PROFILE"
 EXPECTED = {
     "ecg": (f"{BASE}_rawECG", "ECG", 1, 130.0, f"polar-h10-{BASE}_rawECG"),
     "acc": (
@@ -26,6 +33,14 @@ EXPECTED = {
         f"polar-h10-{BASE}_rawACC",
     ),
 }
+
+
+def physical_source_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment[SCAN_DIAGNOSTICS_ENV] = "1"
+    environment[SESSION_DIAGNOSTICS_ENV] = "1"
+    environment.pop(SESSION_PROFILE_ENV, None)
+    return environment
 
 
 def descriptor(info):
@@ -42,6 +57,12 @@ def descriptor(info):
 def expected_descriptor(pylsl, role: str):
     name, stream_type, channels, rate, source_id = EXPECTED[role]
     return (name, stream_type, channels, rate, pylsl.cf_float32, source_id)
+
+
+def git_read(*arguments: str) -> str:
+    return subprocess.check_output(
+        ["git", *arguments], cwd=ROOT, text=True, encoding="utf-8"
+    ).strip()
 
 
 def resolve_exact_streams(pylsl, timeout: float):
@@ -156,108 +177,42 @@ class InletEvidence:
         }
 
 
-def main() -> int:
-    try:
-        import pylsl
-    except ImportError as error:
-        raise SystemExit(
-            "pylsl is required; use the pinned pylsl 1.18.2/liblsl 1.17.7 environment"
-        ) from error
-    if pylsl.__version__ != "1.18.2" or pylsl.library_version() != 117:
-        raise SystemExit(
-            f"expected pylsl 1.18.2/liblsl 117, found "
-            f"{pylsl.__version__}/{pylsl.library_version()}"
-        )
-
-    command = [
-        "cargo",
-        "run",
-        "-p",
-        "polar-stream",
-        "--example",
-        "verify_rusty_lsl_h10",
-        "--no-default-features",
-        "--features",
-        "rusty-lsl-backend",
-        "--quiet",
-    ]
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    )
-    lines: list[str] = []
-    events: queue.Queue[str] = queue.Queue()
-
-    def read_output():
-        assert process.stdout is not None
-        for line in process.stdout:
-            lines.append(line)
-            events.put(line)
-
-    reader = threading.Thread(target=read_output, daemon=True)
-    reader.start()
+def collect_official_inlets(pylsl, results, close_requested, progress=None):
+    """Collect in a daemon thread so native inlet calls cannot defeat the outer deadline."""
     inlets = {}
-    try:
-        ready_deadline = time.monotonic() + 180.0
-        while time.monotonic() < ready_deadline:
-            try:
-                line = events.get(timeout=0.25)
-            except queue.Empty:
-                if process.poll() is not None:
-                    raise RuntimeError("physical source exited before LSL readiness")
-                continue
-            if line.startswith("POLAR_H10_LSL_READY "):
-                break
-        else:
-            raise RuntimeError("physical source did not reach LSL readiness")
 
+    def report(stage: str):
+        if progress is not None:
+            progress.put(stage)
+
+    try:
+        report("resolving-exact-outlets")
         streams = resolve_exact_streams(pylsl, timeout=15.0)
+        report("resolved-exact-outlets")
         for role in ("ecg", "acc"):
+            report(f"opening-{role}-inlet")
             inlet = pylsl.StreamInlet(streams[role], max_buflen=30, recover=False)
             inlet.open_stream(timeout=10.0)
             inlets[role] = inlet
+            report(f"opened-{role}-inlet")
 
+        report("collecting-samples")
         evidence = {
             "ecg": InletEvidence(channels=1, nominal_rate=130.0),
             "acc": InletEvidence(channels=3, nominal_rate=200.0),
         }
-        source_result = None
-        collection_deadline = time.monotonic() + 120.0
-        while time.monotonic() < collection_deadline:
+        while (
+            evidence["ecg"].sample_count < 260
+            or evidence["acc"].sample_count < 400
+        ):
             for role in ("ecg", "acc"):
                 samples, timestamps = inlets[role].pull_chunk(
                     timeout=0.05, max_samples=1024
                 )
                 evidence[role].observe(samples, timestamps)
-            while True:
-                try:
-                    line = events.get_nowait()
-                except queue.Empty:
-                    break
-                if line.startswith("POLAR_H10_CAPTURE_COMPLETE "):
-                    source_result = json.loads(
-                        line.removeprefix("POLAR_H10_CAPTURE_COMPLETE ")
-                    )
-            if source_result is not None:
-                break
-            if process.poll() is not None:
-                raise RuntimeError("physical source exited before capture completion")
-        if source_result is None:
-            raise RuntimeError("physical source did not complete within two minutes")
 
         ecg = evidence["ecg"]
         acc = evidence["acc"]
-        if ecg.sample_count < 260 or acc.sample_count < 400:
-            raise RuntimeError(
-                f"insufficient official samples: ECG={ecg.sample_count}, ACC={acc.sample_count}"
-            )
         if ecg.reordered or acc.reordered:
             raise RuntimeError(
                 f"official inlet reorder: ECG={ecg.reordered}, ACC={acc.reordered}"
@@ -271,12 +226,192 @@ def main() -> int:
             for value in acc.minimum_by_channel + acc.maximum_by_channel
         ):
             raise RuntimeError("ACC value exceeded the bounded i16 device domain")
+
+        results.put(
+            (
+                "ready",
+                {
+                    "descriptors": {
+                        role: descriptor(streams[role]) for role in ("ecg", "acc")
+                    },
+                    "outlet_uids_distinct": (
+                        streams["ecg"].uid() != streams["acc"].uid()
+                    ),
+                    "inlets": {
+                        role: evidence[role].evidence() for role in ("ecg", "acc")
+                    },
+                },
+            )
+        )
+        report("sample-thresholds-passed")
+        close_requested.wait(timeout=150.0)
+    except Exception as error:
+        report("worker-error")
+        results.put(("error", f"{error}\n{traceback.format_exc()}"))
+    finally:
+        report("closing-inlets")
+        for inlet in inlets.values():
+            inlet.close_stream()
+        report("inlets-closed")
+
+
+def wait_for_physical_source_ready(process, events, start_official_inlets):
+    """Start official consumers at outlet readiness, then await the H10 source."""
+    selected = False
+    official_started = False
+    ready_deadline = time.monotonic() + SCAN_SELECTION_TIMEOUT_SECONDS
+    while time.monotonic() < ready_deadline:
+        try:
+            line = events.get(timeout=0.25)
+        except queue.Empty:
+            if process.poll() is not None:
+                raise RuntimeError("physical source exited before source readiness")
+            continue
+        if line.startswith("POLAR_H10_LSL_INITIALIZED ") and not official_started:
+            start_official_inlets()
+            official_started = True
+        if line.startswith("POLAR_H10_SELECTED "):
+            selected = True
+            ready_deadline = time.monotonic() + POST_SELECTION_SOURCE_READY_TIMEOUT_SECONDS
+        if line.startswith("POLAR_H10_SOURCE_READY "):
+            if not official_started:
+                raise RuntimeError(
+                    "physical source reached sensor readiness before official inlet startup"
+                )
+            return
+    if not selected:
+        raise RuntimeError("candidate scan did not select an H10 within its bounded window")
+    raise RuntimeError("physical source did not reach readiness after candidate selection")
+
+
+def main() -> int:
+    try:
+        import pylsl
+    except ImportError as error:
+        raise SystemExit(
+            "pylsl is required; use the pinned pylsl 1.18.2/liblsl 1.17.7 environment"
+        ) from error
+    if pylsl.__version__ != "1.18.2" or pylsl.library_version() != 117:
+        raise SystemExit(
+            f"expected pylsl 1.18.2/liblsl 117, found "
+            f"{pylsl.__version__}/{pylsl.library_version()}"
+        )
+    status = git_read("status", "--porcelain", "--untracked-files=normal")
+    if status:
+        raise SystemExit(
+            "physical qualification requires an exact clean Polar Stream checkout"
+        )
+    polar_stream_revision = git_read("rev-parse", "HEAD")
+    polar_stream_tree = git_read("rev-parse", "HEAD^{tree}")
+
+    build_command = [
+        "cargo",
+        "build",
+        "-p",
+        "polar-stream",
+        "--example",
+        "verify_rusty_lsl_h10",
+        "--no-default-features",
+        "--features",
+        "rusty-lsl-backend",
+    ]
+    subprocess.run(build_command, cwd=ROOT, check=True, timeout=180.0)
+    metadata = json.loads(
+        subprocess.check_output(
+            ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+        )
+    )
+    executable = (
+        pathlib.Path(metadata["target_directory"])
+        / "debug"
+        / "examples"
+        / ("verify_rusty_lsl_h10.exe" if os.name == "nt" else "verify_rusty_lsl_h10")
+    )
+    process = subprocess.Popen(
+        [str(executable)],
+        cwd=ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        env=physical_source_environment(),
+    )
+    lines: list[str] = []
+    events: queue.Queue[str] = queue.Queue()
+
+    def read_output():
+        assert process.stdout is not None
+        for line in process.stdout:
+            lines.append(line)
+            events.put(line)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    official_results = queue.Queue()
+    official_progress = queue.Queue()
+    close_official = threading.Event()
+    official_thread = threading.Thread(
+        target=collect_official_inlets,
+        args=(pylsl, official_results, close_official, official_progress),
+        daemon=True,
+    )
+    try:
+        wait_for_physical_source_ready(
+            process,
+            events,
+            official_thread.start,
+        )
+        source_result = None
+        official_result = None
+        collection_deadline = time.monotonic() + 120.0
+        while time.monotonic() < collection_deadline:
+            while True:
+                try:
+                    progress_stage = official_progress.get_nowait()
+                except queue.Empty:
+                    break
+                print(f"POLAR_H10_OFFICIAL_STAGE {progress_stage}", file=sys.stderr)
+            while True:
+                try:
+                    line = events.get_nowait()
+                except queue.Empty:
+                    break
+                if line.startswith("POLAR_H10_CAPTURE_COMPLETE "):
+                    source_result = json.loads(
+                        line.removeprefix("POLAR_H10_CAPTURE_COMPLETE ")
+                    )
+            try:
+                official_status, official_payload = official_results.get_nowait()
+            except queue.Empty:
+                pass
+            else:
+                if official_status == "error":
+                    raise RuntimeError(f"official inlet worker failed: {official_payload}")
+                official_result = official_payload
+            if source_result is not None and official_result is not None:
+                break
+            if process.poll() is not None:
+                raise RuntimeError("physical source exited before capture completion")
+            time.sleep(0.01)
+        if source_result is None or official_result is None:
+            raise RuntimeError(
+                "physical source and official inlets did not complete within two minutes "
+                f"(source_complete={source_result is not None}, "
+                f"official_complete={official_result is not None})"
+            )
         if source_result["result"] != "source-pass":
             raise RuntimeError(f"physical source result was not a pass: {source_result!r}")
 
-        for inlet in inlets.values():
-            inlet.close_stream()
-        inlets.clear()
+        close_official.set()
+        official_thread.join(timeout=10.0)
+        if official_thread.is_alive():
+            raise RuntimeError("official inlet worker did not close within ten seconds")
         assert process.stdin is not None
         process.stdin.write("\n")
         process.stdin.flush()
@@ -291,7 +426,8 @@ def main() -> int:
 
         result = {
             "schema": "polar.stream.h10_rusty_lsl_official_acceptance.v1",
-            "polar_stream_base": "9d18dd9a41791af94afb621de447aeffafc340f9",
+            "polar_stream_revision": polar_stream_revision,
+            "polar_stream_tree": polar_stream_tree,
             "rusty_lsl_revision": RUSTY_LSL_REVISION,
             "official_consumer": {
                 "pylsl": pylsl.__version__,
@@ -299,11 +435,9 @@ def main() -> int:
                 "discovery": "broad enumeration plus exact client-side descriptor match",
                 "predicate_filter_conformance": "unsupported and not exercised",
             },
-            "descriptors": {
-                role: descriptor(streams[role]) for role in ("ecg", "acc")
-            },
-            "outlet_uids_distinct": streams["ecg"].uid() != streams["acc"].uid(),
-            "inlets": {role: evidence[role].evidence() for role in ("ecg", "acc")},
+            "descriptors": official_result["descriptors"],
+            "outlet_uids_distinct": official_result["outlet_uids_distinct"],
+            "inlets": official_result["inlets"],
             "source": source_result,
             "cross_stream_misidentification": False,
             "cleanup": {
@@ -319,8 +453,7 @@ def main() -> int:
         print(json.dumps(result, sort_keys=True))
         return 0
     except Exception:
-        for inlet in inlets.values():
-            inlet.close_stream()
+        close_official.set()
         if process.poll() is None:
             process.terminate()
             try:
@@ -328,6 +461,8 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5.0)
+        if official_thread.ident is not None:
+            official_thread.join(timeout=2.0)
         reader.join(timeout=2.0)
         print("".join(lines), file=sys.stderr)
         raise

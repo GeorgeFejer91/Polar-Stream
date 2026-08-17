@@ -9,11 +9,12 @@ cargo run -p polar-stream --no-default-features --features rusty-lsl-backend
 ```
 
 The dependency is commit-pinned to Rusty LSL
-`74f7d0ea2cce9b3d049ea24602527a5f52360554`. This is the reviewed merge that
-adds official-consumer initialization for one-channel ECG and three-channel
-ACC without changing its one-channel behavior. Updating that revision requires
-a new exact interoperability and physical-device review; a floating branch or
-tag is not accepted.
+`8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. This is the reviewed merge that
+preserves one-channel initialization, admits three-channel initialization, and
+routes concurrent ECG and ACC official-inlet full-info requests independently
+from their data-consumer slots. Updating that revision requires a new exact
+interoperability and physical-device review; a floating branch or tag is not
+accepted.
 
 ## Transport contract
 
@@ -24,8 +25,9 @@ already-arrived BLE notification as one bounded chunk:
 - raw ECG: Float32, 1 channel, nominal 130 Hz;
 - raw ACC: Float32, 3 channels in X/Y/Z order, nominal 200 Hz;
 - canonical name, type, source ID, channel labels, units, and Polar metadata;
-- source timestamps in the local LSL clock domain, backfilled at the declared
-  nominal rate from the notification's newest sample; and
+- source timestamps in the local LSL clock domain: each raw outlet maps H10
+  sensor time through a first-frame local-clock offset, then backfills at the
+  declared nominal rate from the notification's mapped newest sample; and
 - up to 256 records per chunk, 64 outlets, and exactly one admitted official
   consumer per outlet.
 
@@ -38,17 +40,20 @@ LSL auxiliary-connection and fan-out qualification before this bound can move.
 Polar's PMD sensor timestamp is retained separately in the native input event,
 OSC, and physical evidence. It is not substituted directly into LSL because it
 belongs to the H10 device-clock domain rather than the host LSL clock domain.
+The per-outlet offset maps its spacing into local LSL time, including when
+several setup-buffered notifications are drained in one host scheduling burst.
 
 The advertised IPv4 interface is selected from the operating-system multicast
 route without sending a probe datagram. Set
 `POLAR_STREAM_RUSTY_LSL_IPV4=<concrete-unicast-IPv4>` to make that choice
 explicit. Unspecified, multicast, broadcast, malformed, or unbindable values
 fail visibly; the backend does not silently advertise an unrelated interface.
-Windows can assign a TCP ephemeral port that is excluded or unavailable for
-the paired UDP timedata socket. Setup therefore reserves an eligible UDP port
-first, binds TCP to that same numeric port while the reservation remains held,
-and releases the probe immediately before registry admission. Pair selection
-is bounded to 16 attempts, and registry admission retries only the exact
+Windows can assign a TCP ephemeral port whose paired UDP timedata port is
+excluded or unavailable. Setup therefore asks Windows for a valid TCP listener
+first, reserves UDP on that same numeric port while the listener remains held,
+and retries the complete pair when UDP is unavailable. The UDP reservation is
+released immediately before registry admission. Pair selection is bounded to
+16 attempts, and registry admission retries only the exact
 `AddrInUse`/`PermissionDenied` release-to-bind race, at most four times, before
 failing. Tests cover deterministic conflict, retry, release, and rebind without
 a leaked listener.
@@ -67,25 +72,206 @@ that API.
 
 ## Validation and limits
 
-`scripts/verify_rusty_lsl_backend.py` runs two synthetic outlets against
-pinned pylsl 1.18.2/liblsl 1.17.7. It is host interoperability evidence, not a
-device test. `scripts/verify_rusty_lsl_h10.py` additionally drives the native
-Windows BLE input and requires one exact H10, advancing ECG/ACC sensor
-timestamps, nonzero bounded X/Y/Z data, exact descriptors, distinct official
-inlets, and count/rate/loss/reorder plus cleanup evidence. Its output may
-contain a device identifier and must remain ignored/private; it records bounded
-aggregates, not physiological samples.
+`scripts/verify_rusty_lsl_backend.py` runs two synthetic outlets from an exact
+clean commit/tree against pinned pylsl 1.18.2/liblsl 1.17.7. It is host
+interoperability evidence, not a device test.
+`scripts/verify_rusty_lsl_h10.py` additionally drives the native Windows BLE
+input from an exact clean commit/tree and requires one exact H10, advancing
+ECG/ACC sensor timestamps, nonzero bounded X/Y/Z data, exact descriptors,
+distinct official inlets, and count/rate/loss/reorder plus cleanup evidence.
+Its output may contain a device identifier and must remain ignored/private; it
+records bounded aggregates, not physiological samples. Official inlet
+collection starts as soon as both independent outlets report initialization,
+before BLE selection and source-frame qualification. Source readiness is then
+awaited independently and cannot pass before the official worker has started.
+This receiver-first order matches the synthetic official-consumer gate and
+prevents consumer admission from depending on later physical-frame delivery.
+The worker is a daemon so a native liblsl call cannot defeat the outer
+deadline; selection has a separate 30-second
+fail-fast bound, post-selection source readiness has a 60-second bound, and
+source/consumer collection retains its two-minute bound. The worker must close
+before the source is stopped. Native session setup has its own 45-second total
+budget, so a typed native stage exits before the outer source-readiness bound.
+`POLAR_STREAM_H10_SESSION_DIAGNOSTICS` is enabled by this verifier and records
+stage name, attempt, entry/exit, duration, and result class. It also records
+identifier-free characteristic properties, selected CCCD mode and successful
+commit count, handler lifetime counts,
+per-source callback/decode/enqueue counts, callback faults, and queue outcomes.
+Link checkpoints record only connection state, negotiated PDU size, connection
+interval units, and peripheral latency.
+It never records addresses, names, payload bytes or sizes, manufacturer data, or
+stable device identities. PMD settings and start responses are separate stages
+from their GATT writes and first frames.
 
-The synthetic host qualification passed. During bounded physical Windows
-testing, two available straps each passed the separate native WinRT reference
-doctor through PMD ECG and ACC frames. Polar Stream's existing `btleplug`
-acquisition path did not complete the same acceptance: clean attempts stopped
-at connect, notification-receiver setup, or before the first PMD frame. This is
-a stage-specific Windows backend blocker, not Rusty LSL or device acceptance.
-No identifiers or physiological recordings are committed. A future native
-WinRT backend is a separate source/license/ownership unit; this adapter does not
-copy it. A ready change or release still requires a passing Polar Stream
-physical run.
+The latest attended run physically passed exact H10 selection, the complete
+direct-WinRT setup, both first sensor frames, two independent outlet
+initializations, and official descriptor resolution/open. It timed out before
+the verifier completed all source/consumer thresholds. The receiver-first
+ordering above is the prepared source-only correction; it is not physical
+acceptance until a new same-epoch run completes bounded ECG/ACC delivery,
+rate/order/loss evidence, and exact cleanup.
+The first run with that order admitted both official consumers before source
+readiness, then failed to complete either source or consumer thresholds after
+the first-frame-to-steady-state handoff. With session diagnostics enabled, the
+steady-state owner now emits identifier-free link and cumulative
+callback/decode/enqueue/fault/queue checkpoints every five seconds. Those
+checkpoints diagnose the remaining input boundary; they do not alter it.
+
+An attended differential set
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential`. This closed,
+verifier-only profile skipped optional heart-rate discovery and subscription,
+but the same physical zero-PMD-data-callback failure remained. Heart-rate setup
+is therefore eliminated. The next attended verifier uses
+`pmd-only-retain-successful-gatt-operations`: it retains the HR-free baseline
+and additionally omits success-time `Close()` only for PMD CCCD/control-write
+WinRT operations. Failed, timed-out, cancelled, rollback, and final cleanup
+paths still cancel/close. The attended run still received both control
+responses but no PMD-data callback, eliminating explicit success-time close.
+The next verifier uses `pmd-only-winrt-when-completion`, changing only the PMD
+CCCD/control completion projection to the passing probe's `windows-future`
+`.when` callback while preserving the same deadlines and cleanup. An absent
+variable preserves the normal reference-compatible product path; any other
+value rejects before device setup. These are diagnostic profiles, not supported
+user configuration.
+
+An input-only product differential then reproduced the missing PMD-data event
+without constructing any output transport, eliminating Rusty LSL and output
+initialization as causes. The next verifier profile is
+`pmd-only-winrt-when-all-setup`: it extends the passing probe's `.when`
+completion and no-success-close policy from PMD CCCD/control operations to the
+entire selected-device setup chain. Timeout/error cancellation and final
+cleanup remain unchanged. A reference-positive input-only run still reached
+both ECG control responses with zero PMD-data callbacks, eliminating the full
+selected-device async completion projection. The next diagnostic-only profile
+is `pmd-only-probe-equivalent-sequence`. It retains those operation lifetimes
+and additionally matches the passing probe's PMD setup sequence: one PMD
+service-access request, direct uncached exact characteristic lookups, explicit
+control-Indicate/data-Notify CCCDs, no inter-subscription delay, and no
+pre-frame link-property reads. The default product profile is unchanged.
+A reference-positive physical run still received both ECG control responses
+and zero PMD-data callbacks, eliminating those setup-order differences. The
+next diagnostic-only profile, `pmd-only-probe-std-handoff`, retains that setup
+and moves only the native callback handoff onto the passing probe's bounded
+standard-library channel. One owned bridge forwards into the existing bounded
+Tokio queue and stops/joins during normal reverse-order cleanup.
+That exact candidate still produced both ECG control responses and zero PMD
+data callbacks in a reference-positive physical run, eliminating callback
+capture and callback-to-queue delivery. The final closed diagnostic profile,
+`pmd-only-probe-synchronous-owner`, moves the complete GATT lifecycle onto one
+plain MTA owner thread: native-operation completions, response/frame waits,
+steady receive, cancellation, and reverse cleanup are synchronous and bounded.
+Decoded events alone cross to the application channel. This remains a
+verifier-only differential until both input-only and official-inlet physical
+qualification pass.
+The synchronous-owner profile also timed out. In a later exact lease the full
+published PolarH10 doctor received ECG, ACC, and HR, while both Polar Stream's
+PMD-only synchronous and full reference-compatible profiles received no PMD
+data. Adjacent minimal-probe failures make its earlier single pass insufficient
+authority for deleting the full doctor's fixed timing edge. The next closed
+profile, `reference-settings-dwell`, retains the full product lifecycle and
+adds only a typed, cancellable 1.5-second dwell after the validated settings
+response and before ECG start. That candidate subsequently completed the full
+physical source-to-official-inlet chain without loss or reorder. The dwell is
+therefore part of the normal reference-compatible Windows lifecycle, and the
+verifier clears any inherited profile override before default qualification.
+
+The synthetic host qualification passed. Earlier bounded physical Windows
+testing found two straps with the separate native WinRT reference doctor, while
+Polar Stream's old `btleplug` GATT connection path stopped at connect,
+notification-receiver setup, or before the first PMD frame. A later bounded
+pre-publication attempt initialized both Rusty outlets but the `btleplug`
+scanner did not return before exact H10 selection. Polar Stream now has its own
+direct safe-Rust WinRT advertisement and session backend with bounded discovery,
+subscription, first-frame qualification, cancellation, queues, and cleanup.
+An attended differential scan then proved the exact published reference
+watcher could observe one H10 while the candidate received advertisements but
+admitted none. Source diagnosis found that the candidate evaluated service-UUID
+enumeration before the exact local-name route used by the reference. Those
+predicates are now independent, and unnamed service candidates require bounded
+direct WinRT exact-model confirmation. A subsequent same-lease physical run
+was reference-positive and the repaired candidate selected one exact H10, so
+discovery and predicate selection are no longer the blocker. A same-device
+reference doctor then consumed ECG, ACC, and heart-rate notifications. The
+response-gated candidate passed device/session acquisition, service and
+characteristic discovery, all three CCCDs, and successful ECG settings/start
+responses, but timed out before its first ECG data callback; ACC start was not
+attempted. Rusty outlets and official physical inlets were not reached. Handler
+order, a reference-style settings delay, and a pre-stream preferred-connection
+request were separately eliminated as causes. The remaining gate is therefore
+the WinRT PMD data-notification delivery/lifetime boundary, not scanner, GATT
+setup, the physical H10, or Rusty LSL. An
+earlier zero from the published reference CLI wrapper is invalid
+because that wrapper returns immediately after starting its asynchronous
+watcher and is not device-state evidence.
+
+A later reference-positive differential run kept the candidate connected with a
+232-byte negotiated PDU through the accepted ECG start response. PMD control and
+heart-rate callbacks advanced, but PMD data delivered no WinRT event at all.
+This rules out link readiness and MTU for that epoch. The next source checkpoint
+adds fail-closed CCCD readback and explicit agile ownership of each registered
+event delegate; it has deterministic host coverage but is not physical
+acceptance until another attended same-epoch chain reaches both sensor streams
+and the pinned official inlets.
+
+CCCD readback and the reference-aligned settle/discovery order subsequently
+passed on hardware without producing a PMD-data event; PMD control and heart
+rate still advanced. The remaining host hypothesis is runtime ownership. The
+whole selected-device WinRT lifecycle now runs on one explicitly initialized
+MTA thread and one current-thread executor, including setup, callbacks, stop,
+handler removal, handle closure, and balanced apartment teardown. Deterministic
+tests prove thread identity across async yields and completion signalling. An
+attended reference-positive run of that exact candidate still produced PMD
+control and heart-rate callbacks but zero PMD-data callbacks, ruling out
+runtime-worker migration.
+
+The direct-handler candidate and the standalone PMD probe closed the generic
+projection question: the minimal probe physically received ECG and ACC while
+the full product path in the same lease still received zero PMD-data callbacks.
+The next candidate therefore uses the closed PMD-only verifier profile above to
+remove only optional heart-rate discovery/subscription from the full product
+session. It is not device acceptance until an attended same-epoch run reaches
+both sensor streams and both official inlets.
+
+The typed trace proved address/device acquisition, persistent session setup,
+service/characteristic access, all three CCCDs, and the ECG settings/start
+writes and responses succeeded. A GATT result does not prove the PMD protocol
+admitted a stream, so
+the host candidate now requests ECG settings and requires its exact successful
+control response, then requires the ECG start response and first ECG frame
+before issuing ACC start and requiring its response and first ACC frame.
+Malformed, rejected, missing, duplicate/out-of-order control responses and
+per-stage timeouts fail closed. Each WinRT async operation owns a bounded
+cancel/close path; partial setup rolls back registered callbacks in reverse
+order and closes the session once. This response-gated repair is host evidence
+until another attended physical run. No identifiers or physiological
+recordings are committed, and neither the reference-doctor runs nor compilation
+may be substituted for the pending end-to-end acceptance.
+
+The comparison is explicit: the published reference inserts a 500 ms delay and
+configures optional heart rate before required PMD. Polar Stream now uses that
+cancellable settle and heart-rate-first discovery order, and defers battery
+discovery until both required sensor streams qualify. Their persistent-session,
+uncached-service, service-access, retry/cached-fallback, and CCCD settings align.
+The adopted lesson is the reference lifecycle and staged settings → ECG → ACC
+control/data sequence. No implementation source is copied; the bounded settle
+is an explicit, cancellable Windows compatibility stage rather than an
+unobserved delay.
+
+The first system-managed-link candidate restored sustained native delivery and
+reached both pinned official inlets. Strict qualification then detected four
+ECG and five ACC timestamp reversals. The reversals were a publication defect,
+not accepted as verifier tolerance: setup-buffered PMD notifications were
+drained rapidly and each chunk had been independently stamped at host receipt
+time, so their nominal-rate backfilled ranges overlapped. Both output backends
+now map each raw stream's H10 sensor timestamps through an independent fixed
+offset into local LSL time before the existing within-chunk backfill. This is
+host-qualified and the subsequent production-default physical run completed the
+same-epoch chain. With no diagnostic session override, pinned pylsl
+1.18.2/liblsl 1.17.7 consumed 365 ECG samples at 130.14 Hz and 432 ACC samples at
+202.22 Hz with zero estimated loss/reorder, advancing timestamps, nonzero X/Y/Z,
+distinct outlets, no cross-stream mismatch, and exact cleanup. This bounded
+acceptance is not a long-duration latency benchmark, generic multi-consumer
+claim, predicate-filter conformance, or release authorization.
 
 The browser application is outside this transport. Its same-origin
 `BroadcastChannel`, event API, and CSV recorder are not LSL and remain unable

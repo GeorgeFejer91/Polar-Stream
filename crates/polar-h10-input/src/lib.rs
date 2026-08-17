@@ -6,30 +6,31 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 #[cfg(target_os = "windows")]
-use btleplug::api::ConnectionParameterPreset;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(target_os = "windows")]
+mod windows_backend;
+#[cfg(any(target_os = "windows", test))]
+mod windows_session_lifecycle;
+
+#[cfg(not(target_os = "windows"))]
+use btleplug::api::WriteType;
+#[cfg(not(target_os = "windows"))]
 use btleplug::{
-    api::{Central, Manager as _, Peripheral as _, ScanFilter, WriteType},
+    api::{Central, Manager as _, Peripheral as _, ScanFilter},
     platform::{Manager, Peripheral},
 };
+#[cfg(not(target_os = "windows"))]
 use futures_util::StreamExt;
+use polar_h10_core::AccSample;
+#[cfg(not(target_os = "windows"))]
 use polar_h10_core::{
-    ACC_MEASUREMENT, AccSample, ECG_MEASUREMENT, PmdFrame, decode_heart_rate, decode_pmd,
+    ACC_MEASUREMENT, ECG_MEASUREMENT, PmdFrame, decode_heart_rate, decode_pmd,
     start_accelerometer_command, start_ecg_command, stop_command,
 };
 use serde::Serialize;
 use tokio::sync::{Mutex, mpsc, watch};
 use uuid::Uuid;
-
-#[cfg(target_os = "windows")]
-use windows::{
-    Devices::{
-        Bluetooth::{
-            BluetoothCacheMode, BluetoothLEDevice, GenericAttributeProfile::GattCommunicationStatus,
-        },
-        Enumeration::DeviceAccessStatus,
-    },
-    core::GUID,
-};
 
 const HEART_RATE_SERVICE: Uuid = Uuid::from_u128(0x0000180d_0000_1000_8000_00805f9b34fb);
 const HEART_RATE_MEASUREMENT: Uuid = Uuid::from_u128(0x00002a37_0000_1000_8000_00805f9b34fb);
@@ -37,6 +38,19 @@ const BATTERY_LEVEL: Uuid = Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34
 const PMD_SERVICE: Uuid = Uuid::from_u128(0xfb005c80_02e7_f387_1cad_8acd2d8df0c8);
 const PMD_CONTROL_POINT: Uuid = Uuid::from_u128(0xfb005c81_02e7_f387_1cad_8acd2d8df0c8);
 const PMD_DATA: Uuid = Uuid::from_u128(0xfb005c82_02e7_f387_1cad_8acd2d8df0c8);
+#[cfg(not(target_os = "windows"))]
+const BLE_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(not(target_os = "windows"))]
+const SCAN_DURATION: Duration = Duration::from_secs(4);
+#[cfg(not(target_os = "windows"))]
+const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(4);
+#[cfg(not(target_os = "windows"))]
+const PROPERTY_READ_CONCURRENCY: usize = 16;
+
+#[cfg(target_os = "windows")]
+type ScannedDevice = String;
+#[cfg(not(target_os = "windows"))]
+type ScannedDevice = Peripheral;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,14 +90,22 @@ pub enum InputEvent {
 }
 
 struct ActiveConnection {
-    id: String,
-    peripheral: Peripheral,
+    #[cfg(target_os = "windows")]
+    generation: u64,
     cancel: watch::Sender<bool>,
+    #[cfg(target_os = "windows")]
+    finished: watch::Receiver<bool>,
+    #[cfg(not(target_os = "windows"))]
+    id: String,
+    #[cfg(not(target_os = "windows"))]
+    peripheral: Peripheral,
 }
 
 pub struct InputManager {
-    devices: Mutex<HashMap<String, Peripheral>>,
+    devices: Mutex<HashMap<String, ScannedDevice>>,
     active: Mutex<Option<ActiveConnection>>,
+    #[cfg(target_os = "windows")]
+    next_generation: AtomicU64,
 }
 
 impl Default for InputManager {
@@ -97,16 +119,31 @@ impl InputManager {
         Self {
             devices: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
+            #[cfg(target_os = "windows")]
+            next_generation: AtomicU64::new(1),
         }
     }
 
+    #[cfg(target_os = "windows")]
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
-        let manager = Manager::new()
+        let found = windows_backend::scan().await?;
+        let next_devices = found
+            .iter()
+            .map(|device| (device.id.clone(), device.name.clone()))
+            .collect();
+        *self.devices.lock().await = next_devices;
+        Ok(found)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
+        let manager = tokio::time::timeout(BLE_OPERATION_TIMEOUT, Manager::new())
             .await
+            .map_err(|_| "Bluetooth initialization timed out.".to_string())?
             .map_err(|error| format!("Could not initialize Bluetooth: {error}"))?;
-        let adapters = manager
-            .adapters()
+        let adapters = tokio::time::timeout(BLE_OPERATION_TIMEOUT, manager.adapters())
             .await
+            .map_err(|_| "Bluetooth adapter enumeration timed out.".to_string())?
             .map_err(|error| format!("Could not enumerate Bluetooth adapters: {error}"))?;
         let adapter = adapters
             .into_iter()
@@ -114,21 +151,41 @@ impl InputManager {
             .ok_or_else(|| "No Bluetooth Low Energy adapter was found.".to_string())?;
 
         // BlueZ combines service filters between applications, so filter locally.
-        adapter
-            .start_scan(ScanFilter::default())
+        tokio::time::timeout(
+            BLE_OPERATION_TIMEOUT,
+            adapter.start_scan(ScanFilter::default()),
+        )
+        .await
+        .map_err(|_| "Bluetooth scan startup timed out.".to_string())?
+        .map_err(|error| format!("Could not start Bluetooth scan: {error}"))?;
+        tokio::time::sleep(SCAN_DURATION).await;
+        let peripherals = tokio::time::timeout(BLE_OPERATION_TIMEOUT, adapter.peripherals())
             .await
-            .map_err(|error| format!("Could not start Bluetooth scan: {error}"))?;
-        tokio::time::sleep(Duration::from_secs(4)).await;
-        let peripherals = adapter
-            .peripherals()
+            .map_err(|_| "Bluetooth scan result enumeration timed out.".to_string())?
+            .map_err(|error| format!("Could not read scan results: {error}"));
+        let stop_result = tokio::time::timeout(BLE_OPERATION_TIMEOUT, adapter.stop_scan())
             .await
-            .map_err(|error| format!("Could not read scan results: {error}"))?;
-        let _ = adapter.stop_scan().await;
+            .map_err(|_| "Bluetooth scan cleanup timed out.".to_string())?
+            .map_err(|error| format!("Could not stop Bluetooth scan: {error}"));
+        let peripherals = peripherals?;
+        stop_result?;
 
         let mut found = Vec::new();
         let mut next_devices = HashMap::new();
-        for peripheral in peripherals {
-            let Ok(Some(properties)) = peripheral.properties().await else {
+        let reads = futures_util::stream::iter(peripherals)
+            .map(|peripheral| async move {
+                peripheral
+                    .properties()
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|properties| (peripheral, properties))
+            })
+            .buffer_unordered(PROPERTY_READ_CONCURRENCY);
+        tokio::pin!(reads);
+        let property_deadline = tokio::time::Instant::now() + PROPERTY_SWEEP_TIMEOUT;
+        while let Ok(Some(read)) = tokio::time::timeout_at(property_deadline, reads.next()).await {
+            let Some((peripheral, properties)) = read else {
                 continue;
             };
             let name = properties
@@ -169,6 +226,17 @@ impl InputManager {
         device_id: &str,
     ) -> Result<mpsc::Receiver<InputEvent>, String> {
         self.disconnect().await?;
+        #[cfg(target_os = "windows")]
+        let device_name = self
+            .devices
+            .lock()
+            .await
+            .get(device_id)
+            .cloned()
+            .ok_or_else(|| {
+                "That sensor is no longer in the scan results. Scan again.".to_string()
+            })?;
+        #[cfg(not(target_os = "windows"))]
         let peripheral = self
             .devices
             .lock()
@@ -188,246 +256,253 @@ impl InputManager {
         )
         .await?;
 
-        if !peripheral
-            .is_connected()
-            .await
-            .map_err(|error| format!("Could not read connection state: {error}"))?
-        {
-            peripheral
-                .connect()
-                .await
-                .map_err(|error| format!("Polar H10 connection failed: {error}"))?;
-        }
-
         #[cfg(target_os = "windows")]
         {
-            send(
-                &event_tx,
-                InputEvent::Status {
-                    phase: "optimizing",
-                    message: optimize_windows_ble_link(&peripheral).await,
-                },
+            let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+            let (cancel, cancelled) = watch::channel(false);
+            let (finished_tx, finished) = watch::channel(false);
+            self.active.lock().await.replace(ActiveConnection {
+                generation,
+                cancel,
+                finished,
+            });
+            if let Err(error) = windows_backend::spawn_session(
+                device_id.to_string(),
+                device_name,
+                event_tx,
+                Arc::downgrade(self),
+                generation,
+                cancelled,
+                finished_tx.clone(),
             )
-            .await?;
-            send(
-                &event_tx,
-                InputEvent::Status {
-                    phase: "authorizing",
-                    message: match prime_windows_pmd_access(device_id).await {
-                        Ok(message) => message,
-                        Err(message) => format!(
-                            "Windows GATT access preflight was not confirmed ({message}); continuing with system discovery."
-                        ),
-                    },
-                },
-            )
-            .await?;
+            .await
+            {
+                self.clear_active(generation).await;
+                finished_tx.send_replace(true);
+                return Err(error);
+            }
+            Ok(event_rx)
         }
-        send(
-            &event_tx,
-            InputEvent::Status {
-                phase: "discovering",
-                message: "Connected. Discovering ECG and accelerometer services…".into(),
-            },
-        )
-        .await?;
-        peripheral
-            .discover_services()
-            .await
-            .map_err(|error| format!("GATT service discovery failed: {error}"))?;
 
-        let characteristics = peripheral.characteristics();
-        let find_characteristic = |uuid| {
-            characteristics
-                .iter()
-                .find(|characteristic| characteristic.uuid == uuid)
-                .cloned()
-        };
-        let pmd_data = find_characteristic(PMD_DATA)
-            .ok_or_else(|| "The sensor does not expose Polar PMD data.".to_string())?;
-        let control = find_characteristic(PMD_CONTROL_POINT)
-            .ok_or_else(|| "The sensor does not expose the PMD control point.".to_string())?;
-        let heart_rate = find_characteristic(HEART_RATE_MEASUREMENT);
-        let battery = find_characteristic(BATTERY_LEVEL);
-
-        let mut notifications = peripheral
-            .notifications()
-            .await
-            .map_err(|error| format!("Could not open BLE notifications: {error}"))?;
-        peripheral
-            .subscribe(&pmd_data)
-            .await
-            .map_err(|error| format!("Could not subscribe to PMD data: {error}"))?;
-        peripheral
-            .subscribe(&control)
-            .await
-            .map_err(|error| format!("Could not subscribe to PMD responses: {error}"))?;
-        if let Some(characteristic) = &heart_rate {
-            peripheral
-                .subscribe(characteristic)
+        #[cfg(not(target_os = "windows"))]
+        {
+            if !peripheral
+                .is_connected()
                 .await
-                .map_err(|error| format!("Could not subscribe to heart rate: {error}"))?;
-        }
+                .map_err(|error| format!("Could not read connection state: {error}"))?
+            {
+                peripheral
+                    .connect()
+                    .await
+                    .map_err(|error| format!("Polar H10 connection failed: {error}"))?;
+            }
 
-        peripheral
-            .write(&control, &start_ecg_command(), WriteType::WithResponse)
-            .await
-            .map_err(|error| format!("Could not start ECG: {error}"))?;
-        peripheral
-            .write(
-                &control,
-                &start_accelerometer_command(),
-                WriteType::WithResponse,
+            send(
+                &event_tx,
+                InputEvent::Status {
+                    phase: "discovering",
+                    message: "Connected. Discovering ECG and accelerometer services…".into(),
+                },
             )
-            .await
-            .map_err(|error| format!("Could not start accelerometer: {error}"))?;
-
-        let battery_percent = if let Some(characteristic) = battery {
+            .await?;
             peripheral
-                .read(&characteristic)
+                .discover_services()
+                .await
+                .map_err(|error| format!("GATT service discovery failed: {error}"))?;
+
+            let characteristics = peripheral.characteristics();
+            let find_characteristic = |uuid| {
+                characteristics
+                    .iter()
+                    .find(|characteristic| characteristic.uuid == uuid)
+                    .cloned()
+            };
+            let pmd_data = find_characteristic(PMD_DATA)
+                .ok_or_else(|| "The sensor does not expose Polar PMD data.".to_string())?;
+            let control = find_characteristic(PMD_CONTROL_POINT)
+                .ok_or_else(|| "The sensor does not expose the PMD control point.".to_string())?;
+            let heart_rate = find_characteristic(HEART_RATE_MEASUREMENT);
+            let battery = find_characteristic(BATTERY_LEVEL);
+
+            let mut notifications = peripheral
+                .notifications()
+                .await
+                .map_err(|error| format!("Could not open BLE notifications: {error}"))?;
+            peripheral
+                .subscribe(&pmd_data)
+                .await
+                .map_err(|error| format!("Could not subscribe to PMD data: {error}"))?;
+            peripheral
+                .subscribe(&control)
+                .await
+                .map_err(|error| format!("Could not subscribe to PMD responses: {error}"))?;
+            if let Some(characteristic) = &heart_rate {
+                peripheral
+                    .subscribe(characteristic)
+                    .await
+                    .map_err(|error| format!("Could not subscribe to heart rate: {error}"))?;
+            }
+
+            peripheral
+                .write(&control, &start_ecg_command(), WriteType::WithResponse)
+                .await
+                .map_err(|error| format!("Could not start ECG: {error}"))?;
+            peripheral
+                .write(
+                    &control,
+                    &start_accelerometer_command(),
+                    WriteType::WithResponse,
+                )
+                .await
+                .map_err(|error| format!("Could not start accelerometer: {error}"))?;
+
+            let battery_percent = if let Some(characteristic) = battery {
+                peripheral
+                    .read(&characteristic)
+                    .await
+                    .ok()
+                    .and_then(|value| value.first().copied())
+            } else {
+                None
+            };
+            let device_name = peripheral
+                .properties()
                 .await
                 .ok()
-                .and_then(|value| value.first().copied())
-        } else {
-            None
-        };
-        let device_name = peripheral
-            .properties()
-            .await
-            .ok()
-            .flatten()
-            .and_then(|properties| properties.local_name)
-            .unwrap_or_else(|| "Polar H10".into());
+                .flatten()
+                .and_then(|properties| properties.local_name)
+                .unwrap_or_else(|| "Polar H10".into());
 
-        let (cancel, mut cancelled) = watch::channel(false);
-        self.active.lock().await.replace(ActiveConnection {
-            id: device_id.to_string(),
-            peripheral: peripheral.clone(),
-            cancel,
-        });
-        send(
-            &event_tx,
-            InputEvent::Connected {
-                device_name: device_name.clone(),
-                battery_percent,
-            },
-        )
-        .await?;
-
-        let connection_id = device_id.to_string();
-        let manager = self.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    changed = cancelled.changed() => {
-                        if changed.is_err() || *cancelled.borrow() { break; }
-                    }
-                    notification = notifications.next() => {
-                        let Some(notification) = notification else { break };
-                        let event = if notification.uuid == PMD_DATA {
-                            match decode_pmd(&notification.value) {
-                                Ok(PmdFrame::Ecg { sensor_timestamp_ns, microvolts }) => {
-                                    InputEvent::Ecg { sensor_timestamp_ns, microvolts }
-                                }
-                                Ok(PmdFrame::Accelerometer { sensor_timestamp_ns, samples }) => {
-                                    InputEvent::Accelerometer { sensor_timestamp_ns, samples }
-                                }
-                                Err(error) => InputEvent::Error(format!("Skipped malformed PMD frame: {error}")),
-                            }
-                        } else if notification.uuid == HEART_RATE_MEASUREMENT {
-                            let frame = decode_heart_rate(&notification.value);
-                            InputEvent::HeartRate {
-                                beats_per_minute: frame.beats_per_minute,
-                                rr_intervals_ms: frame.rr_intervals_ms,
-                            }
-                        } else {
-                            continue;
-                        };
-                        if event_tx.send(event).await.is_err() { break; }
-                    }
-                }
-            }
-
-            let _ = peripheral
-                .write(
-                    &control,
-                    &stop_command(ECG_MEASUREMENT),
-                    WriteType::WithResponse,
-                )
-                .await;
-            let _ = peripheral
-                .write(
-                    &control,
-                    &stop_command(ACC_MEASUREMENT),
-                    WriteType::WithResponse,
-                )
-                .await;
-            let _ = peripheral.disconnect().await;
-            {
-                let mut active = manager.active.lock().await;
-                if active
-                    .as_ref()
-                    .is_some_and(|connection| connection.id == connection_id)
-                {
-                    active.take();
-                }
-            }
-            let _ = event_tx
-                .send(InputEvent::Disconnected {
-                    device_name,
+            let (cancel, mut cancelled) = watch::channel(false);
+            self.active.lock().await.replace(ActiveConnection {
+                id: device_id.to_string(),
+                cancel,
+                peripheral: peripheral.clone(),
+            });
+            send(
+                &event_tx,
+                InputEvent::Connected {
+                    device_name: device_name.clone(),
                     battery_percent,
-                })
-                .await;
-        });
+                },
+            )
+            .await?;
 
-        Ok(event_rx)
+            let connection_id = device_id.to_string();
+            let manager = self.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        changed = cancelled.changed() => {
+                            if changed.is_err() || *cancelled.borrow() { break; }
+                        }
+                        notification = notifications.next() => {
+                            let Some(notification) = notification else { break };
+                            let event = if notification.uuid == PMD_DATA {
+                                match decode_pmd(&notification.value) {
+                                    Ok(PmdFrame::Ecg { sensor_timestamp_ns, microvolts }) => {
+                                        InputEvent::Ecg { sensor_timestamp_ns, microvolts }
+                                    }
+                                    Ok(PmdFrame::Accelerometer { sensor_timestamp_ns, samples }) => {
+                                        InputEvent::Accelerometer { sensor_timestamp_ns, samples }
+                                    }
+                                    Err(error) => InputEvent::Error(format!("Skipped malformed PMD frame: {error}")),
+                                }
+                            } else if notification.uuid == HEART_RATE_MEASUREMENT {
+                                let frame = decode_heart_rate(&notification.value);
+                                InputEvent::HeartRate {
+                                    beats_per_minute: frame.beats_per_minute,
+                                    rr_intervals_ms: frame.rr_intervals_ms,
+                                }
+                            } else {
+                                continue;
+                            };
+                            if event_tx.send(event).await.is_err() { break; }
+                        }
+                    }
+                }
+
+                let _ = peripheral
+                    .write(
+                        &control,
+                        &stop_command(ECG_MEASUREMENT),
+                        WriteType::WithResponse,
+                    )
+                    .await;
+                let _ = peripheral
+                    .write(
+                        &control,
+                        &stop_command(ACC_MEASUREMENT),
+                        WriteType::WithResponse,
+                    )
+                    .await;
+                let _ = peripheral.disconnect().await;
+                {
+                    let mut active = manager.active.lock().await;
+                    if active
+                        .as_ref()
+                        .is_some_and(|connection| connection.id == connection_id)
+                    {
+                        active.take();
+                    }
+                }
+                let _ = event_tx
+                    .send(InputEvent::Disconnected {
+                        device_name,
+                        battery_percent,
+                    })
+                    .await;
+            });
+
+            Ok(event_rx)
+        }
     }
 
     pub async fn disconnect(&self) -> Result<(), String> {
         let active = self.active.lock().await.take();
         if let Some(active) = active {
             let _ = active.cancel.send(true);
-            if active.peripheral.is_connected().await.unwrap_or_default() {
-                active
-                    .peripheral
-                    .disconnect()
+
+            #[cfg(target_os = "windows")]
+            {
+                let mut finished = active.finished;
+                if !*finished.borrow() {
+                    tokio::time::timeout(Duration::from_secs(16), async {
+                        while !*finished.borrow() {
+                            if finished.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                    })
                     .await
-                    .map_err(|error| format!("Could not disconnect sensor: {error}"))?;
+                    .map_err(|_| {
+                        "Windows WinRT disconnect timed out during bounded cleanup".to_string()
+                    })?;
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                if active.peripheral.is_connected().await.unwrap_or_default() {
+                    active
+                        .peripheral
+                        .disconnect()
+                        .await
+                        .map_err(|error| format!("Could not disconnect sensor: {error}"))?;
+                }
             }
         }
         Ok(())
     }
-}
 
-#[cfg(target_os = "windows")]
-async fn optimize_windows_ble_link(peripheral: &Peripheral) -> String {
-    // Windows owns ATT MTU negotiation; MaxPduSize is read-only. The tunable
-    // latency control on Windows 11+ is the preferred connection-parameter
-    // request, which btleplug maps to WinRT's ThroughputOptimized preset.
-    let request = peripheral
-        .request_connection_parameters(ConnectionParameterPreset::ThroughputOptimized)
-        .await;
-    let parameters = peripheral.connection_parameters().await.ok().flatten();
-    let mtu = peripheral.mtu();
-
-    match (request, parameters) {
-        (Ok(()), Some(parameters)) => format!(
-            "Windows BLE low-latency mode requested · observed interval {:.2} ms · latency {} · negotiated MTU {} B",
-            parameters.interval_us as f64 / 1_000.0,
-            parameters.latency,
-            mtu
-        ),
-        (Ok(()), None) => {
-            format!("Windows BLE low-latency mode requested · negotiated MTU {mtu} B")
-        }
-        (Err(error), Some(parameters)) => format!(
-            "Windows is managing BLE timing ({error}) · observed interval {:.2} ms · latency {} · negotiated MTU {} B",
-            parameters.interval_us as f64 / 1_000.0,
-            parameters.latency,
-            mtu
-        ),
-        (Err(error), None) => {
-            format!("Windows is managing BLE timing ({error}) · negotiated MTU {mtu} B")
+    #[cfg(target_os = "windows")]
+    async fn clear_active(&self, generation: u64) {
+        let mut active = self.active.lock().await;
+        if active
+            .as_ref()
+            .is_some_and(|connection| connection.generation == generation)
+        {
+            active.take();
         }
     }
 }
@@ -446,99 +521,6 @@ fn parse_bluetooth_address(device_id: &str) -> Option<u64> {
         return None;
     }
     u64::from_str_radix(&compact, 16).ok()
-}
-
-#[cfg(target_os = "windows")]
-async fn prime_windows_pmd_access(device_id: &str) -> Result<String, String> {
-    const ATTEMPTS: usize = 3;
-    let address = parse_bluetooth_address(device_id)
-        .ok_or_else(|| "the Bluetooth address was not recognized".to_string())?;
-    let pmd_service = GUID::from_u128(PMD_SERVICE.as_u128());
-    let pmd_control = GUID::from_u128(PMD_CONTROL_POINT.as_u128());
-    let pmd_data = GUID::from_u128(PMD_DATA.as_u128());
-    let mut last_error = "the PMD service did not become reachable".to_string();
-
-    for attempt in 0..ATTEMPTS {
-        let result = async {
-            let device = BluetoothLEDevice::FromBluetoothAddressAsync(address)
-                .map_err(|error| format!("could not open the BLE device: {error}"))?
-                .await
-                .map_err(|error| format!("could not open the BLE device: {error}"))?;
-            let services = device
-                .GetGattServicesForUuidWithCacheModeAsync(pmd_service, BluetoothCacheMode::Uncached)
-                .map_err(|error| format!("could not request the PMD service: {error}"))?
-                .await
-                .map_err(|error| format!("could not request the PMD service: {error}"))?;
-            let service_status = services
-                .Status()
-                .map_err(|error| format!("could not read PMD service status: {error}"))?;
-            if service_status != GattCommunicationStatus::Success {
-                return Err(format!("PMD service discovery returned {service_status:?}"));
-            }
-
-            let services = services
-                .Services()
-                .map_err(|error| format!("could not enumerate PMD services: {error}"))?;
-            let service = services
-                .into_iter()
-                .next()
-                .ok_or_else(|| "the PMD service was not exposed".to_string())?;
-            let access = service
-                .RequestAccessAsync()
-                .map_err(|error| format!("could not request PMD access: {error}"))?
-                .await
-                .map_err(|error| format!("could not request PMD access: {error}"))?;
-            if access != DeviceAccessStatus::Allowed {
-                return Err(format!("PMD access returned {access:?}"));
-            }
-
-            let characteristics = service
-                .GetCharacteristicsWithCacheModeAsync(BluetoothCacheMode::Uncached)
-                .map_err(|error| format!("could not request PMD characteristics: {error}"))?
-                .await
-                .map_err(|error| format!("could not request PMD characteristics: {error}"))?;
-            let characteristic_status = characteristics
-                .Status()
-                .map_err(|error| format!("could not read PMD characteristic status: {error}"))?;
-            if characteristic_status != GattCommunicationStatus::Success {
-                return Err(format!(
-                    "PMD characteristic discovery returned {characteristic_status:?}"
-                ));
-            }
-            let characteristics = characteristics
-                .Characteristics()
-                .map_err(|error| format!("could not enumerate PMD characteristics: {error}"))?;
-            let mut has_control = false;
-            let mut has_data = false;
-            for characteristic in characteristics {
-                let uuid = characteristic.Uuid().map_err(|error| {
-                    format!("could not read a PMD characteristic UUID: {error}")
-                })?;
-                has_control |= uuid == pmd_control;
-                has_data |= uuid == pmd_data;
-            }
-            if !has_control || !has_data {
-                return Err("the PMD control/data characteristics were incomplete".to_string());
-            }
-            Ok(())
-        }
-        .await;
-
-        match result {
-            Ok(()) => {
-                return Ok(format!(
-                    "Windows PMD access authorized on attempt {} of {ATTEMPTS}",
-                    attempt + 1
-                ));
-            }
-            Err(error) => last_error = error,
-        }
-        if attempt + 1 < ATTEMPTS {
-            tokio::time::sleep(Duration::from_millis(200 * (attempt as u64 + 1))).await;
-        }
-    }
-
-    Err(last_error)
 }
 
 async fn send(sender: &mpsc::Sender<InputEvent>, event: InputEvent) -> Result<(), String> {

@@ -119,13 +119,14 @@ cargo run -p polar-stream
 ```
 
 Linux Bluetooth access uses BlueZ/D-Bus. macOS packages must include a Bluetooth
-usage description. Windows uses the system WinRT BLE implementation through
-`btleplug`. On Windows 11+, the app makes a best-effort request for WinRT's
-throughput-optimized (low-interval) connection parameters before starting the
-streams, then reports the observed connection interval, peripheral latency, and
-negotiated MTU in the activity log. Windows owns MTU negotiation and exposes it
-read-only; on older Windows versions the optimization request fails soft and
-streaming continues with system-managed timing.
+usage description. Windows uses a bounded direct WinRT advertisement watcher,
+then owns the selected H10 through one persistent WinRT GATT session. It requests service access,
+discovers PMD uncached with bounded retry, subscribes directly, and waits for
+both decoded ECG and three-axis ACC before reporting a successful connection.
+Setup, queues, cancellation, and cleanup are bounded. The best-effort
+observed connection interval/latency are reported in the activity log, while
+Windows retains connection-parameter ownership. Windows also owns MTU
+negotiation and exposes the negotiated value read-only.
 
 ## Outputs
 

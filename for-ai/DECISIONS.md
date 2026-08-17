@@ -1,5 +1,576 @@
 # Decision log
 
+## 2026-08-17 — Remove the standalone WinRT probe from the publication surface
+
+The temporary `polar-h10-winrt-probe` binary isolated Windows projection and
+device behavior during diagnosis, but it is not part of the accepted Polar
+Stream runtime or its physical qualification chain. Its target and source are
+removed before publication so the product does not ship a second device owner
+or an ad-hoc hardware executable. The accepted direct-WinRT backend, bounded
+physical verifier, fake-backend lifecycle coverage, and identifier-free staged
+diagnostics remain. Closed differential profiles remain only as deterministic
+failure-regression evidence; the production-default verifier explicitly clears
+their environment selector and the accepted run used the ordinary
+reference-compatible lifecycle.
+
+## 2026-08-17 — Accept the production-default physical H10 chain
+
+An attended reference-first Windows run observed exactly one H10 at 100% battery.
+With no session-profile override, the exact clean production-default candidate
+then selected one session, advanced ECG and three-axis ACC sensor timestamps,
+published two distinct Rusty outlets, and admitted one pinned pylsl
+1.18.2/liblsl 1.17.7 consumer per outlet. Official collection measured 365 ECG
+samples at 130.14 Hz and 432 ACC samples at 202.22 Hz with zero estimated loss,
+zero reorder, advancing LSL timestamps, nonzero values on every ACC axis, and no
+cross-stream match. Source evidence independently measured 584 ECG and 720 ACC
+samples with zero loss/reorder.
+
+Both official inlets closed before source stop, the source reported clean stop,
+the process exited zero, and no worker, listener, or Bluetooth lease remained.
+This accepts the bounded production-default Windows H10 → Rusty LSL → official
+consumer chain. It is not a long-duration latency benchmark, generic
+multi-consumer claim, predicate-filter conformance, browser transport proof, or
+release authorization. The backend remains optional/default-off and enabled
+distribution remains subject to the documented AGPL decision.
+
+## 2026-08-17 — Promote the proven settings dwell into the Windows default
+
+The closed `reference-settings-dwell` candidate completed one reference-positive
+physical chain through exact H10 selection, both advancing sensor streams, both
+Rusty outlets, pinned official consumers, zero loss/reorder, and exact cleanup.
+That evidence proves the published-reference timing edge, but an environment
+override is not production-default acceptance.
+
+The ordinary reference-compatible Windows profile now owns the same typed,
+cancellable 1.5-second settle after the validated ECG-settings response and
+before ECG start. The physical verifier removes any inherited session-profile
+override so it can qualify only the default lifecycle. Other diagnostic
+profiles remain closed and unchanged. Host gates pass; publication remains held
+until a fresh reference-positive run proves this exact default through both
+official inlets and cleanup.
+
+## 2026-08-17 — Map raw H10 sensor time into the local LSL clock
+
+Leaving Windows connection timing system-managed restored sustained delivery:
+the physical candidate reached both first frames, both independent Rusty
+outlets, and both pinned official inlets. The official verifier then failed
+closed on timestamp reorder (ECG 4, ACC 5). Setup had buffered several PMD
+notifications, and the coordinator drained them faster than their device-time
+spacing. Stamping each drained notification at the current local clock made
+successive nominal-rate backfilled chunks overlap.
+
+Each raw ECG and ACC outlet now establishes an independent offset from the
+first nonzero H10 sensor timestamp to the backend's local LSL clock. Later
+chunks map their newest sensor timestamp through that fixed offset, then retain
+the existing nominal-rate backfill within the chunk. This preserves device-time
+spacing while keeping published timestamps in the host LSL clock domain; the
+raw device timestamp is never inserted directly. Zero timestamps and derived
+scalar outputs retain the previous local-clock behavior. The same mapping is
+owned by the liblsl and default-off Rusty LSL implementations. Host evidence is
+green; physical acceptance and publication remain held for a fresh same-epoch
+run.
+
+## 2026-08-17 — Leave Windows connection timing system-managed
+
+Moving optional battery access before subscriptions did not restore sustained
+notifications, so that candidate was reverted. The resulting trace again kept
+a connected 232-byte session, healthy queues, and admitted official consumers
+while every native notification counter stopped after the initial sensor
+frames. With battery access restored to its prior location, the only remaining
+mutation between first-frame qualification and steady state was the
+best-effort `ThroughputOptimized` preferred-connection request.
+
+Polar Stream now follows the published reference boundary and leaves connection
+parameters under Windows ownership. It retains read-only connection interval,
+peripheral latency, and MTU diagnostics, but no longer creates or retains a
+preferred-parameter request after the sensor streams start. This is a bounded
+Windows acquisition change; PMD commands, response gates, callbacks, battery,
+Rusty LSL, default liblsl, and cleanup remain unchanged. Physical acceptance
+remains held for a fresh same-epoch run.
+
+## 2026-08-17 — Observe the first-frame-to-steady-state handoff directly
+
+The first receiver-first physical run was reference-positive, reached both
+first sensor frames, opened both pinned official inlets, and reported two
+admitted Rusty consumers at source readiness. Neither the source frame
+thresholds nor official sample thresholds then completed. This proves the
+consumer-start correction while locating the remaining uncertainty after the
+WinRT first-frame gate and before sustained application delivery; it does not
+attribute the stop to Rusty LSL because the source threshold also failed.
+
+The existing WinRT session behavior remains unchanged. While session
+diagnostics are explicitly enabled, the steady-state owner now reports its
+identifier-free connection snapshot and accumulated per-source
+callback/decode/enqueue/fault/queue counters at entry and every five seconds.
+The next attended run can therefore separate absent native notifications from
+a callback-to-application handoff defect without another speculative transport
+change. Physical acceptance and publication remain held.
+
+## 2026-08-17 — Physical qualification is receiver-first at outlet readiness
+
+The latest attended physical run reached both advancing H10 sensor streams,
+initialized independent ECG and ACC Rusty outlets, and let pinned official
+pylsl 1.18.2/liblsl 1.17.7 consumers resolve and open both descriptors. It did
+not complete the source/consumer thresholds before the outer deadline. The
+synthetic gate, which passes the same producer lifecycle and official consumers,
+starts those consumers immediately after outlet initialization; the physical
+verifier instead waited for BLE source readiness first.
+
+The physical verifier now starts its official inlet worker on
+`POLAR_H10_LSL_INITIALIZED`, before selection/session/source readiness, and then
+independently awaits `POLAR_H10_SOURCE_READY`. Reaching source readiness before
+official startup fails closed. Deterministic tests bind this order. This is a
+qualification-orchestration correction only: BLE, Rusty LSL, outlet data,
+product behavior, and the default liblsl package path are unchanged. Physical
+acceptance and publication remain held until a fresh same-epoch run completes
+both official streams and exact cleanup.
+
+## 2026-08-17 — Bind physical qualification to the landed two-inlet merge
+
+The default-off Rusty LSL backend is now pinned to reviewed upstream merge
+`8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. Its exact reviewed tree preserves
+the one-channel initialization contract, admits the three-channel ACC shape,
+and routes simultaneous official ECG/ACC full-info requests independently from
+their data-consumer slots. Polar Stream retains its stricter deployment bound
+of one official data consumer per outlet and continues to use broad discovery
+plus exact client-side descriptor matching; predicate-filter conformance is not
+claimed.
+
+This dependency advancement prepares the existing synthetic and physical H10
+verifiers against the only landed Rusty LSL authority. It is not physical H10,
+browser, LabRecorder, package, licensing, or release evidence. Default and
+packaged builds continue to use liblsl, and the physical publication hold
+remains until one same-epoch ECG/ACC official-inlet chain passes cleanly.
+
+## 2026-08-17 — Reopen the reference settings dwell after a full-doctor pass
+
+In one exact lease the published PolarH10 doctor reached PMD ready, a control
+response, ECG frames, ACC frames, and heart-rate notification with no failure.
+Polar Stream's PMD-only synchronous-owner profile then timed out with zero PMD
+data callbacks, and its full reference-compatible profile did the same. In the
+immediately preceding epochs, the minimal Rust PMD probe also timed out after
+accepted settings/start responses despite having passed once earlier. That
+single minimal-probe pass is therefore not stable authority for removing the
+published reference's setup dwell.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=reference-settings-dwell`. It preserves the
+full default reference-compatible lifecycle and changes only one timing edge:
+after validating the exact ECG-settings response, it holds a typed,
+cancellable 1.5-second settle before issuing the ECG start command, matching
+the physically passing full doctor. The default product path, scanner,
+subscription modes, response/frame validation, commands, output transports,
+and publication hold remain unchanged.
+
+## 2026-08-17 — Give the passing lifecycle one synchronous MTA owner
+
+The reference watcher observed exactly one H10 immediately before the
+`pmd-only-probe-std-handoff` input-only run. That run retained the passing
+probe's PMD setup order and used the same bounded standard-library callback
+channel, but still received both ECG control responses and zero PMD-data
+callbacks. Callback capture and the callback-to-queue transport are therefore
+eliminated.
+
+The final closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-probe-synchronous-owner`. It keeps
+the scanner and exact PMD sequence unchanged, but moves the complete selected
+device lifecycle—WinRT operations, response/frame waits, steady-state receive,
+stop, callback removal, CCCD rollback, and handle closure—onto the dedicated
+plain MTA thread. Native completions and notifications use bounded
+standard-library channels; only decoded `InputEvent` values cross to the
+existing application channel. Every native operation retains a deadline and
+cancellation route, callback/channel faults fail closed, and active-session
+cleanup remains generation-safe. This profile is diagnostic-only until the
+same-epoch physical input and official-inlet gates pass; default product
+behavior and the publication hold are unchanged.
+
+## 2026-08-17 — Isolate the callback handoff from Tokio
+
+The reference watcher observed exactly one H10 immediately before the
+`pmd-only-probe-equivalent-sequence` input-only run. That run used one PMD
+service-access request, direct uncached exact characteristic lookups, explicit
+control-Indicate/data-Notify CCCDs, no inter-subscription delay, and no
+pre-frame link-property reads. It still received both ECG control responses
+while PMD-data callbacks remained zero through the first-frame deadline. Those
+setup-order and property-read differences are therefore eliminated.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-probe-std-handoff`. It preserves the
+failed candidate's exact WinRT setup and changes only the native callback
+handoff: callbacks send bounded messages through the same standard-library
+channel family as the physically passing probe, and one owned bridge forwards
+them into the existing bounded Tokio queue. The bridge is stopped and joined
+after reverse-order handler/CCCD cleanup, with deterministic forwarding,
+fault, and no-orphan coverage. The default product path, response/frame gates,
+commands, scanner, output transports, and publication hold remain unchanged.
+
+## 2026-08-17 — Match the passing probe's PMD setup sequence
+
+The reference-positive input-only
+`pmd-only-winrt-when-all-setup` run used the passing probe's `.when`
+completion/no-success-close policy throughout device, session, service,
+characteristic, CCCD, and control operations. It still completed both ECG
+control responses with zero PMD-data callbacks through the first-frame
+deadline. The selected-device async projection and operation lifetime are
+therefore eliminated; no output transport was constructed.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-probe-equivalent-sequence`. It
+retains the existing bounded owner and changes only remaining setup-sequence
+differences relative to the physically passing minimal probe: one PMD
+service-access request, one direct uncached exact lookup for each PMD
+characteristic, explicit control-Indicate and data-Notify CCCD values without
+reading characteristic properties, no inter-subscription delay, and no
+pre-first-frame link-property reads. Identifier-free diagnostics explicitly
+mark suppressed reads and selected modes. Error/timeout cancellation, partial
+rollback, final cleanup, scanner confirmation, response/frame gates, and the
+default product profile remain unchanged. Publication remains held.
+
+## 2026-08-16 — Apply probe completion policy to the full selected-device setup
+
+The reference-positive input-only differential selected one exact H10 and,
+without constructing any output transport, reproduced the same failure: device
+and session setup, 232-byte PDU, PMD CCCDs/handlers, and both ECG control
+responses succeeded while PMD-data callbacks remained zero through the
+first-frame timeout. Rusty LSL, OSC, CSV, and output initialization are therefore
+eliminated as causes; the defect remains inside the product WinRT session path.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-winrt-when-all-setup`. Relative to
+the failed PMD-only `.when` candidate, it changes one remaining projection and
+lifetime boundary: selected-device acquisition, GATT-session creation, PMD
+service discovery/access, and characteristic discovery now also use the
+physically passing probe's `windows-future` `.when` completion path without an
+explicit success-time `Close()`. PMD CCCD/control operations retain that same
+policy. Timeouts, cancellation, errors, rollback, and final cleanup remain under
+the existing bounded owner. Scanner confirmation, battery-after-qualification,
+and the default product profile remain unchanged. Publication remains held.
+
+## 2026-08-16 — Split the product input backend from output initialization
+
+The attended `pmd-only-winrt-when-completion` run was reference-positive and
+again reached both control responses with zero PMD-data callbacks. PMD-only
+`windows-future` completion projection is therefore eliminated. The link was
+connected with a 232-byte PDU after the start response but reported disconnected
+at the first-frame timeout; this single checkpoint does not establish whether
+the disconnect caused or followed missing data delivery.
+
+Before changing the backend again, an identifier-free input-only differential
+now drives the real `InputManager` scanner/session and requires two advancing
+ECG and ACC frames with nonzero samples on every ACC axis, but deliberately
+constructs no LSL/OSC/CSV output owner. This separates the product WinRT backend
+from the full verifier's pre-connection Rusty outlet initialization. It retains
+the exact session profile and cleanup owner and emits no name, address, payload,
+or stable identity. If it passes, output initialization/lifecycle is the next
+boundary; if it fails, the defect remains inside the product input backend.
+Publication remains held.
+
+## 2026-08-16 — Match the passing probe's WinRT completion projection
+
+The attended `pmd-only-retain-successful-gatt-operations` run was
+reference-positive with one exact H10 and a 100% battery reading. The candidate
+again completed device/session/PMD discovery, negotiated a 232-byte PDU,
+committed both PMD CCCDs, attached both handlers, and received both ECG control
+responses, but PMD-data callbacks remained zero through the first-frame
+timeout. Explicit success-time operation `Close()` is therefore eliminated.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-winrt-when-completion`. Relative to
+the failed unclosed baseline, PMD CCCD/control operations use the physically
+passing probe's `windows-future` `.when` completion callback rather than the
+`IntoFuture` projection. The result still crosses a bounded Tokio oneshot and
+the existing per-stage owner retains timeout cancellation, failure cleanup, and
+final teardown. The default product path and every non-PMD operation remain
+unchanged. Publication and physical acceptance remain held.
+
+## 2026-08-16 — Leave successful PMD GATT operations unclosed as the next differential
+
+The attended `pmd-only-differential` run was reference-positive, selected the
+exact H10, completed PMD discovery/subscriptions and both ECG control responses,
+but still recorded zero PMD-data callbacks through the first-frame timeout.
+Optional heart-rate discovery/subscription is therefore eliminated.
+
+The next closed verifier value is
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-retain-successful-gatt-operations`.
+Relative to the failed PMD-only baseline it changes one behavior: successful
+PMD CCCD and control-write WinRT operations are not explicitly closed
+immediately after completion, matching their lifetime in the physically passing
+minimal probe. Native error, timeout, cancellation, rollback, and final session
+cleanup keep their cancel/close behavior. The default product profile still
+closes successful operations, and unknown values reject before device setup.
+This remains a local diagnostic candidate; publication and physical acceptance
+remain held.
+
+## 2026-08-16 — PMD-only production differential changes one optional branch
+
+The next full-product candidate uses the exact closed environment value
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential`. It skips optional
+heart-rate service/characteristic discovery and notification subscription, then
+uses the unchanged production scanner, address/device/session acquisition, PMD
+service/characteristics, control/data subscriptions, response and first-frame
+gates, callback queue, cleanup, Rusty outlets, and official-inlet verifier. The
+physical verifier sets the value explicitly; absence preserves the normal
+reference-compatible product lifecycle, and any other value rejects before
+device setup.
+
+This is a diagnostic candidate, not a supported user preference and not a
+conclusion that heart rate caused the failure. It is intentionally the smallest
+full-product difference from the physically passing minimal PMD probe. Host
+tests bind the closed vocabulary, default behavior, verifier routing, and
+identifier-free profile diagnostic. Publication remains held until the attended
+source-to-official-inlet gate passes.
+
+## 2026-08-16 — Minimal Windows PMD projection passes on the physical H10
+
+With the Bluetooth headset and nearby 2.4 GHz mouse receiver disconnected, one
+attended lease produced a reference-positive H10 observation followed by a
+complete standalone-probe pass. The probe received all three exact control
+responses, one 73-sample ECG frame, and one 36-sample three-axis ACC frame. This
+physically proves that the H10, negotiated link, PMD commands, direct
+`TypedEventHandler` projection, `windows-future` completion callbacks, and
+standard-library handoff can deliver both streams on this Windows host. The RF
+condition improved this epoch but one comparison does not establish either
+disconnected peripheral as the sole cause of earlier advertisement misses.
+
+The full Polar Stream verifier then ran in the same lease. It selected the exact
+H10, retained a connected 232-byte-PDU session, initialized both Rusty outlets,
+completed service/characteristic discovery and all three subscriptions, and
+received the exact ECG settings/start responses. Its PMD-data callback count
+nevertheless remained zero through the first-ECG timeout, so official inlets
+were never opened. This is a production input-session failure before Rusty LSL,
+not a device, scanner, protocol-command, or generic `windows-rs` callback
+failure.
+
+The next source work must compare the passing probe and product path one
+behavior at a time. The bounded candidates are heart-rate exclusion, successful
+WinRT-operation lifetime/projection, and the PMD callback-to-queue handoff; do
+not change discovery or Rusty LSL. Publication remains held until the full
+source-to-official-inlet chain passes.
+
+## 2026-08-16 — Isolate the remaining PMD event boundary from the application
+
+The directly retained one-write/one-handler candidate was physically
+reference-positive, selected and connected the exact H10 with a 232-byte PDU,
+and received both successful PMD control responses, but still received zero PMD
+data callbacks. Descriptor readback and handler-wrapper ownership are therefore
+no longer active hypotheses.
+
+The next differential is a standalone Windows-only PMD probe in
+`polar-h10-input`. It accepts a private Bluetooth address without scanning or
+emitting it, initializes one MTA, uses `windows-future` completion callbacks and
+standard-library channels, resolves only PMD control/data, requests ECG at
+130 Hz and ACC at 200 Hz, and requires exact control responses plus one decoded
+frame from each stream. It deliberately excludes Tauri, Tokio, LSL, heart rate,
+UI state, and application queues. Every operation and frame wait is bounded;
+timeouts request cancellation, event handlers and CCCDs are removed in reverse
+order, and cleanup is guarded exactly once.
+
+The behavioral comparison remains the public `MesmerPrism/PolarH10` Windows
+path at `3777ccf6970d2a0457d0a4be99e6c15645818db0`; no implementation source was
+copied. Host tests prove parsing, response validation, completion outcomes,
+cancellation, and cleanup gating only. An attended same-lease reference-positive
+device run is required before this probe can diagnose or clear the remaining
+physical projection boundary, and it does not change the publication hold.
+
+## 2026-08-16 — Subscription projection matches the passing Windows reference
+
+The attended dedicated-apartment candidate was reference-positive, connected
+with a negotiated 232-byte PDU, received heart-rate and both expected PMD
+control responses, and still received zero PMD data callbacks before the first
+ECG-frame deadline. Confining windows-rs, its current-thread executor, every
+GATT object, and teardown to one explicitly initialized MTA therefore did not
+fix the physical boundary and is no longer the active hypothesis.
+
+The passing `MesmerPrism/PolarH10` projection performs one successful CCCD
+write and immediately registers a directly retained `TypedEventHandler`. Polar
+Stream had inserted a descriptor readback between those operations and retained
+an `AgileReference` rather than the handler itself. The next candidate removes
+only those extra projection operations while preserving the proven
+write-then-handler order, direct characteristic ownership, response gates,
+deadlines, queues, and exactly-once cleanup. A typed activation guard rejects
+handler-before-write and duplicate-write/handler states; deterministic tests
+cover the valid sequence and rollback boundary. Prior exact CCCD-readback
+evidence remains valid historical evidence, but readback is no longer part of
+the acquisition path. This remains host evidence until an attended run reaches
+both sensor streams and the pinned official consumers.
+
+## 2026-08-16 — One explicit Windows apartment owns the selected H10
+
+The reference-aligned physical run kept a healthy 232-byte connection, confirmed
+all three CCCDs, and delivered heart-rate plus PMD-control events, but PMD data
+still entered zero callbacks. Link state, command admission, subscription state,
+delegate retention, service order, and reference timing are therefore exhausted
+as candidate causes. Polar Stream previously created and awaited WinRT objects
+on a multithreaded application runtime whose worker could change across awaits.
+
+The complete selected-device lifecycle now runs on one named OS thread with an
+explicitly initialized multithreaded Windows Runtime apartment and a
+current-thread Tokio executor. The same owner performs setup, receives callbacks,
+runs steady state, sends stop commands, removes handlers, closes handles, and
+balances `RoUninitialize`. Only the required OS apartment initialization and
+teardown calls are isolated `unsafe` boundaries; all GATT work remains through
+windows-rs. The caller still awaits setup and disconnect asynchronously, while a
+drop guard guarantees completion signalling on unwind. Host tests prove thread
+identity across async yields and guard behavior. Physical acceptance remains
+held for the next attended run.
+
+## 2026-08-16 — Windows qualification follows the proven reference lifecycle
+
+The exact CCCD-readback physical run confirmed PMD data was set to Notify and
+its delegate remained owned, yet no PMD data event entered while the link stayed
+connected at a 232-byte PDU and PMD control responses advanced. Repeating the
+same ordering cannot add evidence. The remaining black-box difference from the
+published, physically passing Windows reference is setup sequencing.
+
+After creating its persistent `GattSession`, Polar Stream now uses the
+reference's bounded 500 ms connection settle, discovers optional heart rate
+before required PMD, and defers optional battery discovery/read until both ECG
+and ACC have qualified. The settle is cancellable and typed; all service and
+characteristic calls retain their individual deadlines and cleanup. This is a
+behavioral lifecycle contract derived from the published reference, not copied
+implementation. It remains host evidence until a fresh attended run passes both
+sensor streams and the pinned official-consumer chain.
+
+## 2026-08-16 — Notification admission verifies CCCD state and owns delegates
+
+A reference-positive physical epoch proved the selected H10 remained connected
+with a negotiated 232-byte PDU before and after its accepted ECG start response.
+PMD control indications and heart-rate notifications entered, decoded, and
+queued through the same WinRT callback bridge, while PMD data entered zero
+callbacks. The failure is therefore narrower than link readiness, MTU, generic
+event dispatch, buffer conversion, queueing, or Rusty LSL.
+
+Every Windows notification subscription now reads the CCCD back after a
+successful write and requires the exact requested Notify/Indicate value. A
+failed or mismatched readback disables that CCCD before setup returns. Each
+registered `TypedEventHandler` also has an explicit agile owner retained beside
+its removal token until exactly-once teardown. These changes make OS-side
+subscription state and delegate lifetime explicit; they do not claim to have
+fixed the physical PMD data boundary. Another attended same-epoch run must still
+reach advancing ECG and ACC, both Rusty outlets, and both pinned official inlets
+before publication.
+
+## 2026-08-16 — PMD startup is response-gated and qualifies ECG before ACC
+
+The first typed physical trace proved the selected H10 reached a persistent
+session, uncached PMD discovery, control/data notification subscription, and
+successful GATT writes for both start commands. Neither first ECG nor first ACC
+frame arrived. A successful WinRT write is transport evidence only; it does not
+prove that PMD accepted the command or that two commands were safely sequenced.
+
+The known-working published reference doctor requests ECG settings, observes
+the ECG control/data phase, and starts ACC afterward. Polar Stream adopts that
+behavioral contract without copying its implementation or blind fixed delays:
+request ECG settings → validate the exact successful response → start ECG →
+validate its response → decode the first ECG frame → start ACC → validate its
+response → decode the first ACC frame. Malformed, rejected, missing, duplicate
+or out-of-order control responses fail closed under individual deadlines.
+Early HR or sensor events remain bounded and buffered; callback/session cleanup
+remains exactly-once.
+
+This is host-tested repair evidence, not physical acceptance. The next attended
+run must pass both first-frame stages before Rusty outlets and pinned official
+inlets are admitted. Scanner admission and the already-passing GATT setup stages
+are not reopened by this change.
+
+## 2026-08-16 — WinRT session setup owns typed stages before physical acceptance
+
+A same-lease differential physical run observed one exact H10 through the
+published `MesmerPrism/PolarH10` watcher and the repaired Polar Stream watcher.
+Polar Stream selected the candidate and entered WinRT session setup, but did not
+qualify both first sensor frames before its outer readiness deadline. This is
+positive evidence for discovery and exact-model selection only. It is not ECG,
+ACC, Rusty outlet, official-inlet, or complete device-acceptance evidence.
+
+At that checkpoint the existing session order remained unchanged while the
+first failing stage was diagnosed. Address-to-device acquisition, `GattSession` creation,
+maintain-connection, uncached service discovery, per-characteristic access and
+uncached/cached resolution, CCCD subscription, ECG/ACC start commands, and each
+first frame now have separate typed observations. Every WinRT async operation
+has its own deadline and cancel/close owner inside a 45-second setup budget, so
+the verifier's 60-second outer readiness deadline cannot be the first failure
+classification. Partial subscriptions roll back in reverse order; callback
+tokens and session cleanup are claimed once.
+
+`POLAR_STREAM_H10_SESSION_DIAGNOSTICS` emits stage, attempt, transition,
+duration, and result class plus aggregate notification diagnostics. The latter
+records each characteristic's Notify/Indicate/read/write property shape, the
+selected CCCD mode, handler attachment/removal counts, and per-source callback,
+decode, enqueue, fault, and queue outcomes. It never emits an address, name,
+payload, manufacturer value, payload size, or stable device identity.
+Identifier-free link checkpoints also expose only connection state, negotiated
+PDU size, connection-interval units, and peripheral latency. The
+subsequent physical run
+stopped at the first typed non-success stage and compared that ordering with the
+exact published reference behavior before the response-gated change above. The
+reference uses persistent `GattSession`, uncached service discovery,
+`RequestAccessAsync`, bounded uncached/cached characteristic lookup, direct
+CCCD subscription, and explicit cleanup; no reference source is copied.
+
+## 2026-08-16 — H10 advertisement evidence is route-independent and confirmed
+
+The Windows watcher keeps its bounded start/stop/callback lifecycle, but
+local-name and advertised-service evidence are evaluated independently. An
+exact `Polar H10` name is strong evidence even if WinRT cannot enumerate that
+packet's service UUIDs. A PMD/heart-rate service without an exact name is only
+a provisional candidate; a globally bounded, eight-way WinRT device-name
+sweep must resolve the exact H10 model before it is returned. Generic BLE
+presence, manufacturer data, and other Polar model names remain insufficient.
+The later persistent session must still expose PMD and deliver both ECG and
+three-axis ACC before connection success.
+
+This corrects a predicate-order mismatch found by differential observation.
+An identifier-free harness around the exact published `MesmerPrism/PolarH10`
+watcher at `3777ccf6970d2a0457d0a4be99e6c15645818db0` observed one physical H10
+through its exact local-name shape. The reference path did not require service
+UUID evidence. The published reference CLI `scan` command returns immediately
+after starting its asynchronous watcher; its earlier zero result was therefore
+invalid and is not device-state evidence. No reference implementation source,
+identifier, or advertisement payload is incorporated.
+
+`POLAR_STREAM_H10_SCAN_DIAGNOSTICS` reports only aggregate counts for readable
+advertisement fields, exact-name/service admission, missing names, duplicates,
+rejection, overflow, property confirmation, and returned candidates. It never
+reports names, addresses, manufacturer values, payload bytes, or stable device
+identity. Deterministic fixtures cover the accepted shape and damaged,
+ambiguous, duplicate, missing-name, non-H10, and capacity cases. Physical
+selection and the complete Rusty LSL chain remain held for a separately
+authorized attended run.
+
+## 2026-08-15 — Windows owns one direct WinRT Bluetooth session
+
+Windows uses an active WinRT advertisement watcher for up to fifteen seconds
+and coalesces at most 256 unique matching addresses before exact device
+selection. It stops early after observing exact H10 local-name evidence. The
+longer ceiling is bound to a same-lease differential run where the known
+reference observed only four exact H10 packets over fifteen seconds while the
+candidate's prior four-second window received 41 unrelated advertisements and
+no H10 packet.
+The callback is removed before return, cleanup calls `Stop` only while the
+watcher is actively started, and no per-device property request can stall the
+scan. After selection, `polar-h10-input` opens the Bluetooth address
+with WinRT and owns one persistent `GattSession`, uncached PMD service
+discovery, access requests, characteristic discovery, notification handlers,
+start commands, and teardown. Linux, macOS, iOS, and Android retain the existing
+`btleplug` connection path.
+
+The Windows session does not announce connection success until it has decoded
+both an ECG frame and a three-axis ACC frame. Setup stages have explicit
+deadlines and observe cancellation at stage boundaries. Notification and
+first-frame buffers are bounded and fail closed rather than lose data silently;
+shutdown has one global deadline followed by synchronous handler and WinRT
+handle release. A throughput-optimized connection request remains best effort,
+and negotiated MTU remains a read-only observation.
+
+This is an original safe-Rust adapter using the repository's existing
+`windows` crate. Its behavioral reference is the public MIT-licensed
+[`MesmerPrism/PolarH10`](https://github.com/MesmerPrism/PolarH10) Windows
+transport at commit `3777ccf6970d2a0457d0a4be99e6c15645818db0`: active
+advertisement discovery, persistent session ownership, `RequestAccessAsync`,
+uncached discovery/retry, direct CCCD subscription, and explicit close. No C#
+source or local experimental evidence is incorporated. Compilation and synthetic tests do not replace a physical H10
+acceptance run.
+
 ## 2026-08-15 — Rusty outlets admit one official consumer
 
 Polar Stream bounds every optional Rusty LSL outlet to one official consumer.
@@ -21,7 +592,7 @@ a native WinRT backend is separately scoped.
 
 Packaged and default builds retain liblsl. Source developers may select exactly
 one mutually exclusive `rusty-lsl-backend`, pinned to reviewed Rusty LSL merge
-`74f7d0ea2cce9b3d049ea24602527a5f52360554`. It stays inside
+`8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. It stays inside
 `polar-h10-output`, preserves the canonical names/metadata and independent
 ECG/ACC outlets, and never enters the browser runtime.
 

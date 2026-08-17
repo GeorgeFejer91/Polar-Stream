@@ -14,7 +14,7 @@ Primary evidence:
 
 - [Tauri supports HTML/CSS/JS frontends and Rust/Swift/Kotlin backend logic](https://v2.tauri.app/start/).
 - [Tauri uses the platform WebView rather than bundling a browser](https://v2.tauri.app/reference/webview-versions/).
-- [`btleplug` 0.12 implements scan, GATT connect, write, subscribe, and notifications on Windows, macOS/iOS, Linux, and Android](https://docs.rs/crate/btleplug/latest).
+- [`btleplug` 0.12 supplies the non-Windows scanning and GATT adapters](https://docs.rs/crate/btleplug/latest); Windows uses the direct WinRT path described below.
 - [liblsl supports Windows, Linux, macOS, Android, and iOS](https://labstreaminglayer.readthedocs.io/info/intro.html).
 - [Tauri channels are intended for ordered, high-throughput native-to-frontend data](https://v2.tauri.app/develop/calling-rust/).
 
@@ -169,32 +169,198 @@ client-side; server-side property predicate conformance is not claimed. See
 `docs/rusty-lsl-backend.md` for the exact revision, shapes, limits, evidence,
 and licensing/release holds.
 
+The physical qualifier starts official inlet resolution when the independent
+outlets initialize, before BLE selection or source-frame readiness. It then
+awaits source and consumer thresholds as separate gates. This receiver-first
+order is verifier orchestration, not an application buffering or publication
+policy.
+Opt-in session diagnostics continue across the first-frame-to-steady-state
+handoff, reporting only aggregate link and callback/queue counters every five
+seconds so native notification loss and internal forwarding stalls remain
+distinguishable without exposing a device identity.
+
 ## Windows BLE link policy
 
-The Windows native adapter distinguishes ATT MTU from BLE connection timing.
+Windows uses an active `BluetoothLEAdvertisementWatcher` for a bounded scan and
+exact device selection, then opens the selected Bluetooth address directly with
+WinRT. `polar-h10-input` owns one persistent `GattSession`,
+uncached PMD service discovery, `RequestAccessAsync`, bounded uncached/cached
+characteristic discovery, direct WinRT notification handlers, PMD start/stop,
+and handle closure. Other operating systems retain the cross-platform
+`btleplug` scan and connection path.
+
+The selected device's complete WinRT lifecycle runs on one named OS thread with
+an explicitly initialized multithreaded Windows Runtime apartment and one
+current-thread Tokio executor. Setup, callbacks, steady-state reads, stop
+commands, handler removal, handle closure, and apartment uninitialization cannot
+migrate between runtime workers. A completion guard signals disconnect even if
+that owner unwinds; the caller remains asynchronous while awaiting setup and
+bounded shutdown.
+
+Setup does not emit `Connected` until it has decoded both an ECG frame and a
+three-axis ACC frame. After persistent-session creation, a cancellable 500 ms
+settle matches the proven Windows reference before heart-rate-first discovery.
+Battery discovery is deferred until both required sensor streams qualify.
+Every native async setup operation has its own deadline,
+cancel/close ownership, typed result class, and a shared 45-second setup budget
+that expires before the physical verifier's outer readiness deadline.
+Cancellation is checked during each operation, the raw-notification and
+first-frame queues have fixed capacities, and overflow stops acquisition rather
+than hiding loss. Shutdown gives every best-effort GATT cleanup operation a
+500 ms bound before synchronous handler removal and WinRT handle closure;
+callbacks and session closure are claimed exactly once, and
+`GattSession.MaintainConnection` is always cleared. The scanner coalesces
+advertisements by address for up to fifteen seconds, stops early after exact
+H10 local-name evidence, and admits at most 256 strong candidates. The ceiling
+matches a physical reference run that observed only four exact H10 packets in
+fifteen seconds; an exact `Polar H10` local-name packet is
+sufficient even when that packet's service-UUID collection is unavailable. A
+PMD/heart-rate service packet without an exact name remains provisional and is
+returned only after a bounded, eight-way, six-second WinRT
+`BluetoothLEDevice.Name` confirmation resolves the exact H10 model.
+Missing-name repeats may update an already admitted address, while generic BLE
+presence, manufacturer data, and a non-H10 Polar name never admit a device by
+themselves. The callback is removed before property confirmation or return.
+Cleanup calls `Stop` only while the watcher is actively started.
+
+Setting `POLAR_STREAM_H10_SCAN_DIAGNOSTICS` emits opt-in aggregate predicate
+counters for advertisement shape, exact-name/service routes, duplicates,
+property confirmation, rejection, and overflow. Those diagnostics contain no
+address, name, payload bytes, manufacturer value, or stable device identity.
+`POLAR_STREAM_H10_SESSION_DIAGNOSTICS` separately emits ordered setup stage
+entry/exit records with attempt, duration, and result class. At subscription
+ and qualification checkpoints it also emits aggregate, identifier-free
+ characteristic properties, selected CCCD mode and successful commit count,
+ callback entry/decode/enqueue counts,
+handler attachment/removal counts, callback faults, and bounded-queue outcomes.
+Identifier-free link checkpoints additionally record connection state,
+`GattSession.MaxPduSize`, connection-interval units, and peripheral latency
+after discovery, before PMD setup, after the ECG start response, and on setup
+failure.
+It covers device acquisition, persistent session creation, PMD
+service/characteristics, CCCD subscriptions, ECG settings/start responses, ACC
+start responses, and first ECG/ACC frames without emitting the selected
+name/address, payload bytes, payload size, or stable device identity.
+
 [WinRT negotiates MTU automatically and exposes `GattSession.MaxPduSize` as a
 read-only observation](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattsession.maxpdusize).
-On Windows 11+, `polar-h10-input` asks `btleplug` for the
-[`ThroughputOptimized` preferred connection parameters](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.requestpreferredconnectionparameters)
-before subscriptions and PMD start commands. This is a request for a shorter
-connection interval, not a forced MTU, and the controller or peripheral can
-reject it. The activity log therefore records both the request result and the
-observed interval, latency, and negotiated MTU. Unsupported Windows versions
-and adapters remain fail-soft; they continue with operating-system-managed
-timing.
+The adapter leaves connection parameters under Windows ownership and reports
+the observed interval, latency, and MTU read-only. It neither forces MTU nor
+mutates connection timing after sensor-frame qualification.
 
-Immediately after connection, before ordinary `btleplug` service discovery,
-the Windows path also ports MesmerPrism's WinRT access pattern: open the PMD
-service uncached, call `GattDeviceService.RequestAccessAsync`, discover PMD
-characteristics uncached, and retry three times with 200/400 ms backoff when
-Windows has not made the service reachable yet. This primes access without
-claiming control of ATT MTU and fails soft into ordinary discovery when the
-preflight cannot confirm access.
+The original safe-Rust implementation uses the public MIT-licensed
+[`MesmerPrism/PolarH10`](https://github.com/MesmerPrism/PolarH10) transport at
+commit `3777ccf6970d2a0457d0a4be99e6c15645818db0` as a behavioral reference for
+persistent session ownership, active advertisement discovery, Windows service
+access, retry, subscription, and cleanup. No C# source is copied. Cross-platform compilation and deterministic
+tests remain host evidence only; the physical Windows gate requires advancing
+130 Hz ECG and 200 Hz three-axis ACC evidence from Polar Stream itself.
 
-Cross-platform compilation proves API integration only. A release claim about
-the applied interval, sustained ECG/ACC throughput, or packet loss still
-requires a physical H10 run on the target Windows machine with the activity-log
-values and sample/drop counts retained.
+The published reference opens the device and persistent session, waits 500 ms,
+optionally configures heart rate, then resolves PMD control/data and enables
+their notifications. Its known-working doctor requests ECG settings, observes
+the control/data phase for ECG, and only then starts ACC. Polar Stream now
+matches that settle and heart-rate-first discovery order while keeping optional
+battery discovery outside required sensor qualification. It gates startup on
+the exact PMD settings response, ECG start response, first decoded ECG frame,
+ACC start response, and first decoded ACC frame. Malformed, rejected, missing, or
+out-of-order control responses fail closed. Both routes use uncached service
+discovery, `RequestAccessAsync` before characteristic lookup, bounded retries
+with cached fallback, and direct CCCD writes.
+
+The discovery predicate repair additionally uses a black-box, identifier-free
+observation of that exact published watcher: one physical H10 was admitted by
+an exact local-name shape without requiring advertised service UUIDs. The
+published CLI `scan` wrapper returns after starting its asynchronous watcher,
+so an earlier zero-result invocation was discarded and is not device-state
+evidence. The candidate borrows only the observed predicate contract; it does
+not copy the reference implementation or treat generic advertisements as H10s.
+A later same-device differential run proved the reference doctor consumed ECG,
+ACC, and heart-rate notifications while the candidate selected that H10 and
+passed device/session acquisition, services, characteristics, and all three
+CCCDs. Under the response-gated sequence, the candidate received successful ECG
+settings and ECG start responses, then timed out before its first ECG data
+callback; ACC start was intentionally not attempted. Handler-order, a
+reference-style settings delay, and a pre-stream preferred-connection request
+were each eliminated as causes. Identifier-free callback/property/lifetime
+counters now distinguish a missing WinRT event from buffer conversion, queue,
+or frame qualification failure. A subsequent reference-positive run retained a
+connected session and negotiated 232-byte PDU before and after the accepted ECG
+start response, while PMD control and heart-rate callbacks advanced and PMD
+ data callbacks remained at zero. Link readiness and MTU are therefore no longer
+ candidate causes. Exact CCCD readback and explicit agile delegate ownership
+ were then proven on hardware without producing a PMD data event. The
+ reference-aligned settle/discovery/deferred-battery sequence also produced zero
+ PMD-data events while heart-rate and PMD control callbacks advanced. Confining
+ the entire WinRT lifecycle to the explicit apartment owner above produced the
+ same physical outcome, ruling out runtime-worker migration.
+
+The direct-handler candidate and a standalone minimal PMD probe closed the
+generic projection-level question. The probe physically received ECG and ACC;
+the full product verifier in the same lease still received both ECG control
+responses but zero PMD-data callbacks. The closed verifier-only session profile
+`POLAR_STREAM_H10_SESSION_PROFILE=pmd-only-differential` then skipped optional
+heart-rate discovery/subscription. The full product still received both ECG
+control responses but zero PMD-data callbacks, eliminating the optional heart
+rate branch. The next exact candidate is
+`pmd-only-retain-successful-gatt-operations`: relative to that failed baseline,
+it additionally leaves successful PMD CCCD/control-write WinRT operations
+without an explicit `Close()` immediately after completion. Timeout,
+cancellation, native-error,
+rollback, and final session cleanup remain unchanged. That candidate also
+received both control responses but zero PMD-data callbacks, eliminating
+success-time explicit close. The next exact candidate is
+`pmd-only-winrt-when-completion`: relative to the failed unclosed baseline it
+uses the passing probe's `windows-future` `.when` completion callback for PMD
+CCCD/control operations while retaining the same Tokio deadlines and cleanup
+owner. The normal path remains unchanged when the variable is absent, and every
+other value rejects. Physical product and official-inlet acceptance remain open
+until the next attended run.
+
+An input-only differential complements that full verifier. It uses the same
+product `InputManager`, scanner, selected WinRT session, PMD response gates, and
+cleanup owner, but constructs no LSL/OSC/CSV transport. It admits success only
+after both sensor timestamps advance and every ACC axis has a nonzero sample,
+and emits no device identity. This diagnostic separates the product input
+backend from output initialization; it is not a reduced acceptance claim.
+The reference-positive input-only run reproduced the same zero-data-callback
+timeout, so output initialization is eliminated. The next closed profile,
+`pmd-only-winrt-when-all-setup`, extends the passing probe's `.when` completion
+and no-success-close policy to device acquisition, GATT-session creation, PMD
+service access/discovery, and characteristic discovery. It retains the same
+deadline/cancellation/cleanup owner and leaves the default product path
+unchanged. That profile also reached both ECG control responses with zero PMD
+data callbacks, eliminating the selected-device async completion projection as
+the remaining difference. The next closed verifier profile,
+`pmd-only-probe-equivalent-sequence`, additionally matches the passing probe's
+PMD-only setup shape: one service-access request, one uncached exact
+characteristic lookup per PMD characteristic, explicit control-Indicate and
+data-Notify CCCD values, no inter-subscription delay, and no pre-frame link
+property reads. Production deadlines, cancellation, rollback, final cleanup,
+and the default profile remain unchanged. A reference-positive physical run
+still received both ECG control responses and zero PMD-data callbacks, so those
+setup-order differences are eliminated. The next closed verifier profile,
+`pmd-only-probe-std-handoff`, keeps that exact setup but gives both native
+callbacks the passing probe's bounded standard-library channel handoff. One
+owned bridge forwards into the existing bounded Tokio queue and is stopped and
+joined during the same reverse-order cleanup. This remains diagnostic-only.
+That handoff also produced both control responses and zero data callbacks in a
+reference-positive run. The final diagnostic profile,
+`pmd-only-probe-synchronous-owner`, therefore matches the probe's remaining
+architectural property: one plain MTA thread synchronously owns every GATT
+operation, response/frame wait, steady receive, and reverse cleanup. Bounded
+native channels remain inside that owner; only decoded events cross into the
+application. It does not alter the default profile or weaken physical
+acceptance.
+That synchronous-owner differential also timed out. A later same-lease full
+published-doctor run received ECG, ACC, and HR, while both Polar Stream's
+PMD-only synchronous owner and full reference-compatible profile received no
+PMD data. Because the minimal probe failed in adjacent epochs, its earlier
+single pass no longer justifies removing the full doctor's timing edge. The
+closed `reference-settings-dwell` profile therefore changes only one edge in
+the full product lifecycle: a typed, cancellable 1.5-second settle follows the
+validated ECG-settings response before ECG start. Default behavior remains
+unchanged pending physical qualification.
 
 ## Stable discovery names
 

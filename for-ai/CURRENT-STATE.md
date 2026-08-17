@@ -1,27 +1,95 @@
 # Current state
 
-Last verified: 2026-08-15
+Last verified: 2026-08-17
 
 ## Implemented
 
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
-- On Windows 11+, native BLE makes a best-effort throughput-optimized connection
-  parameter request and reports the observed interval, peripheral latency, and
-  read-only negotiated MTU. Older Windows versions continue fail-soft with
-  system-managed timing.
-- Before normal Windows service discovery, the input adapter ports MesmerPrism's
-  WinRT PMD access pattern: uncached service access, `RequestAccessAsync`,
-  uncached characteristic discovery, and three bounded retries. This improves
-  AccessDenied/Unreachable reliability but still does not force ATT MTU.
+- Windows uses a direct WinRT advertisement watcher for up to fifteen seconds,
+  stopping early after exact H10 local-name evidence. This bound matches the
+  sparse advertisement cadence observed from a reference-positive physical
+  H10 while retaining a fast path when an exact packet arrives immediately.
+  Exact H10 local-name evidence is
+  independent of service-UUID readability; unnamed PMD/heart-rate candidates
+  require a bounded direct WinRT name confirmation, while weak/generic
+  advertisements remain rejected. It then owns one persistent WinRT GATT
+  session, requests PMD service access, and discovers
+  uncached with bounded retry/cached fallback, enables each notification with
+  one CCCD write immediately followed by one directly retained handler, and
+  does not report success until both ECG and three-axis ACC have decoded. Each
+  native async call has an identifier-free typed stage, its own
+  deadline and cancel/close ownership inside a 45-second setup budget. Partial
+  subscription rollback, internal queues, callback removal, and session cleanup
+  are bounded and exactly-once. Startup requires exact successful PMD settings
+  and start responses, qualifies ECG first, and starts ACC only after the first
+  decoded ECG frame.
+- The selected Windows device lifecycle is confined to one named OS thread with
+  an explicitly initialized MTA. The default product profile drives bounded
+  operations through a current-thread Tokio executor. The final closed
+  verifier-only differential instead owns the complete GATT lifecycle
+  synchronously on the plain MTA thread, matching the physically passing
+  minimal probe's execution model; only decoded events cross to the application
+  channel. A completion guard keeps disconnect signalling bounded if either
+  owner unwinds.
+- The default reference-compatible Windows lifecycle owns the published
+  reference's typed, cancellable 1.5-second settle after the validated ECG
+  settings response and before ECG start. The closed diagnostic version of this
+  timing edge completed one full physical source-to-official-inlet chain. The
+  physical verifier clears any inherited diagnostic profile; the accepted
+  same-epoch run therefore qualified only the ordinary product default.
+- The temporary standalone WinRT probe used during diagnosis is not shipped.
+  Physical qualification uses the bounded product verifier and exact default
+  backend; identifier-free staged diagnostics remain opt-in.
+- An identifier-free input-only differential now drives the same product
+  `InputManager`/WinRT session without constructing any output transport. It
+  requires a connected session, two advancing ECG frames, two advancing ACC
+  frames, and at least one nonzero sample on every ACC axis, then performs the
+  normal bounded disconnect. This determines whether pre-connection Rusty
+  outlet initialization influences the physical failure before another backend
+  change is considered.
+- That input-only differential reproduced the zero-PMD-data-callback failure,
+  eliminating every output transport as a cause. The current verifier-only
+  profile first applied the passing probe's `.when`/no-success-close operation
+  policy across the entire selected-device setup chain as well as PMD
+  CCCD/control operations. A reference-positive run still reached both ECG
+  control responses with zero PMD-data callbacks, eliminating that projection.
+  The current closed verifier-only profile additionally matches the probe's
+  PMD service/characteristic/subscription sequence: one service access request,
+  direct uncached exact characteristic lookups, explicit
+  control-Indicate/data-Notify modes, no inter-subscription delay, and no
+  pre-frame link-property reads. A reference-positive run still received both
+  control responses with zero PMD-data callbacks, eliminating that setup shape.
+  Keeping that setup while moving callback handoff to a bounded
+  standard-library channel still produced zero data callbacks, eliminating the
+  callback-to-queue transport. Moving the entire lifecycle to the synchronous
+  MTA owner also timed out. A same-lease run then proved the full published
+  doctor received ECG, ACC, and HR while the full Polar Stream profile did not;
+  the minimal probe also failed in adjacent epochs. The current closed profile
+  therefore restores only the full doctor's typed, cancellable 1.5-second
+  post-settings dwell. Default product behavior, scanner confirmation,
+  error/timeout cleanup, and battery-after-qualification remain unchanged.
+- Native Windows BLE leaves connection parameters system-managed and reports
+  the observed interval, peripheral latency, and negotiated MTU read-only. It
+  does not mutate connection timing after sensor-frame qualification.
 - Immediate raw LSL/OSC publication with canonical names.
+- Raw ECG and ACC LSL chunks preserve H10 sensor-time spacing through separate
+  first-frame offsets into the local LSL clock. This prevents setup-buffered
+  notification bursts from overlapping while never publishing raw device-clock
+  values directly. The liblsl and Rusty LSL backends share this contract.
 - A default-off, mutually exclusive Rusty LSL source backend is pinned to merge
-  `74f7d0ea2cce9b3d049ea24602527a5f52360554`. Pinned pylsl
+  `8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. Pinned pylsl
   1.18.2/liblsl 1.17.7 broadly discovered and exactly matched independent
-  1-channel/130 Hz ECG and 3-channel/200 Hz ACC outlets in the synthetic host
-  gate. Each outlet admits one official consumer; a second concurrent consumer
-  rejects without disturbing the admitted one. The synchronous poll loop runs
-  on Tokio's blocking pool with explicit stop and bounded join. Default/package
-  behavior remains liblsl.
+  1-channel/130 Hz ECG and 3-channel/200 Hz ACC outlets concurrently in the
+  synthetic host gate. Exact full-info requests are routed independently from
+  each outlet's data-consumer slot. Each outlet still admits one official data
+  consumer; a second concurrent data consumer rejects without disturbing the
+  admitted one. The synchronous poll loop runs on Tokio's blocking pool with
+  explicit stop and bounded join. Default/package behavior remains liblsl.
+- The physical Rusty LSL qualifier starts its two pinned official inlet workers
+  as soon as the independent outlets report initialization, before BLE
+  selection or source-frame qualification. Source readiness is a later gate;
+  reaching it before official inlet startup fails closed. This receiver-first
+  order now matches the passing synthetic official-consumer gate.
 - A native **Save local CSV** destination records every received raw ECG/ACC
   sample, HR/RR, and every produced selected metric under `Downloads/Polar
   Stream` (app-data fallback). Its 128-notification writer queue is non-blocking
@@ -123,10 +191,9 @@ Last verified: 2026-08-15
 
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.
-- Windows CI validates the WinRT/`btleplug` integration at compile and unit-test
-  level only. It does not prove that a particular adapter/H10 accepted the
-  preferred connection parameters; retain the reported link values and sample
-  counts from a physical Windows run before making that claim.
+- Windows CI validates the WinRT integration and the non-Windows `btleplug` path at compile and unit-test
+  level only. Retain the system-managed link values and sample counts from a
+  physical Windows run before making timing claims.
 - liblsl availability and packaging differ by platform; follow `RELEASING.md`.
 - Both public ACC-derived respiration outputs are unvalidated and require
   comparison with a reference respiratory sensor before interpretation.
@@ -134,13 +201,14 @@ Last verified: 2026-08-15
   infrastructure states otherwise.
 - Physical-device latency percentiles, queue high-water marks, and transport
   drop/error counters are not yet captured as a single end-to-end benchmark.
-- The optional Rusty LSL backend is host-qualified but not physically accepted.
-  Two straps passed the separate native WinRT doctor through ECG and ACC frames,
-  but bounded Polar Stream attempts stopped in the existing Windows `btleplug`
-  path at connect, notification-receiver setup, or before the first PMD frame.
-  Do not infer Polar Stream device success from the reference backend or the
-  synthetic official-inlet pass. A native WinRT backend is a separate future
-  source/license/ownership unit.
+- The optional Rusty LSL backend has bounded production-default Windows H10
+  acceptance. One reference-first run with no diagnostic session override
+  advanced ECG and all three ACC axes, published two distinct outlets, and let
+  pinned pylsl 1.18.2/liblsl 1.17.7 consume 365 ECG samples at 130.14 Hz and
+  432 ACC samples at 202.22 Hz with zero estimated loss/reorder, advancing LSL
+  timestamps, no cross-stream match, and exact cleanup. This is not a
+  long-duration latency benchmark or release authorization; the backend remains
+  optional/default-off and no package enables it.
 - Rusty LSL does not claim `resolve_byprop` predicate-filter conformance.
   Consumers must enumerate broadly and exactly match the six documented
   descriptor fields client-side. Rusty LSL's AGPL-3.0-or-later license also

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     io::{self, ErrorKind},
-    net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket},
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
@@ -29,7 +29,7 @@ use rusty_lsl::{
 
 use crate::{CustomFormulaConfig, MetricSpec, custom_output_stream_name, output_stream_name};
 
-const RUSTY_LSL_REVISION: &str = "74f7d0ea2cce9b3d049ea24602527a5f52360554";
+const RUSTY_LSL_REVISION: &str = "8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd";
 const ACTIVATION_CONSUMER: &str = "polar-stream-rusty-lsl-optional-backend-v1";
 const INTERFACE_ENV: &str = "POLAR_STREAM_RUSTY_LSL_IPV4";
 const MAX_OUTLETS: usize = 64;
@@ -45,6 +45,7 @@ struct OutletEntry {
     id: PersistentFloat32OutletId,
     channels: usize,
     rate_hz: f64,
+    sensor_clock: crate::SensorClockMap,
 }
 
 pub(crate) struct RustyLslPublisher {
@@ -260,6 +261,7 @@ impl RustyLslPublisher {
                 id,
                 channels,
                 rate_hz,
+                sensor_clock: crate::SensorClockMap::default(),
             },
         );
         self.refresh_status();
@@ -344,7 +346,7 @@ impl RustyLslPublisher {
     }
 
     pub(crate) fn push_scalar(&mut self, id: &str, value: f32) {
-        self.push_values(id, &[value], 1);
+        self.push_values(id, &[value], 1, None);
     }
 
     pub(crate) fn push_scalar_series<I>(&mut self, id: &str, values: I)
@@ -356,10 +358,26 @@ impl RustyLslPublisher {
         if self.values.is_empty() {
             return;
         }
-        self.push_buffered(id, 1);
+        self.push_buffered(id, 1, None);
     }
 
-    pub(crate) fn push_accelerometer(&mut self, samples: &[AccSample]) {
+    pub(crate) fn push_scalar_series_at<I>(&mut self, id: &str, values: I, sensor_timestamp_ns: u64)
+    where
+        I: IntoIterator<Item = f32>,
+    {
+        self.values.clear();
+        self.values.extend(values);
+        if self.values.is_empty() {
+            return;
+        }
+        self.push_buffered(id, 1, Some(sensor_timestamp_ns));
+    }
+
+    pub(crate) fn push_accelerometer_at(
+        &mut self,
+        samples: &[AccSample],
+        sensor_timestamp_ns: u64,
+    ) {
         self.values.clear();
         self.values.reserve(samples.len().saturating_mul(3));
         for sample in samples {
@@ -372,16 +390,22 @@ impl RustyLslPublisher {
         if self.values.is_empty() {
             return;
         }
-        self.push_buffered("raw_acc", 3);
+        self.push_buffered("raw_acc", 3, Some(sensor_timestamp_ns));
     }
 
-    fn push_buffered(&mut self, id: &str, channels: usize) {
+    fn push_buffered(&mut self, id: &str, channels: usize, sensor_timestamp_ns: Option<u64>) {
         let values = std::mem::take(&mut self.values);
-        self.push_values(id, &values, channels);
+        self.push_values(id, &values, channels, sensor_timestamp_ns);
         self.values = values;
     }
 
-    fn push_values(&mut self, id: &str, values: &[f32], channels: usize) {
+    fn push_values(
+        &mut self,
+        id: &str,
+        values: &[f32],
+        channels: usize,
+        sensor_timestamp_ns: Option<u64>,
+    ) {
         let Some(entry) = self.outlets.get(id) else {
             return;
         };
@@ -396,7 +420,16 @@ impl RustyLslPublisher {
             return;
         }
         self.timestamps.clear();
-        let newest = persistent_float32_local_clock();
+        let local_now = persistent_float32_local_clock();
+        let newest = match sensor_timestamp_ns {
+            Some(sensor_timestamp_ns) => self
+                .outlets
+                .get_mut(id)
+                .expect("outlet entry disappeared while publishing")
+                .sensor_clock
+                .map_newest(sensor_timestamp_ns, local_now),
+            None => local_now,
+        };
         for index in 0..records {
             let backfill = if rate_hz > 0.0 {
                 (records - index - 1) as f64 / rate_hz
@@ -474,36 +507,39 @@ impl RustyLslPublisher {
 
 fn bind_dual_protocol_listener(advertised_ipv4: Ipv4Addr) -> io::Result<(TcpListener, UdpSocket)> {
     bind_dual_protocol_listener_with(
-        || UdpSocket::bind((advertised_ipv4, 0)),
+        || TcpListener::bind((advertised_ipv4, 0)),
+        UdpSocket::bind,
         DUAL_PROTOCOL_BIND_ATTEMPTS,
     )
 }
 
-fn bind_dual_protocol_listener_with<F>(
-    mut reserve_udp: F,
+fn bind_dual_protocol_listener_with<T, U>(
+    mut reserve_tcp: T,
+    mut reserve_udp: U,
     attempts: usize,
 ) -> io::Result<(TcpListener, UdpSocket)>
 where
-    F: FnMut() -> io::Result<UdpSocket>,
+    T: FnMut() -> io::Result<TcpListener>,
+    U: FnMut(SocketAddr) -> io::Result<UdpSocket>,
 {
     let mut last_error = None;
     for _ in 0..attempts {
-        let reservation = match reserve_udp() {
-            Ok(reservation) => reservation,
+        let listener = match reserve_tcp() {
+            Ok(listener) => listener,
             Err(error) => {
                 last_error = Some(error);
                 continue;
             }
         };
-        let local = match reservation.local_addr() {
+        let local = match listener.local_addr() {
             Ok(local) => local,
             Err(error) => {
                 last_error = Some(error);
                 continue;
             }
         };
-        match TcpListener::bind(local) {
-            Ok(listener) => return Ok((listener, reservation)),
+        match reserve_udp(local) {
+            Ok(reservation) => return Ok((listener, reservation)),
             Err(error) => last_error = Some(error),
         }
     }
@@ -783,19 +819,24 @@ mod tests {
     }
 
     #[test]
-    fn outlet_port_selection_retries_tcp_conflict_and_releases_both_protocols() {
-        let tcp_conflict = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let conflict_port = tcp_conflict.local_addr().unwrap().port();
-        let conflict_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, conflict_port)).unwrap();
-        let success_udp = loop {
-            let candidate = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    fn outlet_port_selection_retries_udp_conflict_and_releases_both_protocols() {
+        let (conflict_tcp, conflict_udp) = loop {
+            let candidate = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let local = candidate.local_addr().unwrap();
+            if let Ok(conflict) = UdpSocket::bind(local) {
+                break (candidate, conflict);
+            }
+        };
+        let conflict_port = conflict_tcp.local_addr().unwrap().port();
+        let success_tcp = loop {
+            let candidate = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             let port = candidate.local_addr().unwrap().port();
-            if port != conflict_port && TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
+            if port != conflict_port && UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
                 break candidate;
             }
         };
-        let expected_port = success_udp.local_addr().unwrap().port();
-        let mut candidates = VecDeque::from([conflict_udp, success_udp]);
+        let expected_port = success_tcp.local_addr().unwrap().port();
+        let mut candidates = VecDeque::from([conflict_tcp, success_tcp]);
 
         let (listener, reservation) = bind_dual_protocol_listener_with(
             || {
@@ -803,6 +844,7 @@ mod tests {
                     io::Error::new(ErrorKind::AddrNotAvailable, "test candidates exhausted")
                 })
             },
+            UdpSocket::bind,
             2,
         )
         .unwrap();
@@ -817,7 +859,7 @@ mod tests {
         let released_tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, expected_port)).unwrap();
         drop(released_tcp);
         drop(released_udp);
-        drop(tcp_conflict);
+        drop(conflict_udp);
     }
 
     #[test]
@@ -904,7 +946,7 @@ mod tests {
         assert!(publisher.poll().is_none());
 
         let ecg = (0..73).map(|value| value as f32 - 36.0).collect::<Vec<_>>();
-        publisher.push_scalar_series("raw_ecg", ecg.iter().copied());
+        publisher.push_scalar_series_at("raw_ecg", ecg.iter().copied(), 10_000_000_000);
         assert_eq!(publisher.values, ecg);
         assert_eq!(publisher.timestamps.len(), 73);
         let ecg_health = publisher.test_outlet_health("raw_ecg").unwrap();
@@ -919,7 +961,7 @@ mod tests {
                 z_mg: value + 100,
             })
             .collect::<Vec<_>>();
-        publisher.push_accelerometer(&acc);
+        publisher.push_accelerometer_at(&acc, 10_000_000_000);
         let expected_acc = acc
             .iter()
             .flat_map(|sample| {
