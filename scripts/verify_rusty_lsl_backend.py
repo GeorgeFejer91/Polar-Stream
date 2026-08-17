@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 import pathlib
+import queue
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 
@@ -107,6 +109,56 @@ def resolve_exact_streams(pylsl, timeout: float):
     raise RuntimeError(f"exact Rusty LSL streams were not found: {observed!r}")
 
 
+def collect_official_inlets(pylsl, results, close_requested):
+    """Mirror the production verifier's threaded, chunk-oriented inlet owner."""
+    inlets = []
+    try:
+        streams = resolve_exact_streams(pylsl, timeout=15.0)
+        for role in ("ecg", "acc"):
+            inlet = pylsl.StreamInlet(streams[role], max_buflen=10, recover=False)
+            inlet.open_stream(timeout=10.0)
+            inlets.append(inlet)
+
+        minimum_samples = {"ecg": 260, "acc": 400}
+        counts = {"ecg": 0, "acc": 0}
+        first_samples = {}
+        first_timestamps = {}
+        deadline = time.monotonic() + 30.0
+        while any(counts[role] < minimum_samples[role] for role in counts):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"official chunk thresholds timed out: {counts!r}"
+                )
+            for role, inlet in zip(("ecg", "acc"), inlets, strict=True):
+                samples, timestamps = inlet.pull_chunk(timeout=0.05, max_samples=1024)
+                if len(samples) != len(timestamps):
+                    raise RuntimeError(
+                        f"{role} returned unequal sample and timestamp counts"
+                    )
+                if samples and role not in first_samples:
+                    first_samples[role] = samples[0]
+                    first_timestamps[role] = timestamps[0]
+                counts[role] += len(samples)
+
+        results.put(
+            (
+                "ready",
+                {
+                    "streams": streams,
+                    "first_samples": first_samples,
+                    "first_timestamps": first_timestamps,
+                    "sample_counts": counts,
+                },
+            )
+        )
+        close_requested.wait(timeout=20.0)
+    except Exception as error:
+        results.put(("error", str(error)))
+    finally:
+        for inlet in inlets:
+            inlet.close_stream()
+
+
 def main() -> int:
     try:
         import pylsl
@@ -147,7 +199,9 @@ def main() -> int:
         errors="replace",
     )
     output: list[str] = []
-    inlets = []
+    official_results = queue.Queue()
+    close_official = threading.Event()
+    official_thread = None
     try:
         ready_deadline = time.monotonic() + 180.0
         assert process.stdout is not None
@@ -162,28 +216,27 @@ def main() -> int:
         else:
             raise RuntimeError("Rusty backend did not become ready before the deadline")
 
-        streams = resolve_exact_streams(pylsl, timeout=15.0)
-        for role in ("ecg", "acc"):
-            inlet = pylsl.StreamInlet(streams[role], max_buflen=10, recover=False)
-            inlet.open_stream(timeout=10.0)
-            inlets.append(inlet)
-
-        samples = {}
-        timestamps = {}
-        for role, inlet in zip(("ecg", "acc"), inlets, strict=True):
-            sample, timestamp = inlet.pull_sample(timeout=15.0)
-            if sample is None or not timestamp:
-                raise RuntimeError(f"{role} inlet did not return a timestamped sample")
-            samples[role] = sample
-            timestamps[role] = timestamp
+        official_thread = threading.Thread(
+            target=collect_official_inlets,
+            args=(pylsl, official_results, close_official),
+            daemon=True,
+        )
+        official_thread.start()
+        official_status, official = official_results.get(timeout=45.0)
+        if official_status == "error":
+            raise RuntimeError(f"official inlet worker failed: {official}")
+        streams = official["streams"]
+        samples = official["first_samples"]
+        timestamps = official["first_timestamps"]
         if samples["ecg"] != [1725.0]:
             raise RuntimeError(f"unexpected ECG sample: {samples['ecg']!r}")
         if samples["acc"] != [101.0, -202.0, 303.0]:
             raise RuntimeError(f"unexpected ACC sample: {samples['acc']!r}")
 
-        for inlet in inlets:
-            inlet.close_stream()
-        inlets.clear()
+        close_official.set()
+        official_thread.join(timeout=10.0)
+        if official_thread.is_alive():
+            raise RuntimeError("official inlet worker did not close within ten seconds")
         remaining, _ = process.communicate(timeout=20.0)
         output.append(remaining)
         if process.returncode != 0:
@@ -206,12 +259,14 @@ def main() -> int:
                 role: descriptor(streams[role]) for role in ("ecg", "acc")
             },
             "first_samples": samples,
+            "sample_counts": official["sample_counts"],
             "timestamps_advance_independently": timestamps["ecg"] != timestamps["acc"],
             "result": "pass",
         }
         print(json.dumps(result, sort_keys=True))
         return 0
     except Exception:
+        close_official.set()
         process.terminate()
         try:
             trailing, _ = process.communicate(timeout=5.0)
@@ -223,8 +278,9 @@ def main() -> int:
         print("".join(output), file=sys.stderr)
         raise
     finally:
-        for inlet in inlets:
-            inlet.close_stream()
+        close_official.set()
+        if official_thread is not None:
+            official_thread.join(timeout=2.0)
 
 
 if __name__ == "__main__":
