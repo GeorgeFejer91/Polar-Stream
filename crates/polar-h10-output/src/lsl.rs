@@ -130,6 +130,7 @@ impl LslApi {
 struct LslOutlet {
     handle: Outlet,
     rate_hz: f64,
+    sensor_clock: crate::SensorClockMap,
 }
 
 unsafe impl Send for LslOutlet {}
@@ -217,6 +218,7 @@ impl LslPublisher {
             LslOutlet {
                 handle: outlet,
                 rate_hz: spec.rate_hz,
+                sensor_clock: crate::SensorClockMap::default(),
             },
         );
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
@@ -260,6 +262,7 @@ impl LslPublisher {
             LslOutlet {
                 handle: outlet,
                 rate_hz: formula.source.rate_hz(),
+                sensor_clock: crate::SensorClockMap::default(),
             },
         );
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
@@ -278,10 +281,26 @@ impl LslPublisher {
         if self.scratch.is_empty() {
             return;
         }
-        self.push_notification(id, 1);
+        self.push_notification(id, 1, None);
     }
 
-    pub(crate) fn push_accelerometer(&mut self, samples: &[AccSample]) {
+    pub(crate) fn push_scalar_series_at<I>(&mut self, id: &str, values: I, sensor_timestamp_ns: u64)
+    where
+        I: IntoIterator<Item = f32>,
+    {
+        self.scratch.clear();
+        self.scratch.extend(values);
+        if self.scratch.is_empty() {
+            return;
+        }
+        self.push_notification(id, 1, Some(sensor_timestamp_ns));
+    }
+
+    pub(crate) fn push_accelerometer_at(
+        &mut self,
+        samples: &[AccSample],
+        sensor_timestamp_ns: u64,
+    ) {
         self.scratch.clear();
         self.scratch.reserve(samples.len().saturating_mul(3));
         for sample in samples {
@@ -291,15 +310,15 @@ impl LslPublisher {
                 f32::from(sample.z_mg),
             ]);
         }
-        self.push_notification("raw_acc", 3);
+        self.push_notification("raw_acc", 3, Some(sensor_timestamp_ns));
     }
 
     /// Immediately forwards one already-arrived BLE notification. This does
     /// not accumulate data or wait for a timer: the chunk call simply replaces
     /// many C FFI calls with one. Its timestamp denotes the newest sample and
     /// liblsl derives earlier sample times from the declared nominal rate.
-    fn push_notification(&mut self, id: &str, channels: usize) {
-        let (Some(api), Some(outlet)) = (&self.api, self.outlets.get(id)) else {
+    fn push_notification(&mut self, id: &str, channels: usize, sensor_timestamp_ns: Option<u64>) {
+        let (Some(api), Some(outlet)) = (&self.api, self.outlets.get_mut(id)) else {
             return;
         };
         if self.scratch.is_empty() || !self.scratch.len().is_multiple_of(channels) {
@@ -307,14 +326,19 @@ impl LslPublisher {
         }
         // SAFETY: Function pointers come from the retained library, the buffer
         // lives through each call, and its length is a channel-count multiple.
-        let now = unsafe { (api.local_clock)() };
+        let local_now = unsafe { (api.local_clock)() };
+        let newest = sensor_timestamp_ns.map_or(local_now, |sensor_timestamp_ns| {
+            outlet
+                .sensor_clock
+                .map_newest(sensor_timestamp_ns, local_now)
+        });
         let result = if let Some(push_chunk) = api.push_chunk {
             unsafe {
                 push_chunk(
                     outlet.handle,
                     self.scratch.as_ptr(),
                     self.scratch.len() as c_ulong,
-                    now,
+                    newest,
                     1,
                 )
             }
@@ -327,8 +351,9 @@ impl LslPublisher {
                 } else {
                     0.0
                 };
-                result =
-                    unsafe { (api.push_sample)(outlet.handle, values.as_ptr(), now - backfill, 1) };
+                result = unsafe {
+                    (api.push_sample)(outlet.handle, values.as_ptr(), newest - backfill, 1)
+                };
                 if result != 0 {
                     break;
                 }

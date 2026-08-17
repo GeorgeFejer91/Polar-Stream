@@ -36,6 +36,24 @@ pub use polar_h10_math::{FormulaError, FormulaRuntimeState, FormulaValidation, v
 use rusty_lsl::RustyLslPublisher as LslPublisher;
 use serde::Serialize;
 
+#[derive(Default)]
+struct SensorClockMap {
+    local_minus_sensor_seconds: Option<f64>,
+}
+
+impl SensorClockMap {
+    fn map_newest(&mut self, sensor_timestamp_ns: u64, local_now: f64) -> f64 {
+        if sensor_timestamp_ns == 0 {
+            return local_now;
+        }
+        let sensor_seconds = sensor_timestamp_ns as f64 / 1_000_000_000.0;
+        let offset = *self
+            .local_minus_sensor_seconds
+            .get_or_insert(local_now - sensor_seconds);
+        sensor_seconds + offset
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct MetricValue<'a> {
     pub id: &'a str,
@@ -336,9 +354,11 @@ impl OutputRouter {
             return None;
         };
         if inner.selected.contains("raw_ecg") {
-            inner
-                .lsl
-                .push_scalar_series("raw_ecg", samples.iter().map(|value| *value as f32));
+            inner.lsl.push_scalar_series_at(
+                "raw_ecg",
+                samples.iter().map(|value| *value as f32),
+                sensor_timestamp_ns,
+            );
             if let Some(osc) = &mut inner.osc {
                 osc.send_series(
                     "raw_ecg",
@@ -367,7 +387,9 @@ impl OutputRouter {
             return None;
         };
         if inner.selected.contains("raw_acc") {
-            inner.lsl.push_accelerometer(samples);
+            inner
+                .lsl
+                .push_accelerometer_at(samples, sensor_timestamp_ns);
             if let Some(osc) = &mut inner.osc {
                 osc.send_accelerometer(sensor_timestamp_ns, samples);
             }
@@ -726,6 +748,14 @@ mod normalization_tests {
         assert_eq!(normalizer.apply(20.0), 1.0);
         assert_eq!(normalizer.apply(15.0), 0.5);
         assert_eq!(normalizer.apply(5.0), 0.0);
+    }
+
+    #[test]
+    fn sensor_clock_mapping_preserves_buffered_frame_spacing() {
+        let mut clock = SensorClockMap::default();
+        assert_eq!(clock.map_newest(10_000_000_000, 100.0), 100.0);
+        assert_eq!(clock.map_newest(10_500_000_000, 100.01), 100.5);
+        assert_eq!(clock.map_newest(11_000_000_000, 100.02), 101.0);
     }
 
     #[tokio::test]

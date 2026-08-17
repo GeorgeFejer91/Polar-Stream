@@ -1,5 +1,26 @@
 # Decision log
 
+## 2026-08-17 — Map raw H10 sensor time into the local LSL clock
+
+Leaving Windows connection timing system-managed restored sustained delivery:
+the physical candidate reached both first frames, both independent Rusty
+outlets, and both pinned official inlets. The official verifier then failed
+closed on timestamp reorder (ECG 4, ACC 5). Setup had buffered several PMD
+notifications, and the coordinator drained them faster than their device-time
+spacing. Stamping each drained notification at the current local clock made
+successive nominal-rate backfilled chunks overlap.
+
+Each raw ECG and ACC outlet now establishes an independent offset from the
+first nonzero H10 sensor timestamp to the backend's local LSL clock. Later
+chunks map their newest sensor timestamp through that fixed offset, then retain
+the existing nominal-rate backfill within the chunk. This preserves device-time
+spacing while keeping published timestamps in the host LSL clock domain; the
+raw device timestamp is never inserted directly. Zero timestamps and derived
+scalar outputs retain the previous local-clock behavior. The same mapping is
+owned by the liblsl and default-off Rusty LSL implementations. Host evidence is
+green; physical acceptance and publication remain held for a fresh same-epoch
+run.
+
 ## 2026-08-17 — Leave Windows connection timing system-managed
 
 Moving optional battery access before subscriptions did not restore sustained

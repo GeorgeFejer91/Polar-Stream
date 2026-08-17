@@ -45,6 +45,7 @@ struct OutletEntry {
     id: PersistentFloat32OutletId,
     channels: usize,
     rate_hz: f64,
+    sensor_clock: crate::SensorClockMap,
 }
 
 pub(crate) struct RustyLslPublisher {
@@ -260,6 +261,7 @@ impl RustyLslPublisher {
                 id,
                 channels,
                 rate_hz,
+                sensor_clock: crate::SensorClockMap::default(),
             },
         );
         self.refresh_status();
@@ -344,7 +346,7 @@ impl RustyLslPublisher {
     }
 
     pub(crate) fn push_scalar(&mut self, id: &str, value: f32) {
-        self.push_values(id, &[value], 1);
+        self.push_values(id, &[value], 1, None);
     }
 
     pub(crate) fn push_scalar_series<I>(&mut self, id: &str, values: I)
@@ -356,10 +358,26 @@ impl RustyLslPublisher {
         if self.values.is_empty() {
             return;
         }
-        self.push_buffered(id, 1);
+        self.push_buffered(id, 1, None);
     }
 
-    pub(crate) fn push_accelerometer(&mut self, samples: &[AccSample]) {
+    pub(crate) fn push_scalar_series_at<I>(&mut self, id: &str, values: I, sensor_timestamp_ns: u64)
+    where
+        I: IntoIterator<Item = f32>,
+    {
+        self.values.clear();
+        self.values.extend(values);
+        if self.values.is_empty() {
+            return;
+        }
+        self.push_buffered(id, 1, Some(sensor_timestamp_ns));
+    }
+
+    pub(crate) fn push_accelerometer_at(
+        &mut self,
+        samples: &[AccSample],
+        sensor_timestamp_ns: u64,
+    ) {
         self.values.clear();
         self.values.reserve(samples.len().saturating_mul(3));
         for sample in samples {
@@ -372,16 +390,22 @@ impl RustyLslPublisher {
         if self.values.is_empty() {
             return;
         }
-        self.push_buffered("raw_acc", 3);
+        self.push_buffered("raw_acc", 3, Some(sensor_timestamp_ns));
     }
 
-    fn push_buffered(&mut self, id: &str, channels: usize) {
+    fn push_buffered(&mut self, id: &str, channels: usize, sensor_timestamp_ns: Option<u64>) {
         let values = std::mem::take(&mut self.values);
-        self.push_values(id, &values, channels);
+        self.push_values(id, &values, channels, sensor_timestamp_ns);
         self.values = values;
     }
 
-    fn push_values(&mut self, id: &str, values: &[f32], channels: usize) {
+    fn push_values(
+        &mut self,
+        id: &str,
+        values: &[f32],
+        channels: usize,
+        sensor_timestamp_ns: Option<u64>,
+    ) {
         let Some(entry) = self.outlets.get(id) else {
             return;
         };
@@ -396,7 +420,16 @@ impl RustyLslPublisher {
             return;
         }
         self.timestamps.clear();
-        let newest = persistent_float32_local_clock();
+        let local_now = persistent_float32_local_clock();
+        let newest = match sensor_timestamp_ns {
+            Some(sensor_timestamp_ns) => self
+                .outlets
+                .get_mut(id)
+                .expect("outlet entry disappeared while publishing")
+                .sensor_clock
+                .map_newest(sensor_timestamp_ns, local_now),
+            None => local_now,
+        };
         for index in 0..records {
             let backfill = if rate_hz > 0.0 {
                 (records - index - 1) as f64 / rate_hz
@@ -913,7 +946,7 @@ mod tests {
         assert!(publisher.poll().is_none());
 
         let ecg = (0..73).map(|value| value as f32 - 36.0).collect::<Vec<_>>();
-        publisher.push_scalar_series("raw_ecg", ecg.iter().copied());
+        publisher.push_scalar_series_at("raw_ecg", ecg.iter().copied(), 10_000_000_000);
         assert_eq!(publisher.values, ecg);
         assert_eq!(publisher.timestamps.len(), 73);
         let ecg_health = publisher.test_outlet_health("raw_ecg").unwrap();
@@ -928,7 +961,7 @@ mod tests {
                 z_mg: value + 100,
             })
             .collect::<Vec<_>>();
-        publisher.push_accelerometer(&acc);
+        publisher.push_accelerometer_at(&acc, 10_000_000_000);
         let expected_acc = acc
             .iter()
             .flat_map(|sample| {

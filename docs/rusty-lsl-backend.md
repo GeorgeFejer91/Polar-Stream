@@ -25,8 +25,9 @@ already-arrived BLE notification as one bounded chunk:
 - raw ECG: Float32, 1 channel, nominal 130 Hz;
 - raw ACC: Float32, 3 channels in X/Y/Z order, nominal 200 Hz;
 - canonical name, type, source ID, channel labels, units, and Polar metadata;
-- source timestamps in the local LSL clock domain, backfilled at the declared
-  nominal rate from the notification's newest sample; and
+- source timestamps in the local LSL clock domain: each raw outlet maps H10
+  sensor time through a first-frame local-clock offset, then backfills at the
+  declared nominal rate from the notification's mapped newest sample; and
 - up to 256 records per chunk, 64 outlets, and exactly one admitted official
   consumer per outlet.
 
@@ -39,6 +40,8 @@ LSL auxiliary-connection and fan-out qualification before this bound can move.
 Polar's PMD sensor timestamp is retained separately in the native input event,
 OSC, and physical evidence. It is not substituted directly into LSL because it
 belongs to the H10 device-clock domain rather than the host LSL clock domain.
+The per-outlet offset maps its spacing into local LSL time, including when
+several setup-buffered notifications are drained in one host scheduling burst.
 
 The advertised IPv4 interface is selected from the operating-system multicast
 route without sending a probe datagram. Set
@@ -250,6 +253,17 @@ The adopted lesson is the reference lifecycle and staged settings → ECG → AC
 control/data sequence. No implementation source is copied; the bounded settle
 is an explicit, cancellable Windows compatibility stage rather than an
 unobserved delay.
+
+The first system-managed-link candidate restored sustained native delivery and
+reached both pinned official inlets. Strict qualification then detected four
+ECG and five ACC timestamp reversals. The reversals were a publication defect,
+not accepted as verifier tolerance: setup-buffered PMD notifications were
+drained rapidly and each chunk had been independently stamped at host receipt
+time, so their nominal-rate backfilled ranges overlapped. Both output backends
+now map each raw stream's H10 sensor timestamps through an independent fixed
+offset into local LSL time before the existing within-chunk backfill. This is
+host-qualified but remains physically unaccepted until the complete same-epoch
+chain passes without loss, reorder, or residual resources.
 
 The browser application is outside this transport. Its same-origin
 `BroadcastChannel`, event API, and CSV recorder are not LSL and remain unable

@@ -71,6 +71,10 @@ Last verified: 2026-08-17
   the observed interval, peripheral latency, and negotiated MTU read-only. It
   does not mutate connection timing after sensor-frame qualification.
 - Immediate raw LSL/OSC publication with canonical names.
+- Raw ECG and ACC LSL chunks preserve H10 sensor-time spacing through separate
+  first-frame offsets into the local LSL clock. This prevents setup-buffered
+  notification bursts from overlapping while never publishing raw device-clock
+  values directly. The liblsl and Rusty LSL backends share this contract.
 - A default-off, mutually exclusive Rusty LSL source backend is pinned to merge
   `8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. Pinned pylsl
   1.18.2/liblsl 1.17.7 broadly discovered and exactly matched independent
@@ -201,16 +205,13 @@ Last verified: 2026-08-17
   the complete direct-WinRT session boundary: service/characteristic discovery,
   notification subscriptions, PMD responses, and advancing first ECG and ACC
   frames. Both independent Rusty outlets initialized and pinned official
-  pylsl/liblsl consumers resolved and opened them, but the physical verifier
-  did not complete its source/consumer thresholds before its outer deadline.
-  Review found a verifier-only ordering mismatch: unlike the passing synthetic
-  gate, it did not start official consumers until after BLE source readiness.
-  The prepared correction starts them at outlet initialization and leaves BLE,
-  output, product, and default-package behavior unchanged. Its first attended
-  run proved both consumers were admitted before source readiness, but neither
-  source nor official thresholds completed after the setup-to-steady-state
-  handoff. Identifier-free five-second link and callback/queue checkpoints now
-  distinguish native notification loss from an internal forwarding stall.
+  pylsl/liblsl consumers resolved and opened them. Receiver-first startup and
+  identifier-free handoff diagnostics isolated a post-qualification callback
+  stop to the Windows preferred-connection request; leaving connection timing
+  system-managed restored sustained delivery. That run then failed the strict
+  official gate on four ECG and five ACC timestamp reversals. The prepared
+  per-stream sensor-to-local-clock mapping fixes the setup-buffer burst without
+  weakening reorder validation and is host-qualified in both output backends.
   Retain the
   publication and release hold until a fresh same-epoch run proves bounded ECG
   and ACC counts/rates/order plus exact cleanup through that corrected chain.
