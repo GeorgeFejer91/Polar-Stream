@@ -109,6 +109,16 @@ requires distinct outlet identities, advancing ECG/ACC timestamps, bounded
 rates and samples, nonzero X/Y/Z values, zero reorder, and clean four-inlet and
 two-session shutdown. Its checked-in contract tests use no Bluetooth hardware;
 only a complete same-epoch physical run may establish the two-device claim.
+That gate passed on Windows from exact source commit
+`2b7bdf0c8f0a567d8ad4a18dcbb24a78928f9197`. After a repaired-reference
+two-session pass, pinned pylsl 1.18.2/liblsl 1.17.7 opened four distinct outlets.
+Device-slot 1 delivered 1,168 ECG samples at 130.01 Hz and 1,764 ACC records at
+202.43 Hz; device-slot 2 delivered 365 ECG samples at 130.19 Hz and 468 ACC
+records at 202.47 Hz. Every stream advanced with zero estimated loss/reorder,
+both ACC streams had nonzero X/Y/Z values, and all four inlets closed before
+both native sessions and the process stopped cleanly. This is bounded
+two-device interoperability evidence, not a long-duration latency benchmark,
+generic multi-consumer qualification, or a change to the single-sensor UI.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` is enabled by this verifier and records
 stage name, attempt, entry/exit, duration, and result class. It also records
 identifier-free characteristic properties, selected CCCD mode and successful

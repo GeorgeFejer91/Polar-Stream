@@ -57,13 +57,6 @@ items into the dated history instead of silently deleting them.
 
 ## Next
 
-- Complete the bounded two-H10 native qualification for the optional Rusty LSL
-  backend: one exact shared scan, two distinct session owners, advancing ECG
-  1ch/130 Hz and ACC 3ch/200 Hz for both devices, four exact pinned official
-  pylsl/liblsl inlets, per-stream rate/loss/reorder evidence, nonzero values on
-  every ACC axis, no cross-device match, and clean inlet/session/process/socket
-  shutdown. Keep the installed UI single-sensor until a separately reviewed
-  product workflow requires multiple simultaneous sensors.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that
   decision and physical/cross-platform gates close.
@@ -98,6 +91,12 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-18: added a bounded native two-H10 qualification pool with one shared
+  exact discovery snapshot, two independent Windows session owners, one Rusty
+  discovery registry, and four persistent ECG/ACC outlets. A same-epoch
+  repaired-reference-first physical run passed four pinned official inlets,
+  130/200 Hz bands, nonzero X/Y/Z, zero estimated loss/reorder, and exact
+  cleanup. The installed UI remains deliberately single-sensor.
 - 2026-08-14: hardened browser-H10 compatibility around capability and
   Permissions Policy error diagnosis, immediate user-gesture chooser invocation,
   one transient GATT retry, and legacy characteristic writes. A physical

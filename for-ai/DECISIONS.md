@@ -19,8 +19,17 @@ The official verifier broadly enumerates and exactly matches four descriptors
 client-side, opens one pinned pylsl 1.18.2/liblsl 1.17.7 inlet per outlet, and
 requires advancing bounded sensor and LSL evidence before graceful two-session
 shutdown. This does not change Rusty LSL, claim multiple consumers per outlet,
-expose device identities, or grant browser code native BLE/LSL authority. The
-two-device claim remains pending until one physical same-epoch run passes.
+expose device identities, or grant browser code native BLE/LSL authority.
+
+The exact source commit `2b7bdf0c8f0a567d8ad4a18dcbb24a78928f9197`
+passed the same-epoch gate after a repaired-reference two-session pass. Four
+distinct pinned official inlets measured device-slot 1 at 1,168 ECG samples /
+130.01 Hz and 1,764 ACC records / 202.43 Hz, and device-slot 2 at 365 ECG
+samples / 130.19 Hz and 468 ACC records / 202.47 Hz. Every stream advanced with
+zero estimated loss/reorder, both ACC streams had nonzero X/Y/Z, all inlets
+closed before source stop, both native sessions reported clean cleanup, and no
+verifier process, listener, or Bluetooth lease remained. This accepts only the
+bounded two-H10 Windows interoperability claim.
 
 ## 2026-08-17 — Remove the standalone WinRT probe from the publication surface
 

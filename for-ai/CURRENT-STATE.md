@@ -78,9 +78,12 @@ Last verified: 2026-08-18
   and ECG/ACC outlet keys. One two-session output coordinator owns the single
   Rusty discovery registry and all four persistent outlets, so the fixed
   discovery port binds once. Session transitions serialize, a new scan rejects
-  while any slot is active, and cleanup drains every slot. The ordinary desktop
-  UI remains single-sensor; two-device physical acceptance is pending one
-  complete same-epoch four-inlet run.
+  while any slot is active, and cleanup drains every slot. A same-epoch Windows
+  run from exact source `2b7bdf0c8f0a567d8ad4a18dcbb24a78928f9197`
+  passed repaired-reference discovery/acquisition, both Polar Stream sessions,
+  four distinct pinned official inlets, 130/200 Hz bands, zero estimated
+  loss/reorder, nonzero X/Y/Z, and exact cleanup. The ordinary desktop UI
+  remains single-sensor.
 - Immediate raw LSL/OSC publication with canonical names.
 - Raw ECG and ACC LSL chunks preserve H10 sensor-time spacing through separate
   first-frame offsets into the local LSL clock. This prevents setup-buffered
