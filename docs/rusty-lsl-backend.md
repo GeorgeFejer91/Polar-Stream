@@ -37,6 +37,16 @@ without disturbing the already admitted consumer. A product requirement for
 multiple official consumers of the same outlet needs a separately scoped Rusty
 LSL auxiliary-connection and fan-out qualification before this bound can move.
 
+The native two-H10 qualification harness shares one exact discovery snapshot
+but assigns each selected device to an independent input-session owner and
+outlet-key pair. A single two-session output coordinator owns the Rusty
+discovery registry and all four persistent outlets, avoiding a second bind of
+the process-wide discovery port. It admits exactly two distinct H10s into
+identifier-free slots and disconnects all admitted sessions even when one
+cleanup reports an error. This bounded harness does not change the desktop
+UI's single-sensor interaction model and does not claim multiple consumers of
+one outlet.
+
 Polar's PMD sensor timestamp is retained separately in the native input event,
 OSC, and physical evidence. It is not substituted directly into LSL because it
 belongs to the H10 device-clock domain rather than the host LSL clock domain.
@@ -92,6 +102,23 @@ fail-fast bound, post-selection source readiness has a 60-second bound, and
 source/consumer collection retains its two-minute bound. The worker must close
 before the source is stopped. Native session setup has its own 45-second total
 budget, so a typed native stage exits before the outer source-readiness bound.
+`scripts/verify_two_h10_rusty_lsl.py` applies the same pinned official-consumer
+contract to two simultaneously selected H10s. It starts four inlets at outlet
+initialization, matches every descriptor client-side after broad enumeration,
+requires distinct outlet identities, advancing ECG/ACC timestamps, bounded
+rates and samples, nonzero X/Y/Z values, zero reorder, and clean four-inlet and
+two-session shutdown. Its checked-in contract tests use no Bluetooth hardware;
+only a complete same-epoch physical run may establish the two-device claim.
+That gate passed on Windows from exact source commit
+`2b7bdf0c8f0a567d8ad4a18dcbb24a78928f9197`. After a repaired-reference
+two-session pass, pinned pylsl 1.18.2/liblsl 1.17.7 opened four distinct outlets.
+Device-slot 1 delivered 1,168 ECG samples at 130.01 Hz and 1,764 ACC records at
+202.43 Hz; device-slot 2 delivered 365 ECG samples at 130.19 Hz and 468 ACC
+records at 202.47 Hz. Every stream advanced with zero estimated loss/reorder,
+both ACC streams had nonzero X/Y/Z values, and all four inlets closed before
+both native sessions and the process stopped cleanly. This is bounded
+two-device interoperability evidence, not a long-duration latency benchmark,
+generic multi-consumer qualification, or a change to the single-sensor UI.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` is enabled by this verifier and records
 stage name, attempt, entry/exit, duration, and result class. It also records
 identifier-free characteristic properties, selected CCCD mode and successful

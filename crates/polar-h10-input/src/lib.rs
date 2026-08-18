@@ -108,6 +108,181 @@ pub struct InputManager {
     next_generation: AtomicU64,
 }
 
+struct PooledInputSession {
+    device_id: String,
+    manager: Arc<InputManager>,
+}
+
+/// Owns a bounded set of independent sensor sessions that share one discovery
+/// snapshot. Each admitted device still runs through its own [`InputManager`]
+/// and platform connection owner.
+///
+/// Connection and disconnection transitions are serialized so a session
+/// cannot be removed while its platform setup is still in flight. Call
+/// [`Self::disconnect_all`] before dropping the pool when bounded cleanup must
+/// be observed.
+pub struct InputSessionPool {
+    discovery: Arc<InputManager>,
+    sessions: Mutex<HashMap<String, PooledInputSession>>,
+    operation_gate: Mutex<()>,
+    max_sessions: usize,
+}
+
+impl InputSessionPool {
+    /// Construct the production qualification shape for two distinct H10s.
+    pub fn two_h10s() -> Self {
+        Self {
+            discovery: Arc::new(InputManager::new()),
+            sessions: Mutex::new(HashMap::new()),
+            operation_gate: Mutex::new(()),
+            max_sessions: 2,
+        }
+    }
+
+    /// Refresh the shared device snapshot. Active sessions must be disconnected
+    /// first so discovery cannot replace their selection authority.
+    pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
+        let _operation = self.operation_gate.lock().await;
+        if !self.sessions.lock().await.is_empty() {
+            return Err("Disconnect all sensor sessions before scanning again.".into());
+        }
+        #[cfg(target_os = "windows")]
+        return self.discovery.scan_for_exact_h10s(2).await;
+        #[cfg(not(target_os = "windows"))]
+        self.discovery.scan().await
+    }
+
+    /// Connect one exact device from the latest shared scan under a stable,
+    /// non-identifying slot such as `device-1` or `device-2`.
+    pub async fn connect(
+        &self,
+        slot: &str,
+        device_id: &str,
+    ) -> Result<mpsc::Receiver<InputEvent>, String> {
+        validate_session_slot(slot)?;
+        let _operation = self.operation_gate.lock().await;
+
+        let scanned_device = self
+            .discovery
+            .devices
+            .lock()
+            .await
+            .get(device_id)
+            .cloned()
+            .ok_or_else(|| {
+                "That sensor is no longer in the shared scan results. Scan again.".to_string()
+            })?;
+
+        let manager = Arc::new(InputManager::new());
+        manager
+            .devices
+            .lock()
+            .await
+            .insert(device_id.to_string(), scanned_device);
+
+        {
+            let mut sessions = self.sessions.lock().await;
+            validate_session_admission(&sessions, self.max_sessions, slot, device_id)?;
+            sessions.insert(
+                slot.to_string(),
+                PooledInputSession {
+                    device_id: device_id.to_string(),
+                    manager: manager.clone(),
+                },
+            );
+        }
+
+        match manager.connect(device_id).await {
+            Ok(events) => Ok(events),
+            Err(error) => {
+                let mut sessions = self.sessions.lock().await;
+                if sessions
+                    .get(slot)
+                    .is_some_and(|session| Arc::ptr_eq(&session.manager, &manager))
+                {
+                    sessions.remove(slot);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Disconnect one named slot through its ordinary platform owner.
+    pub async fn disconnect(&self, slot: &str) -> Result<(), String> {
+        validate_session_slot(slot)?;
+        let _operation = self.operation_gate.lock().await;
+        let session = self.sessions.lock().await.remove(slot);
+        if let Some(session) = session {
+            session.manager.disconnect().await?;
+        }
+        Ok(())
+    }
+
+    /// Disconnect every admitted session. All slots are released even if one
+    /// platform owner reports an error; the first error is returned afterward.
+    pub async fn disconnect_all(&self) -> Result<(), String> {
+        let _operation = self.operation_gate.lock().await;
+        let sessions = {
+            let mut sessions = self.sessions.lock().await;
+            std::mem::take(&mut *sessions)
+        };
+        let mut first_error = None;
+        for session in sessions.into_values() {
+            if let Err(error) = session.manager.disconnect().await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    pub async fn active_session_count(&self) -> usize {
+        self.sessions.lock().await.len()
+    }
+}
+
+fn validate_session_slot(slot: &str) -> Result<(), String> {
+    if slot.is_empty()
+        || slot.len() > 32
+        || !slot
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(
+            "A sensor session slot must be 1-32 ASCII letters, digits, hyphens, or underscores."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_session_admission(
+    sessions: &HashMap<String, PooledInputSession>,
+    max_sessions: usize,
+    slot: &str,
+    device_id: &str,
+) -> Result<(), String> {
+    if sessions.contains_key(slot) {
+        return Err("That sensor session slot is already active.".into());
+    }
+    if sessions
+        .values()
+        .any(|session| session.device_id == device_id)
+    {
+        return Err("That exact sensor is already active in another session slot.".into());
+    }
+    if sessions.len() >= max_sessions {
+        return Err(format!(
+            "The bounded sensor session pool already owns its {max_sessions}-session maximum."
+        ));
+    }
+    Ok(())
+}
+
 impl Default for InputManager {
     fn default() -> Self {
         Self::new()
@@ -126,7 +301,15 @@ impl InputManager {
 
     #[cfg(target_os = "windows")]
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
-        let found = windows_backend::scan().await?;
+        self.scan_for_exact_h10s(1).await
+    }
+
+    #[cfg(target_os = "windows")]
+    async fn scan_for_exact_h10s(
+        &self,
+        minimum_exact_h10s: usize,
+    ) -> Result<Vec<DeviceSummary>, String> {
+        let found = windows_backend::scan_for_exact_h10s(minimum_exact_h10s).await?;
         let next_devices = found
             .iter()
             .map(|device| (device.id.clone(), device.name.clone()))
@@ -532,7 +715,11 @@ async fn send(sender: &mpsc::Sender<InputEvent>, event: InputEvent) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::parse_bluetooth_address;
+    use super::{
+        InputManager, InputSessionPool, PooledInputSession, parse_bluetooth_address,
+        validate_session_admission, validate_session_slot,
+    };
+    use std::{collections::HashMap, sync::Arc};
 
     #[test]
     fn parses_windows_bluetooth_address_forms() {
@@ -554,5 +741,62 @@ mod tests {
     fn rejects_non_address_peripheral_ids() {
         assert_eq!(parse_bluetooth_address("hci0/dev_01"), None);
         assert_eq!(parse_bluetooth_address("AABBCC"), None);
+    }
+
+    #[test]
+    fn session_slots_are_short_identifier_free_labels() {
+        assert!(validate_session_slot("device-1").is_ok());
+        assert!(validate_session_slot("device_2").is_ok());
+        assert!(validate_session_slot("").is_err());
+        assert!(validate_session_slot("device 1").is_err());
+        assert!(validate_session_slot(&"x".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn two_session_admission_rejects_duplicate_slots_devices_and_overflow() {
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            "device-1".to_string(),
+            PooledInputSession {
+                device_id: "first-private-id".to_string(),
+                manager: Arc::new(InputManager::new()),
+            },
+        );
+        assert!(validate_session_admission(&sessions, 2, "device-2", "second-private-id").is_ok());
+        assert!(validate_session_admission(&sessions, 2, "device-1", "second-private-id").is_err());
+        assert!(validate_session_admission(&sessions, 2, "device-2", "first-private-id").is_err());
+
+        sessions.insert(
+            "device-2".to_string(),
+            PooledInputSession {
+                device_id: "second-private-id".to_string(),
+                manager: Arc::new(InputManager::new()),
+            },
+        );
+        assert!(validate_session_admission(&sessions, 2, "device-3", "third-private-id").is_err());
+    }
+
+    #[tokio::test]
+    async fn disconnect_all_drains_every_admitted_slot() {
+        let pool = InputSessionPool::two_h10s();
+        {
+            let mut sessions = pool.sessions.lock().await;
+            for (slot, device_id) in [
+                ("device-1", "first-private-id"),
+                ("device-2", "second-private-id"),
+            ] {
+                sessions.insert(
+                    slot.to_string(),
+                    PooledInputSession {
+                        device_id: device_id.to_string(),
+                        manager: Arc::new(InputManager::new()),
+                    },
+                );
+            }
+        }
+
+        assert_eq!(pool.active_session_count().await, 2);
+        pool.disconnect_all().await.unwrap();
+        assert_eq!(pool.active_session_count().await, 0);
     }
 }

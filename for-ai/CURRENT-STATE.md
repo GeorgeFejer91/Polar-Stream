@@ -1,12 +1,13 @@
 # Current state
 
-Last verified: 2026-08-17
+Last verified: 2026-08-18
 
 ## Implemented
 
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
 - Windows uses a direct WinRT advertisement watcher for up to fifteen seconds,
-  stopping early after exact H10 local-name evidence. This bound matches the
+  stopping early after the caller's exact H10 local-name target: one for the
+  ordinary UI and two for the bounded two-session pool. This bound matches the
   sparse advertisement cadence observed from a reference-positive physical
   H10 while retaining a fast path when an exact packet arrives immediately.
   Exact H10 local-name evidence is
@@ -71,6 +72,18 @@ Last verified: 2026-08-17
 - Native Windows BLE leaves connection parameters system-managed and reports
   the observed interval, peripheral latency, and negotiated MTU read-only. It
   does not mutate connection timing after sensor-frame qualification.
+- A bounded native two-H10 qualification surface shares one discovery snapshot
+  and admits exactly two distinct devices into non-identifying slots. Each slot
+  owns an independent `InputManager`, Windows session owner, event receiver,
+  and ECG/ACC outlet keys. One two-session output coordinator owns the single
+  Rusty discovery registry and all four persistent outlets, so the fixed
+  discovery port binds once. Session transitions serialize, a new scan rejects
+  while any slot is active, and cleanup drains every slot. A same-epoch Windows
+  run from exact source `2b7bdf0c8f0a567d8ad4a18dcbb24a78928f9197`
+  passed repaired-reference discovery/acquisition, both Polar Stream sessions,
+  four distinct pinned official inlets, 130/200 Hz bands, zero estimated
+  loss/reorder, nonzero X/Y/Z, and exact cleanup. The ordinary desktop UI
+  remains single-sensor.
 - Immediate raw LSL/OSC publication with canonical names.
 - Raw ECG and ACC LSL chunks preserve H10 sensor-time spacing through separate
   first-frame offsets into the local LSL clock. This prevents setup-buffered

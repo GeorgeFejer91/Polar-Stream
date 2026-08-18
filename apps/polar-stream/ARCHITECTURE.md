@@ -174,6 +174,16 @@ outlets initialize, before BLE selection or source-frame readiness. It then
 awaits source and consumer thresholds as separate gates. This receiver-first
 order is verifier orchestration, not an application buffering or publication
 policy.
+The two-H10 qualifier uses one bounded `InputSessionPool`: a single shared scan
+snapshot admits exactly two distinct devices into stable, non-identifying
+slots, while each slot owns a separate `InputManager`, Windows session owner,
+event receiver, and ECG/ACC outlet keys. One two-session output coordinator
+owns the process's Rusty discovery registry and all four persistent outlets, so
+the fixed discovery port is bound exactly once. Connection and cleanup
+transitions are serialized, scanning is rejected while a session is active,
+and `disconnect_all` drains every admitted slot before returning. This is a
+native qualification surface; it does not change the single-sensor desktop UI
+or give the browser runtime native BLE or LSL authority.
 Opt-in session diagnostics continue across the first-frame-to-steady-state
 handoff, reporting only aggregate link and callback/queue counters every five
 seconds so native notification loss and internal forwarding stalls remain
@@ -210,8 +220,10 @@ than hiding loss. Shutdown gives every best-effort GATT cleanup operation a
 500 ms bound before synchronous handler removal and WinRT handle closure;
 callbacks and session closure are claimed exactly once, and
 `GattSession.MaintainConnection` is always cleared. The scanner coalesces
-advertisements by address for up to fifteen seconds, stops early after exact
-H10 local-name evidence, and admits at most 256 strong candidates. The ceiling
+advertisements by address for up to fifteen seconds and admits at most 256
+strong candidates. It stops early after reaching the caller's exact-name
+target: one H10 for the ordinary UI and two for the bounded two-session pool.
+The ceiling
 matches a physical reference run that observed only four exact H10 packets in
 fifteen seconds; an exact `Polar H10` local-name packet is
 sufficient even when that packet's service-UUID collection is unavailable. A

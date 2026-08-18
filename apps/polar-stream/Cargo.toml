@@ -24,6 +24,10 @@ path = "src/main.rs"
 name = "verify_rusty_lsl_h10"
 required-features = ["rusty-lsl-backend"]
 
+[[example]]
+name = "verify_two_h10_rusty_lsl"
+required-features = ["rusty-lsl-backend"]
+
 [dependencies]
 polar-h10-core = { path = "../../crates/polar-h10-core" }
 polar-h10-input = { path = "../../crates/polar-h10-input" }

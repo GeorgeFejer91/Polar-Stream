@@ -324,10 +324,11 @@ impl ScanAccumulator {
         }
     }
 
-    fn has_exact_name_candidate(&self) -> bool {
+    fn exact_name_candidate_count(&self) -> usize {
         self.devices
             .values()
-            .any(|device| device.name.as_deref().is_some_and(is_polar_h10_name))
+            .filter(|device| device.name.as_deref().is_some_and(is_polar_h10_name))
+            .count()
     }
 
     fn record(&mut self, address: u64, rssi: i16, evidence: AdvertisementEvidence) {
@@ -522,8 +523,13 @@ impl Drop for AdvertisementWatcherGuard {
     }
 }
 
-pub(super) async fn scan() -> Result<Vec<DeviceSummary>, String> {
-    let mut batch = tokio::task::spawn_blocking(scan_blocking)
+pub(super) async fn scan_for_exact_h10s(
+    minimum_exact_h10s: usize,
+) -> Result<Vec<DeviceSummary>, String> {
+    if minimum_exact_h10s == 0 || minimum_exact_h10s > MAX_SCANNED_DEVICES {
+        return Err("Windows WinRT scan target is outside its device bound".into());
+    }
+    let mut batch = tokio::task::spawn_blocking(move || scan_blocking(minimum_exact_h10s))
         .await
         .map_err(|error| format!("Windows WinRT scan worker failed: {error}"))??;
     if batch.overflowed {
@@ -538,7 +544,7 @@ pub(super) async fn scan() -> Result<Vec<DeviceSummary>, String> {
     Ok(devices)
 }
 
-fn scan_blocking() -> Result<ScanBatch, String> {
+fn scan_blocking(minimum_exact_h10s: usize) -> Result<ScanBatch, String> {
     let diagnostics_enabled = std::env::var_os(SCAN_DIAGNOSTICS_ENV).is_some();
     let watcher = BluetoothLEAdvertisementWatcher::new()
         .map_err(|error| stage_error("scan initialization", error))?;
@@ -622,8 +628,8 @@ fn scan_blocking() -> Result<ScanBatch, String> {
         let exact_name_observed = observations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .has_exact_name_candidate();
-        if exact_name_observed {
+            .exact_name_candidate_count();
+        if exact_name_observed >= minimum_exact_h10s {
             break;
         }
         let remaining = scan_deadline.saturating_duration_since(Instant::now());
@@ -4373,14 +4379,19 @@ mod tests {
     #[test]
     fn exact_reference_name_does_not_depend_on_service_uuid_readback() {
         let mut scan = ScanAccumulator::new(true);
-        assert!(!scan.has_exact_name_candidate());
+        assert_eq!(scan.exact_name_candidate_count(), 0);
         scan.record(1, -45, evidence(Some("Polar H10 TEST"), true, false, false));
-        assert!(scan.has_exact_name_candidate());
+        assert_eq!(scan.exact_name_candidate_count(), 1);
+        scan.record(
+            2,
+            -50,
+            evidence(Some("Polar H10 SECOND"), true, false, false),
+        );
+        assert_eq!(scan.exact_name_candidate_count(), 2);
         let batch = scan.finish();
-        assert_eq!(batch.candidates.len(), 1);
-        assert_eq!(batch.candidates[0].name.as_deref(), Some("Polar H10 TEST"));
-        assert_eq!(batch.diagnostics.service_uuids_unavailable, 1);
-        assert_eq!(batch.diagnostics.admitted_by_name, 1);
+        assert_eq!(batch.candidates.len(), 2);
+        assert_eq!(batch.diagnostics.service_uuids_unavailable, 2);
+        assert_eq!(batch.diagnostics.admitted_by_name, 2);
     }
 
     #[test]
@@ -4391,7 +4402,7 @@ mod tests {
         scan.record(3, -20, evidence(Some("Polar H100"), true, true, false));
         scan.record(4, -20, evidence(Some("Fake Polar H10"), true, true, false));
         assert!(scan.devices.is_empty());
-        assert!(!scan.has_exact_name_candidate());
+        assert_eq!(scan.exact_name_candidate_count(), 0);
 
         scan.record(5, -80, evidence(Some("Polar H10 TEST"), true, true, false));
         scan.record(5, -55, evidence(None, true, true, false));

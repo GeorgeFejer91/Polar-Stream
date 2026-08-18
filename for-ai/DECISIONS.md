@@ -1,5 +1,36 @@
 # Decision log
 
+## 2026-08-18 — Qualify two H10s with independent native session owners
+
+The published reference proved that two H10s can run concurrently when each
+device owns a persistent Windows session. Polar Stream therefore adds a bounded
+qualification pool, not a second UI workflow: one scan snapshot admits exactly
+two distinct devices into non-identifying slots, and each slot gets its own
+input manager, Windows owner, event receiver, and ECG/ACC outlet keys. One
+two-session output coordinator owns the single Rusty discovery registry and all
+four persistent outlets. This preserves the library's one-registry/many-outlet
+composition and prevents a second bind of the fixed discovery port. Connection
+and cleanup transitions serialize, rescanning while active rejects, and all
+admitted sessions are drained even when one cleanup reports an error.
+The ordinary scanner retains its one-device early-completion policy; the pool
+requests two exact-name candidates before the same bounded watcher may stop.
+
+The official verifier broadly enumerates and exactly matches four descriptors
+client-side, opens one pinned pylsl 1.18.2/liblsl 1.17.7 inlet per outlet, and
+requires advancing bounded sensor and LSL evidence before graceful two-session
+shutdown. This does not change Rusty LSL, claim multiple consumers per outlet,
+expose device identities, or grant browser code native BLE/LSL authority.
+
+The exact source commit `2b7bdf0c8f0a567d8ad4a18dcbb24a78928f9197`
+passed the same-epoch gate after a repaired-reference two-session pass. Four
+distinct pinned official inlets measured device-slot 1 at 1,168 ECG samples /
+130.01 Hz and 1,764 ACC records / 202.43 Hz, and device-slot 2 at 365 ECG
+samples / 130.19 Hz and 468 ACC records / 202.47 Hz. Every stream advanced with
+zero estimated loss/reorder, both ACC streams had nonzero X/Y/Z, all inlets
+closed before source stop, both native sessions reported clean cleanup, and no
+verifier process, listener, or Bluetooth lease remained. This accepts only the
+bounded two-H10 Windows interoperability claim.
+
 ## 2026-08-17 — Remove the standalone WinRT probe from the publication surface
 
 The temporary `polar-h10-winrt-probe` binary isolated Windows projection and

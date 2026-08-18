@@ -88,6 +88,148 @@ pub struct OutputRouter {
     inner: Mutex<RouterInner>,
 }
 
+#[cfg(feature = "rusty-lsl-backend")]
+pub struct RustyLslTwoSessionOutput {
+    inner: Mutex<rusty_lsl::RustyLslPublisher>,
+    slots: [RustyLslSessionSlot; 2],
+}
+
+#[cfg(feature = "rusty-lsl-backend")]
+struct RustyLslSessionSlot {
+    label: String,
+    stream_base: String,
+    ecg_key: String,
+    acc_key: String,
+}
+
+#[cfg(feature = "rusty-lsl-backend")]
+impl RustyLslTwoSessionOutput {
+    /// Creates exactly two independent ECG/ACC outlet pairs behind one Rusty
+    /// LSL discovery registry. The slot labels are local routing keys and are
+    /// not derived from a Bluetooth identity.
+    pub fn new(sessions: [(&str, &str); 2]) -> Result<Self, String> {
+        let [(first_slot, first_base), (second_slot, second_base)] = sessions;
+        validate_two_session_label(first_slot)?;
+        validate_two_session_label(second_slot)?;
+        if first_slot == second_slot {
+            return Err("Rusty LSL two-session slot labels must be distinct.".into());
+        }
+        let first_base = normalize_stream_base(first_base)?;
+        let second_base = normalize_stream_base(second_base)?;
+        if first_base == second_base {
+            return Err("Rusty LSL two-session stream bases must be distinct.".into());
+        }
+
+        let slots = [
+            RustyLslSessionSlot::new(first_slot, first_base),
+            RustyLslSessionSlot::new(second_slot, second_base),
+        ];
+        let ecg = MetricSpec::for_id("raw_ecg").expect("raw ECG metric must exist");
+        let acc = MetricSpec::for_id("raw_acc").expect("raw ACC metric must exist");
+        let mut publisher = rusty_lsl::RustyLslPublisher::new(None);
+        for slot in &slots {
+            publisher.try_add_outlet_with_key(&slot.stream_base, ecg, slot.ecg_key.clone())?;
+            publisher.try_add_outlet_with_key(&slot.stream_base, acc, slot.acc_key.clone())?;
+        }
+        Ok(Self {
+            inner: Mutex::new(publisher),
+            slots,
+        })
+    }
+
+    pub fn poll_lsl(&self) -> Option<String> {
+        let Ok(mut publisher) = self.inner.lock() else {
+            return Some("Rusty LSL two-session output lock failed".into());
+        };
+        publisher.poll()
+    }
+
+    pub fn health(&self) -> String {
+        self.inner
+            .lock()
+            .map(|publisher| publisher.status().to_string())
+            .unwrap_or_else(|_| "Rusty LSL two-session output lock failed".into())
+    }
+
+    pub fn connected_consumers(&self, slot: &str) -> Option<usize> {
+        let route = self.slots.iter().find(|route| route.label == slot)?;
+        self.inner
+            .lock()
+            .ok()?
+            .connected_consumers_for(&[route.ecg_key.as_str(), route.acc_key.as_str()])
+    }
+
+    pub fn publish_ecg(
+        &self,
+        slot: &str,
+        sensor_timestamp_ns: u64,
+        samples: &[i32],
+    ) -> Result<(), String> {
+        let route = self
+            .slots
+            .iter()
+            .find(|route| route.label == slot)
+            .ok_or_else(|| "Unknown Rusty LSL two-session slot.".to_string())?;
+        let mut publisher = self
+            .inner
+            .lock()
+            .map_err(|_| "Rusty LSL two-session output lock failed".to_string())?;
+        publisher.push_scalar_series_at_key(
+            &route.ecg_key,
+            samples.iter().map(|value| *value as f32),
+            sensor_timestamp_ns,
+        );
+        Ok(())
+    }
+
+    pub fn publish_accelerometer(
+        &self,
+        slot: &str,
+        sensor_timestamp_ns: u64,
+        samples: &[AccSample],
+    ) -> Result<(), String> {
+        let route = self
+            .slots
+            .iter()
+            .find(|route| route.label == slot)
+            .ok_or_else(|| "Unknown Rusty LSL two-session slot.".to_string())?;
+        let mut publisher = self
+            .inner
+            .lock()
+            .map_err(|_| "Rusty LSL two-session output lock failed".to_string())?;
+        publisher.push_accelerometer_at_key(&route.acc_key, samples, sensor_timestamp_ns);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "rusty-lsl-backend")]
+impl RustyLslSessionSlot {
+    fn new(label: &str, stream_base: String) -> Self {
+        Self {
+            label: label.to_string(),
+            ecg_key: format!("{stream_base}/{label}/raw_ecg"),
+            acc_key: format!("{stream_base}/{label}/raw_acc"),
+            stream_base,
+        }
+    }
+}
+
+#[cfg(feature = "rusty-lsl-backend")]
+fn validate_two_session_label(label: &str) -> Result<(), String> {
+    if label.is_empty()
+        || label.len() > 32
+        || !label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(
+            "A Rusty LSL two-session slot must be 1-32 ASCII letters, digits, hyphens, or underscores."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 struct RouterInner {
     config: OutputConfig,
     osc: Option<OscPublisher>,
