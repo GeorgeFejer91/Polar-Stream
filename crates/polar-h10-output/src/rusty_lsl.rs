@@ -139,6 +139,15 @@ impl RustyLslPublisher {
     }
 
     fn try_add_outlet(&mut self, base_name: &str, spec: MetricSpec) -> Result<(), String> {
+        self.try_add_outlet_with_key(base_name, spec, spec.id.to_string())
+    }
+
+    pub(crate) fn try_add_outlet_with_key(
+        &mut self,
+        base_name: &str,
+        spec: MetricSpec,
+        outlet_key: String,
+    ) -> Result<(), String> {
         let output_name = output_stream_name(base_name, spec.id)
             .ok_or_else(|| format!("Unknown output module: {}", spec.id))?;
         let channels = usize::try_from(spec.channels)
@@ -148,7 +157,7 @@ impl RustyLslPublisher {
         self.try_add_stream(
             output_name.clone(),
             format!("polar-h10-{output_name}"),
-            spec.id.into(),
+            outlet_key,
             spec.stream_type.into(),
             spec.rate_hz,
             channels,
@@ -365,16 +374,36 @@ impl RustyLslPublisher {
     where
         I: IntoIterator<Item = f32>,
     {
+        self.push_scalar_series_at_key(id, values, sensor_timestamp_ns);
+    }
+
+    pub(crate) fn push_scalar_series_at_key<I>(
+        &mut self,
+        outlet_key: &str,
+        values: I,
+        sensor_timestamp_ns: u64,
+    ) where
+        I: IntoIterator<Item = f32>,
+    {
         self.values.clear();
         self.values.extend(values);
         if self.values.is_empty() {
             return;
         }
-        self.push_buffered(id, 1, Some(sensor_timestamp_ns));
+        self.push_buffered(outlet_key, 1, Some(sensor_timestamp_ns));
     }
 
     pub(crate) fn push_accelerometer_at(
         &mut self,
+        samples: &[AccSample],
+        sensor_timestamp_ns: u64,
+    ) {
+        self.push_accelerometer_at_key("raw_acc", samples, sensor_timestamp_ns);
+    }
+
+    pub(crate) fn push_accelerometer_at_key(
+        &mut self,
+        outlet_key: &str,
         samples: &[AccSample],
         sensor_timestamp_ns: u64,
     ) {
@@ -390,7 +419,7 @@ impl RustyLslPublisher {
         if self.values.is_empty() {
             return;
         }
-        self.push_buffered("raw_acc", 3, Some(sensor_timestamp_ns));
+        self.push_buffered(outlet_key, 3, Some(sensor_timestamp_ns));
     }
 
     fn push_buffered(&mut self, id: &str, channels: usize, sensor_timestamp_ns: Option<u64>) {
@@ -478,6 +507,15 @@ impl RustyLslPublisher {
         );
     }
 
+    pub(crate) fn connected_consumers_for(&self, outlet_keys: &[&str]) -> Option<usize> {
+        let registry = self.registry.as_ref()?;
+        outlet_keys.iter().try_fold(0usize, |total, key| {
+            let entry = self.outlets.get(*key)?;
+            let health = registry.outlet_health(entry.id)?;
+            Some(total.saturating_add(health.connected_consumers()))
+        })
+    }
+
     fn record_poll_error(&mut self, message: String) -> Option<String> {
         if self.status == message {
             None
@@ -502,6 +540,13 @@ impl RustyLslPublisher {
     fn test_outlet_health(&self, id: &str) -> Option<rusty_lsl::PersistentFloat32OutletHealth> {
         let entry = self.outlets.get(id)?;
         self.registry.as_ref()?.outlet_health(entry.id)
+    }
+
+    #[cfg(test)]
+    fn test_outlet_count(&self) -> usize {
+        self.registry
+            .as_ref()
+            .map_or(0, |registry| registry.outlet_count())
     }
 }
 
@@ -979,6 +1024,46 @@ mod tests {
         assert_eq!(acc_health.records_encoded(), 36);
         assert_eq!(acc_health.complete_deliveries(), 0);
         assert!(publisher.status().contains("2 stream(s)"));
+    }
+
+    #[test]
+    fn two_sessions_share_one_registry_with_four_independent_outlets() {
+        let discovery = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut publisher = RustyLslPublisher::new_prebound_for_test(discovery);
+        let ecg = MetricSpec::for_id("raw_ecg").unwrap();
+        let acc = MetricSpec::for_id("raw_acc").unwrap();
+        let keys = [
+            ("first", "device-1/raw_ecg", "device-1/raw_acc"),
+            ("second", "device-2/raw_ecg", "device-2/raw_acc"),
+        ];
+        for (base, ecg_key, acc_key) in keys {
+            publisher
+                .try_add_outlet_with_key(base, ecg, ecg_key.to_string())
+                .unwrap();
+            publisher
+                .try_add_outlet_with_key(base, acc, acc_key.to_string())
+                .unwrap();
+        }
+
+        assert_eq!(publisher.test_outlet_count(), 4);
+        let endpoints = [
+            "device-1/raw_ecg",
+            "device-1/raw_acc",
+            "device-2/raw_ecg",
+            "device-2/raw_acc",
+        ]
+        .map(|key| publisher.test_endpoint(key).unwrap());
+        assert_eq!(
+            endpoints
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4
+        );
+        assert_eq!(
+            publisher.connected_consumers_for(&["device-1/raw_ecg", "device-1/raw_acc"]),
+            Some(0)
+        );
     }
 
     #[test]

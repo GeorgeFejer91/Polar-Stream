@@ -39,11 +39,13 @@ LSL auxiliary-connection and fan-out qualification before this bound can move.
 
 The native two-H10 qualification harness shares one exact discovery snapshot
 but assigns each selected device to an independent input-session owner and
-output router. It admits exactly two distinct H10s into identifier-free slots,
-publishes four independent outlets (ECG and ACC per slot), and disconnects all
-admitted sessions even when one cleanup reports an error. This bounded harness
-does not change the desktop UI's single-sensor interaction model and does not
-claim multiple consumers of one outlet.
+outlet-key pair. A single two-session output coordinator owns the Rusty
+discovery registry and all four persistent outlets, avoiding a second bind of
+the process-wide discovery port. It admits exactly two distinct H10s into
+identifier-free slots and disconnects all admitted sessions even when one
+cleanup reports an error. This bounded harness does not change the desktop
+UI's single-sensor interaction model and does not claim multiple consumers of
+one outlet.
 
 Polar's PMD sensor timestamp is retained separately in the native input event,
 OSC, and physical evidence. It is not substituted directly into LSL because it

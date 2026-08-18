@@ -9,7 +9,7 @@ use std::{
 
 use polar_h10_core::AccSample;
 use polar_h10_input::{DeviceSummary, InputEvent, InputSessionPool};
-use polar_h10_output::{OutputConfig, OutputRouter};
+use polar_h10_output::RustyLslTwoSessionOutput;
 use serde_json::json;
 use tokio::sync::{mpsc::Receiver, watch};
 
@@ -131,7 +131,7 @@ impl AxisStats {
 struct SlotRuntime {
     slot: &'static str,
     events: Receiver<InputEvent>,
-    output: Arc<OutputRouter>,
+    output: Arc<RustyLslTwoSessionOutput>,
     connected: bool,
     ecg: SequenceStats,
     acc: SequenceStats,
@@ -141,7 +141,11 @@ struct SlotRuntime {
 }
 
 impl SlotRuntime {
-    fn new(slot: &'static str, events: Receiver<InputEvent>, output: Arc<OutputRouter>) -> Self {
+    fn new(
+        slot: &'static str,
+        events: Receiver<InputEvent>,
+        output: Arc<RustyLslTwoSessionOutput>,
+    ) -> Self {
         Self {
             slot,
             events,
@@ -168,10 +172,12 @@ impl SlotRuntime {
                 sensor_timestamp_ns,
                 microvolts,
             } => {
-                let _ = self.output.publish_ecg(sensor_timestamp_ns, &microvolts);
+                let _ = self
+                    .output
+                    .publish_ecg(self.slot, sensor_timestamp_ns, &microvolts);
                 self.ecg
                     .observe(sensor_timestamp_ns, microvolts.len(), 130.0);
-                if self.output.health().lsl.contains("2 consumer(s)") {
+                if self.output.connected_consumers(self.slot) == Some(2) {
                     self.consumer_ecg_samples = self
                         .consumer_ecg_samples
                         .saturating_add(u64::try_from(microvolts.len()).unwrap_or(u64::MAX));
@@ -183,10 +189,10 @@ impl SlotRuntime {
             } => {
                 let _ = self
                     .output
-                    .publish_accelerometer(sensor_timestamp_ns, &samples);
+                    .publish_accelerometer(self.slot, sensor_timestamp_ns, &samples);
                 self.acc.observe(sensor_timestamp_ns, samples.len(), 200.0);
                 self.axes.observe(&samples);
-                if self.output.health().lsl.contains("2 consumer(s)") {
+                if self.output.connected_consumers(self.slot) == Some(2) {
                     self.consumer_acc_samples = self
                         .consumer_acc_samples
                         .saturating_add(u64::try_from(samples.len()).unwrap_or(u64::MAX));
@@ -240,7 +246,7 @@ impl SlotRuntime {
                 "ecg": self.consumer_ecg_samples,
                 "acc_records": self.consumer_acc_samples,
             },
-            "lsl_health": self.output.health().lsl,
+            "lsl_health": self.output.health(),
         })
     }
 }
@@ -280,26 +286,20 @@ fn validate_poll_progress(polls: u64, task_finished: bool) -> Result<(), &'stati
     }
 }
 
-async fn configure_output(base: &str) -> Result<Arc<OutputRouter>, String> {
-    let output = Arc::new(OutputRouter::new());
-    let health = output
-        .configure(OutputConfig {
-            stream_name: base.into(),
-            lsl_enabled: true,
-            outputs: vec!["raw_ecg".into(), "raw_acc".into()],
-            ..OutputConfig::default()
-        })
-        .await?;
-    if !health.lsl.contains("Optional Rusty LSL backend") {
-        return Err(format!("Rusty LSL did not initialize: {}", health.lsl));
+fn configure_output() -> Result<Arc<RustyLslTwoSessionOutput>, String> {
+    let output = Arc::new(RustyLslTwoSessionOutput::new([
+        (SLOT_1, BASE_1),
+        (SLOT_2, BASE_2),
+    ])?);
+    if !output.health().contains("Optional Rusty LSL backend") {
+        return Err(format!("Rusty LSL did not initialize: {}", output.health()));
     }
     Ok(output)
 }
 
 async fn capture(
     pool: &InputSessionPool,
-    output_1: Arc<OutputRouter>,
-    output_2: Arc<OutputRouter>,
+    output: Arc<RustyLslTwoSessionOutput>,
     poll_count: &AtomicU64,
     poll_finished: impl Fn() -> bool,
     shutdown: &mut watch::Receiver<bool>,
@@ -316,7 +316,7 @@ async fn capture(
     println!("TWO_H10_STAGE opening-device-1");
     flush_stdout();
     let events_1 = pool.connect(SLOT_1, &selected[0].id).await?;
-    let mut device_1 = SlotRuntime::new(SLOT_1, events_1, output_1);
+    let mut device_1 = SlotRuntime::new(SLOT_1, events_1, output.clone());
 
     println!("TWO_H10_STAGE opening-device-2");
     flush_stdout();
@@ -334,7 +334,7 @@ async fn capture(
             }
         }
     };
-    let mut device_2 = SlotRuntime::new(SLOT_2, events_2, output_2);
+    let mut device_2 = SlotRuntime::new(SLOT_2, events_2, output);
 
     let deadline = Instant::now() + MAX_CAPTURE;
     let mut source_ready_announced = false;
@@ -406,21 +406,17 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let output_1 = configure_output(BASE_1).await?;
-    let output_2 = configure_output(BASE_2).await?;
+    let output = configure_output()?;
     let poll_stop = Arc::new(AtomicBool::new(false));
     let poll_count = Arc::new(AtomicU64::new(0));
     let poll_task = {
         let stop = poll_stop.clone();
         let polls = poll_count.clone();
-        let first = output_1.clone();
-        let second = output_2.clone();
+        let output = output.clone();
         tokio::task::spawn_blocking(move || {
             while !stop.load(Ordering::Acquire) {
-                for (slot, output) in [(SLOT_1, &first), (SLOT_2, &second)] {
-                    if let Some(message) = output.poll_lsl() {
-                        eprintln!("TWO_H10_LSL_WARNING slot={slot} {message}");
-                    }
+                if let Some(message) = output.poll_lsl() {
+                    eprintln!("TWO_H10_LSL_WARNING {message}");
                 }
                 polls.fetch_add(1, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(2));
@@ -443,8 +439,7 @@ async fn main() -> Result<(), String> {
     let pool = InputSessionPool::two_h10s();
     let result = capture(
         &pool,
-        output_1.clone(),
-        output_2.clone(),
+        output,
         &poll_count,
         || poll_task.is_finished(),
         &mut shutdown,

@@ -6,10 +6,12 @@ The published reference proved that two H10s can run concurrently when each
 device owns a persistent Windows session. Polar Stream therefore adds a bounded
 qualification pool, not a second UI workflow: one scan snapshot admits exactly
 two distinct devices into non-identifying slots, and each slot gets its own
-input manager, Windows owner, event receiver, output router, and ECG/ACC outlet
-pair. Connection and cleanup transitions serialize, rescanning while active
-rejects, and all admitted sessions are drained even when one cleanup reports an
-error.
+input manager, Windows owner, event receiver, and ECG/ACC outlet keys. One
+two-session output coordinator owns the single Rusty discovery registry and all
+four persistent outlets. This preserves the library's one-registry/many-outlet
+composition and prevents a second bind of the fixed discovery port. Connection
+and cleanup transitions serialize, rescanning while active rejects, and all
+admitted sessions are drained even when one cleanup reports an error.
 
 The official verifier broadly enumerates and exactly matches four descriptors
 client-side, opens one pinned pylsl 1.18.2/liblsl 1.17.7 inlet per outlet, and

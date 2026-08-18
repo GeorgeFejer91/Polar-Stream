@@ -177,7 +177,9 @@ policy.
 The two-H10 qualifier uses one bounded `InputSessionPool`: a single shared scan
 snapshot admits exactly two distinct devices into stable, non-identifying
 slots, while each slot owns a separate `InputManager`, Windows session owner,
-event receiver, output router, and ECG/ACC outlet pair. Connection and cleanup
+event receiver, and ECG/ACC outlet keys. One two-session output coordinator
+owns the process's Rusty discovery registry and all four persistent outlets, so
+the fixed discovery port is bound exactly once. Connection and cleanup
 transitions are serialized, scanning is rejected while a session is active,
 and `disconnect_all` drains every admitted slot before returning. This is a
 native qualification surface; it does not change the single-sensor desktop UI

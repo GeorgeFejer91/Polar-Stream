@@ -74,10 +74,12 @@ Last verified: 2026-08-18
 - A bounded native two-H10 qualification surface shares one discovery snapshot
   and admits exactly two distinct devices into non-identifying slots. Each slot
   owns an independent `InputManager`, Windows session owner, event receiver,
-  output router, and ECG/ACC outlet pair. Session transitions serialize, a new
-  scan rejects while any slot is active, and cleanup drains every slot. The
-  ordinary desktop UI remains single-sensor; two-device physical acceptance is
-  pending one complete same-epoch four-inlet run.
+  and ECG/ACC outlet keys. One two-session output coordinator owns the single
+  Rusty discovery registry and all four persistent outlets, so the fixed
+  discovery port binds once. Session transitions serialize, a new scan rejects
+  while any slot is active, and cleanup drains every slot. The ordinary desktop
+  UI remains single-sensor; two-device physical acceptance is pending one
+  complete same-epoch four-inlet run.
 - Immediate raw LSL/OSC publication with canonical names.
 - Raw ECG and ACC LSL chunks preserve H10 sensor-time spacing through separate
   first-frame offsets into the local LSL clock. This prevents setup-buffered
