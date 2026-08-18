@@ -57,18 +57,13 @@ items into the dated history instead of silently deleting them.
 
 ## Next
 
-- Complete the bounded native H10 acceptance for the optional Rusty LSL backend:
-  one exact session, advancing sensor timestamps, ECG 1ch/130 Hz and ACC
-  3ch/200 Hz, nonzero bounded axes, two exact official pylsl/liblsl inlets,
-  loss/reorder/rate evidence, and clean process/socket shutdown. The direct
-  Windows WinRT scanner/session now has physical success through both advancing
-  first sensor frames, and both Rusty outlets were resolved and opened by the
-  pinned official consumers. The incomplete edge was verifier sequencing: the
-  official inlet workers started after source readiness instead of immediately
-  after outlet initialization as in the passing synthetic gate. Run one fresh
-  attended same-epoch qualification with those receivers waiting first, then
-  require the complete counts/rates/loss/reorder and cleanup evidence. Rusty
-  physical transport remains unaccepted until that run passes.
+- Complete the bounded two-H10 native qualification for the optional Rusty LSL
+  backend: one exact shared scan, two distinct session owners, advancing ECG
+  1ch/130 Hz and ACC 3ch/200 Hz for both devices, four exact pinned official
+  pylsl/liblsl inlets, per-stream rate/loss/reorder evidence, nonzero values on
+  every ACC axis, no cross-device match, and clean inlet/session/process/socket
+  shutdown. Keep the installed UI single-sensor until a separately reviewed
+  product workflow requires multiple simultaneous sensors.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that
   decision and physical/cross-platform gates close.

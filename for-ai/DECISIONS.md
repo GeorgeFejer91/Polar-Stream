@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-18 — Qualify two H10s with independent native session owners
+
+The published reference proved that two H10s can run concurrently when each
+device owns a persistent Windows session. Polar Stream therefore adds a bounded
+qualification pool, not a second UI workflow: one scan snapshot admits exactly
+two distinct devices into non-identifying slots, and each slot gets its own
+input manager, Windows owner, event receiver, output router, and ECG/ACC outlet
+pair. Connection and cleanup transitions serialize, rescanning while active
+rejects, and all admitted sessions are drained even when one cleanup reports an
+error.
+
+The official verifier broadly enumerates and exactly matches four descriptors
+client-side, opens one pinned pylsl 1.18.2/liblsl 1.17.7 inlet per outlet, and
+requires advancing bounded sensor and LSL evidence before graceful two-session
+shutdown. This does not change Rusty LSL, claim multiple consumers per outlet,
+expose device identities, or grant browser code native BLE/LSL authority. The
+two-device claim remains pending until one physical same-epoch run passes.
+
 ## 2026-08-17 — Remove the standalone WinRT probe from the publication surface
 
 The temporary `polar-h10-winrt-probe` binary isolated Windows projection and

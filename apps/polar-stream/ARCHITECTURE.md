@@ -174,6 +174,14 @@ outlets initialize, before BLE selection or source-frame readiness. It then
 awaits source and consumer thresholds as separate gates. This receiver-first
 order is verifier orchestration, not an application buffering or publication
 policy.
+The two-H10 qualifier uses one bounded `InputSessionPool`: a single shared scan
+snapshot admits exactly two distinct devices into stable, non-identifying
+slots, while each slot owns a separate `InputManager`, Windows session owner,
+event receiver, output router, and ECG/ACC outlet pair. Connection and cleanup
+transitions are serialized, scanning is rejected while a session is active,
+and `disconnect_all` drains every admitted slot before returning. This is a
+native qualification surface; it does not change the single-sensor desktop UI
+or give the browser runtime native BLE or LSL authority.
 Opt-in session diagnostics continue across the first-frame-to-steady-state
 handoff, reporting only aggregate link and callback/queue counters every five
 seconds so native notification loss and internal forwarding stalls remain

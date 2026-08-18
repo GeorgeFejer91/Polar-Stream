@@ -37,6 +37,14 @@ without disturbing the already admitted consumer. A product requirement for
 multiple official consumers of the same outlet needs a separately scoped Rusty
 LSL auxiliary-connection and fan-out qualification before this bound can move.
 
+The native two-H10 qualification harness shares one exact discovery snapshot
+but assigns each selected device to an independent input-session owner and
+output router. It admits exactly two distinct H10s into identifier-free slots,
+publishes four independent outlets (ECG and ACC per slot), and disconnects all
+admitted sessions even when one cleanup reports an error. This bounded harness
+does not change the desktop UI's single-sensor interaction model and does not
+claim multiple consumers of one outlet.
+
 Polar's PMD sensor timestamp is retained separately in the native input event,
 OSC, and physical evidence. It is not substituted directly into LSL because it
 belongs to the H10 device-clock domain rather than the host LSL clock domain.
@@ -92,6 +100,13 @@ fail-fast bound, post-selection source readiness has a 60-second bound, and
 source/consumer collection retains its two-minute bound. The worker must close
 before the source is stopped. Native session setup has its own 45-second total
 budget, so a typed native stage exits before the outer source-readiness bound.
+`scripts/verify_two_h10_rusty_lsl.py` applies the same pinned official-consumer
+contract to two simultaneously selected H10s. It starts four inlets at outlet
+initialization, matches every descriptor client-side after broad enumeration,
+requires distinct outlet identities, advancing ECG/ACC timestamps, bounded
+rates and samples, nonzero X/Y/Z values, zero reorder, and clean four-inlet and
+two-session shutdown. Its checked-in contract tests use no Bluetooth hardware;
+only a complete same-epoch physical run may establish the two-device claim.
 `POLAR_STREAM_H10_SESSION_DIAGNOSTICS` is enabled by this verifier and records
 stage name, attempt, entry/exit, duration, and result class. It also records
 identifier-free characteristic properties, selected CCCD mode and successful
