@@ -12,6 +12,8 @@ four persistent outlets. This preserves the library's one-registry/many-outlet
 composition and prevents a second bind of the fixed discovery port. Connection
 and cleanup transitions serialize, rescanning while active rejects, and all
 admitted sessions are drained even when one cleanup reports an error.
+The ordinary scanner retains its one-device early-completion policy; the pool
+requests two exact-name candidates before the same bounded watcher may stop.
 
 The official verifier broadly enumerates and exactly matches four descriptors
 client-side, opens one pinned pylsl 1.18.2/liblsl 1.17.7 inlet per outlet, and

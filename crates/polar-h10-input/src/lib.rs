@@ -146,6 +146,9 @@ impl InputSessionPool {
         if !self.sessions.lock().await.is_empty() {
             return Err("Disconnect all sensor sessions before scanning again.".into());
         }
+        #[cfg(target_os = "windows")]
+        return self.discovery.scan_for_exact_h10s(2).await;
+        #[cfg(not(target_os = "windows"))]
         self.discovery.scan().await
     }
 
@@ -298,7 +301,15 @@ impl InputManager {
 
     #[cfg(target_os = "windows")]
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
-        let found = windows_backend::scan().await?;
+        self.scan_for_exact_h10s(1).await
+    }
+
+    #[cfg(target_os = "windows")]
+    async fn scan_for_exact_h10s(
+        &self,
+        minimum_exact_h10s: usize,
+    ) -> Result<Vec<DeviceSummary>, String> {
+        let found = windows_backend::scan_for_exact_h10s(minimum_exact_h10s).await?;
         let next_devices = found
             .iter()
             .map(|device| (device.id.clone(), device.name.clone()))

@@ -6,7 +6,8 @@ Last verified: 2026-08-18
 
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
 - Windows uses a direct WinRT advertisement watcher for up to fifteen seconds,
-  stopping early after exact H10 local-name evidence. This bound matches the
+  stopping early after the caller's exact H10 local-name target: one for the
+  ordinary UI and two for the bounded two-session pool. This bound matches the
   sparse advertisement cadence observed from a reference-positive physical
   H10 while retaining a fast path when an exact packet arrives immediately.
   Exact H10 local-name evidence is
