@@ -182,6 +182,9 @@ Last verified: 2026-08-20
 - One canonical interface tree now targets Tauri and GitHub Pages. The staged
   Pages artifact records hashes of every shared asset, and browser validation
   covers desktop, 390px touch, and 320px touch layouts.
+  Staging and live verification canonicalize text newlines to LF while
+  retaining binary bytes exactly, so Windows `core.autocrlf` checkouts and the
+  Linux deployment runner produce and verify the same manifest hashes.
 - On smartphones, the shared output library uses a full-viewport two-step flow:
   touch-sized family/search/filter/signal controls first, then a focused signal
   detail view with back navigation and a safe-area-aware save action.

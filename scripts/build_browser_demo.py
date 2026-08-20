@@ -31,10 +31,18 @@ REQUIRED_ASSETS = (
     "data/preview-recording.json",
     "favicon.png",
 )
+TEXT_ASSET_SUFFIXES = {".cjs", ".css", ".html", ".js", ".json", ".md", ".txt"}
 
 
-def digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def canonical_asset_bytes(path: Path) -> bytes:
+    data = path.read_bytes()
+    if path.suffix.lower() in TEXT_ASSET_SUFFIXES:
+        return data.replace(b"\r\n", b"\n")
+    return data
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def validate_sources() -> None:
@@ -76,9 +84,10 @@ def stage(output: Path) -> dict[str, str]:
         name = source.relative_to(UI).as_posix()
         destination = output / name
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-        hashes[name] = digest(source)
-        if digest(destination) != hashes[name]:
+        data = canonical_asset_bytes(source)
+        destination.write_bytes(data)
+        hashes[name] = digest(data)
+        if digest(destination.read_bytes()) != hashes[name]:
             raise SystemExit(f"Staged browser asset differs from canonical source: {name}")
     shutil.copy2(UI / "index.html", output / "404.html")
     (output / ".nojekyll").write_text("", encoding="utf-8")

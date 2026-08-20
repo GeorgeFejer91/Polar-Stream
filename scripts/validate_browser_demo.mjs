@@ -19,9 +19,15 @@ const mime = new Map([
   [".css", "text/css; charset=utf-8"],
   [".png", "image/png"],
 ]);
+const textAssetSuffixes = new Set([".cjs", ".css", ".html", ".js", ".json", ".md", ".txt"]);
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalAssetBytes(value, name) {
+  if (!textAssetSuffixes.has(extname(name).toLowerCase())) return value;
+  return Buffer.from(value.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
 }
 
 function startServer() {
@@ -376,7 +382,7 @@ assert.equal(manifest.canonicalSource, "apps/polar-stream/ui");
 for (const [name, expected] of Object.entries(manifest.sha256)) {
   const canonical = await readFile(join(repository, manifest.canonicalSource, name));
   const staged = await readFile(join(root, name));
-  assert.equal(sha256(canonical), expected, `${name} canonical hash differs from the manifest`);
+  assert.equal(sha256(canonicalAssetBytes(canonical, name)), expected, `${name} canonical hash differs from the manifest`);
   assert.equal(sha256(staged), expected, `${name} Pages artifact differs from the canonical UI`);
 }
 

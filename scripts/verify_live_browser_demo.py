@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_UI = ROOT / "apps/polar-stream/ui"
 DEFAULT_BASE_URL = "https://georgefejer91.github.io/Polar-Stream/"
 DEFAULT_OUTPUT_ROOT = ROOT / "artifacts/real-world-pages"
+TEXT_ASSET_SUFFIXES = {".cjs", ".css", ".html", ".js", ".json", ".md", ".txt"}
 NETWORK_PRIMITIVES = {
     "fetch": re.compile(r"\bfetch\s*\("),
     "WebSocket": re.compile(r"\bWebSocket\s*\("),
@@ -51,6 +52,13 @@ class ResourceParser(HTMLParser):
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def canonical_asset_bytes(path: Path) -> bytes:
+    data = path.read_bytes()
+    if path.suffix.lower() in TEXT_ASSET_SUFFIXES:
+        return data.replace(b"\r\n", b"\n")
+    return data
 
 
 def normalized_base_url(value: str) -> str:
@@ -129,7 +137,7 @@ def verify(base_url: str) -> dict[str, object]:
     checks.append(f"manifest declares {len(declared_hashes)} safe assets")
 
     local_assets = {
-        path.relative_to(CANONICAL_UI).as_posix(): sha256(path.read_bytes())
+        path.relative_to(CANONICAL_UI).as_posix(): sha256(canonical_asset_bytes(path))
         for path in CANONICAL_UI.rglob("*")
         if path.is_file()
     }

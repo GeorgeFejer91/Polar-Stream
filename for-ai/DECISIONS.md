@@ -1,5 +1,15 @@
 # Decision log
 
+## 2026-08-20 — Canonicalize Pages text bytes across host platforms
+
+Stage and verify browser-demo text assets with CRLF normalized to LF, while
+copying and hashing binary assets byte-for-byte. GitHub's Linux runner checks
+out LF text, whereas the supported Windows development checkout may use
+`core.autocrlf=true`; hashing raw worktree bytes made an otherwise exact live
+deployment unverifiable from Windows. Canonical text bytes make the manifest
+deterministic without changing JavaScript, HTML, CSS, JSON, or Markdown
+semantics.
+
 ## 2026-08-20 — Gate motion after all-axis noise attenuation
 
 Calculate the breathing motion-quality residual from successive vectors on a
