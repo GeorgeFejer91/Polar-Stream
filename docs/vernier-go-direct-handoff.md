@@ -23,6 +23,21 @@ physical Go Direct device was available for this handoff, so radio behavior,
 actual channel metadata, sustained loss, and end-to-end latency remain hardware
 validation gates rather than completed claims.
 
+The bounded native verifier exercises the shipped Rust input pool directly:
+
+```powershell
+python scripts/verify_gdx_rb.py
+```
+
+If several nearby GDX-RB belts make selection ambiguous, set
+`POLAR_GDX_TARGET_NAME` to the exact chooser name for this one run. The wrapper
+retains only structured, identifier-free JSON under
+`artifacts/physical-gdx/<UTC>/native-gdx-verification.json`; the ignored
+artifact records model/channel/unit, main firmware major/minor, battery,
+configured period, startup and cleanup timing, stream continuity/rate, input
+health, and reconnect evidence. It deliberately does not retain the device
+name or Bluetooth identifier.
+
 ## Component boundaries
 
 | Layer | Native desktop | Chromium browser |
@@ -212,6 +227,12 @@ For each supported operating system and browser/native path:
    hidden/under load.
 6. Do not publish a physical compatibility or latency percentile claim until
    the evidence artifact is retained and reviewed.
+
+The native verifier covers the single-GDX discovery, exact GDX-RB channel-1
+Force (N) contract, sustained primary stream, health thresholds, explicit
+disconnect, and reconnect portions of this gate. It does not replace the mixed
+multi-device, browser, under-load, independent-reference, or synchronized
+H10/GDX qualification runs.
 
 ## Current limitations
 

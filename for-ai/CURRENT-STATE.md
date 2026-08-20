@@ -105,7 +105,12 @@ Last verified: 2026-08-20
   Device and advertised-sensor metadata are parsed before streaming; the
   product profile requires a confirmed GDX-RB and channel-1 periodic Force in
   N. It requests 10 Hz when metadata permits and otherwise uses the plausible
-  reported typical period. Physical Go Direct verification is still pending.
+  reported typical period. The initialization status response also reports the
+  main firmware major/minor and battery percentage in native and Chromium
+  connection metadata. A bounded native verifier exercises sustained samples,
+  continuity/rate/health thresholds, explicit disconnect, and reconnect while
+  retaining no Bluetooth identifier. Its 2026-08-20 local attempt found no
+  advertised GDX-RB, so physical Go Direct verification is still pending.
 - Raw Go Direct force is a first-class N-valued output. Notification batches
   publish before UI work; output timestamps backfill from one host receipt using
   the configured period. Its LSL nominal rate is irregular (`0`) to avoid false

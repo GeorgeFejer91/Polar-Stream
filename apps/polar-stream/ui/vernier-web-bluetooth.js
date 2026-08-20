@@ -92,6 +92,16 @@
     return { orderCode, name, description, model: classifyDevice(advertisedName, orderCode, description) };
   }
 
+  function parseStatus(frame) {
+    if (frame.length < 18) {
+      throw new GdxBrowserError("GDX_STATUS_TRUNCATED", "Go Direct returned incomplete firmware and battery metadata.");
+    }
+    return {
+      mainFirmwareVersion: `${frame[8]}.${frame[9]}`,
+      batteryPercent: frame[16],
+    };
+  }
+
   function parseSensorInfo(frame) {
     if (frame.length < 154) {
       throw new GdxBrowserError("GDX_SENSOR_INFO_TRUNCATED", "Go Direct returned incomplete sensor metadata.");
@@ -164,9 +174,8 @@
         0xa5, 0x4a, 0x06, 0x49, 0x07, 0x48, 0x08, 0x47, 0x09, 0x46,
         0x0a, 0x45, 0x0b, 0x44, 0x0c, 0x43, 0x0d, 0x42, 0x0e, 0x41,
       ];
-      for (const command of [packet(this.counter, 0x1a, initialize), packet(this.counter, 0x10)]) {
-        await this.writeAndWait(command);
-      }
+      await this.writeAndWait(packet(this.counter, 0x1a, initialize));
+      const status = parseStatus(await this.writeAndWait(packet(this.counter, 0x10)));
       const deviceInfo = parseDeviceInfo(
         await this.writeAndWait(packet(this.counter, 0x55)),
         this.device.name,
@@ -212,6 +221,8 @@
         sensorName: this.sensorName,
         sensorUnit: this.sensorUnit,
         samplePeriodUs: this.periodUs,
+        firmwareVersion: status.mainFirmwareVersion,
+        batteryPercent: status.batteryPercent,
       };
       this.emit({
         kind: "status",
@@ -309,9 +320,10 @@
         this.connectedEventSent = true;
         this.emit({
           kind: "connection", connected: true, streaming: true,
-          deviceName: this.device.name || "Vernier Go Direct", batteryPercent: null,
+          deviceName: this.device.name || "Vernier Go Direct", batteryPercent: this.source.batteryPercent,
           deviceModel: this.deviceModel, sensorNumber: this.sensorNumber,
           sensorName: this.sensorName, sensorUnit: this.sensorUnit, samplePeriodUs: this.periodUs,
+          firmwareVersion: this.source.firmwareVersion,
           message: `Verified ${this.sensorName} (${this.sensorUnit}) on channel ${this.sensorNumber} is streaming at ${(1000000 / this.periodUs).toFixed(1)} Hz`,
         });
       }

@@ -898,9 +898,11 @@
         const connectedSource = app.activeSources.get(source.id);
         registerSource({
           ...source,
+          ...connectedSource,
           deviceId: device.id,
           deviceName: connectedSource?.deviceName || device.name,
         });
+        if (app.selectedSourceId === source.id) updateSelectedSourceUi();
       }
     } catch (error) {
       if (generation !== app.connectionGeneration) return;
@@ -1098,7 +1100,9 @@
     if (!source) return;
     const isVernier = source.inputKind === "vernierGoDirect";
     elements["device-name"].textContent = source.deviceName || source.label;
-    elements["connection-detail"].textContent = `${app.activeSources.size} source${app.activeSources.size === 1 ? "" : "s"} streaming · ${source.label}`;
+    const firmwareDetail = isVernier && source.firmwareVersion
+      ? ` · firmware ${source.firmwareVersion}` : "";
+    elements["connection-detail"].textContent = `${app.activeSources.size} source${app.activeSources.size === 1 ? "" : "s"} streaming · ${source.label}${firmwareDetail}`;
     elements["battery-value"].textContent = source.batteryPercent == null ? "—" : `${source.batteryPercent}%`;
     const sampleRate = source.samplePeriodUs > 0 ? 1_000_000 / source.samplePeriodUs : 10;
     if (isVernier && visualDefinitions.raw_force) visualDefinitions.raw_force.rate = sampleRate;
@@ -1137,6 +1141,7 @@
       deviceName: event.deviceName,
       batteryPercent: event.batteryPercent,
       deviceModel: event.deviceModel,
+      firmwareVersion: event.firmwareVersion,
       sensorNumber: event.sensorNumber,
       sensorName: event.sensorName,
       sensorUnit: event.sensorUnit,
@@ -1185,9 +1190,9 @@
     elements["connection-meta"].hidden = !app.connected;
     const selected = app.activeSources.get(app.selectedSourceId);
     elements["device-name"].textContent = app.connected ? selected?.deviceName || event.deviceName : "No sensor connected";
-    elements["connection-detail"].textContent = app.connected
-      ? `${app.activeSources.size} source${app.activeSources.size === 1 ? "" : "s"} streaming · ${selected?.label || "source selected"}`
-      : "Scan for nearby Polar H10 and Vernier Go Direct sensors.";
+    if (!app.connected) {
+      elements["connection-detail"].textContent = "Scan for nearby Polar H10 and Vernier Go Direct sensors.";
+    }
     elements["battery-value"].textContent = event.batteryPercent == null ? "—" : `${event.batteryPercent}%`;
     elements["input-state"].textContent = app.connected
       ? simulated ? "Recorded preview looping" : webBluetooth ? "Browser BLE live" : "Streaming"

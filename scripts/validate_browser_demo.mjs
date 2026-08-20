@@ -253,6 +253,15 @@ async function installFakeVernierWebBluetooth(page) {
     }
 
     function commandResponse(id, counter, command) {
+      if (id === 0x10) {
+        const response = new Uint8Array(18);
+        response.set([0x58, response.length, 0, 0, id, counter]);
+        response[8] = 2;
+        response[9] = 7;
+        response[16] = 83;
+        response[17] = 1;
+        return response;
+      }
       if (id === 0x55) {
         const response = new Uint8Array(158);
         response.set([0x58, response.length, 0, 0, id, counter]);
@@ -756,6 +765,8 @@ try {
   assert.equal(await vernier.locator("#connection-metric-1-value").textContent(), "10 Hz");
   assert.equal(await vernier.locator("#connection-metric-2-value").textContent(), "1");
   assert.match(await vernier.locator("#connection-detail").textContent(), /Browser source 1/);
+  assert.match(await vernier.locator("#connection-detail").textContent(), /firmware 2\.7/);
+  assert.equal(await vernier.locator("#battery-value").textContent(), "83%");
   assert.match(await vernier.locator("#app-state-text").textContent(), /Go Direct connected directly/);
   assert.match(await vernier.locator(".active-source-chip").textContent(), /Browser source 1.*GDX-RB TEST/);
   assert.equal(await vernier.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), "#00c2ff");

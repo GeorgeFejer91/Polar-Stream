@@ -28,6 +28,7 @@ const MAX_ACCUMULATED_BYTES: usize = MAX_FRAME_BYTES * 2;
 const DEVICE_ORDER_CODE_RANGE: std::ops::Range<usize> = 6..22;
 const DEVICE_NAME_RANGE: std::ops::Range<usize> = 38..70;
 const DEVICE_DESCRIPTION_RANGE: std::ops::Range<usize> = 94..158;
+const STATUS_RESPONSE_MINIMUM_BYTES: usize = 18;
 const SENSOR_DESCRIPTION_RANGE: std::ops::Range<usize> = 14..74;
 const SENSOR_UNIT_RANGE: std::ops::Range<usize> = 74..106;
 
@@ -59,6 +60,13 @@ pub struct DeviceInfo {
     pub name: String,
     pub description: String,
     pub model: DeviceModel,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceStatus {
+    pub main_firmware_version: String,
+    pub battery_percent: u8,
+    pub charger_state: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,6 +156,19 @@ pub fn decode_device_info_response(
         },
         description,
         model,
+    })
+}
+
+/// Decode the stable status fields documented by Vernier's BSD-licensed
+/// Go Direct JavaScript implementation. The main firmware contract is exposed
+/// as major.minor because the public JavaScript API does not expose a build
+/// component for that processor.
+pub fn decode_status_response(bytes: &[u8]) -> Result<DeviceStatus, ProtocolError> {
+    ensure_response(bytes, GET_STATUS, STATUS_RESPONSE_MINIMUM_BYTES)?;
+    Ok(DeviceStatus {
+        main_firmware_version: format!("{}.{}", bytes[8], bytes[9]),
+        battery_percent: bytes[16],
+        charger_state: bytes[17],
     })
 }
 
@@ -587,6 +608,37 @@ mod tests {
         frame[1] = length as u8;
         frame[4] = command;
         frame
+    }
+
+    #[test]
+    fn decodes_main_firmware_and_battery_from_status() {
+        let mut response = response_frame(GET_STATUS, STATUS_RESPONSE_MINIMUM_BYTES);
+        response[8] = 2;
+        response[9] = 7;
+        response[16] = 83;
+        response[17] = 1;
+
+        assert_eq!(
+            decode_status_response(&response).unwrap(),
+            DeviceStatus {
+                main_firmware_version: "2.7".into(),
+                battery_percent: 83,
+                charger_state: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_status_metadata() {
+        let response = response_frame(GET_STATUS, STATUS_RESPONSE_MINIMUM_BYTES - 1);
+        assert!(matches!(
+            decode_status_response(&response),
+            Err(ProtocolError::ResponseTooShort {
+                command: GET_STATUS,
+                expected: STATUS_RESPONSE_MINIMUM_BYTES,
+                actual: 17,
+            })
+        ));
     }
 
     fn write_fixed(frame: &mut [u8], range: std::ops::Range<usize>, value: &str) {

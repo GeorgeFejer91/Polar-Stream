@@ -1,5 +1,19 @@
 # Decision log
 
+## 2026-08-20 — Retain identifier-free GDX-RB physical evidence
+
+Decode the stable main-firmware major/minor and battery fields from the Go
+Direct status response in both native and Chromium paths. Qualify the native
+product path through the same `InputSessionPool` used by the application,
+requiring exact GDX-RB channel-1 Force (N) metadata, sustained periodic samples,
+continuity and input-health thresholds, bounded disconnect, and reconnect.
+
+Persist only explicit structured verifier markers under ignored `artifacts/`;
+do not retain raw process output, chooser names, or Bluetooth identifiers. A
+failed scan is evidence about that scan only, not evidence of incompatibility.
+The first local attempt found no advertised candidate, so browser, mixed-source,
+synchronized H10/reference, and latency qualification all remain open.
+
 ## 2026-08-20 — Canonicalize Pages text bytes across host platforms
 
 Stage and verify browser-demo text assets with CRLF normalized to LF, while

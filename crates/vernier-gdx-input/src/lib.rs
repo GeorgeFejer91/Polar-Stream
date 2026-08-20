@@ -20,7 +20,8 @@ use vernier_gdx_core::{
     COMMAND_CHARACTERISTIC, Command, CommandCounter, DeviceModel, Frame, FrameAccumulator,
     GET_AVAILABLE_SENSOR_MASK, Measurement, RESPONSE_CHARACTERISTIC, SensorInfo,
     available_sensor_numbers, classify_device_model, decode_device_info_response, decode_frame,
-    decode_sensor_info_response, decode_sensor_mask_response, select_respiration_force_sensor,
+    decode_sensor_info_response, decode_sensor_mask_response, decode_status_response,
+    select_respiration_force_sensor,
 };
 
 const BLE_TIMEOUT: Duration = Duration::from_secs(6);
@@ -42,6 +43,7 @@ pub struct DeviceSummary {
     pub model_code: &'static str,
     pub model_name: &'static str,
     pub respiration_belt_candidate: bool,
+    pub adapter_info: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -70,6 +72,8 @@ pub enum InputEvent {
         sensor_name: String,
         sensor_unit: String,
         sample_period_us: u32,
+        main_firmware_version: String,
+        battery_percent: u8,
     },
     Samples {
         sensor_number: u8,
@@ -138,6 +142,10 @@ impl InputSessionPool {
             .into_iter()
             .next()
             .ok_or_else(|| "No Bluetooth Low Energy adapter was found.".to_string())?;
+        let adapter_info = adapter
+            .adapter_info()
+            .await
+            .unwrap_or_else(|_| "unavailable".to_string());
         timed(
             "Bluetooth scan startup",
             adapter.start_scan(ScanFilter::default()),
@@ -172,6 +180,7 @@ impl InputSessionPool {
                 model_code: model.code(),
                 model_name: model.label(),
                 respiration_belt_candidate: model == DeviceModel::RespirationBelt,
+                adapter_info: adapter_info.clone(),
             });
             devices.insert(id, peripheral);
         }
@@ -350,13 +359,14 @@ async fn run_connected_session(
         "Negotiating Go Direct protocol".into(),
     )
     .await?;
-    for command_packet in [
-        Command::initialize(&mut counter),
-        Command::get_status(&mut counter),
-    ] {
-        write_command(peripheral, &command, &command_packet).await?;
-        wait_for_response(&mut notifications, &mut accumulator, &command_packet).await?;
-    }
+    let initialize = Command::initialize(&mut counter);
+    write_command(peripheral, &command, &initialize).await?;
+    wait_for_response(&mut notifications, &mut accumulator, &initialize).await?;
+    let status_command = Command::get_status(&mut counter);
+    write_command(peripheral, &command, &status_command).await?;
+    let status_response =
+        wait_for_response(&mut notifications, &mut accumulator, &status_command).await?;
+    let status = decode_status_response(&status_response).map_err(|error| error.to_string())?;
     let device_info_command = Command::get_device_info(&mut counter);
     write_command(peripheral, &command, &device_info_command).await?;
     let device_info_response =
@@ -466,7 +476,7 @@ async fn run_connected_session(
                         }
                         if !connected {
                             control(events, "streaming", "First validated Go Direct sample received".into()).await?;
-                            control_connected(events, &device, &selected_sensor, effective_period_us).await?;
+                            control_connected(events, &device, &status, &selected_sensor, effective_period_us).await?;
                             connected = true;
                         }
                         let decode_latency_ns = received_at.elapsed().as_nanos() as u64;
@@ -651,6 +661,7 @@ async fn control(
 async fn control_connected(
     events: &mpsc::Sender<InputEvent>,
     device: &vernier_gdx_core::DeviceInfo,
+    status: &vernier_gdx_core::DeviceStatus,
     sensor: &SensorInfo,
     sample_period_us: u32,
 ) -> Result<(), String> {
@@ -662,6 +673,8 @@ async fn control_connected(
             sensor_name: sensor.description.clone(),
             sensor_unit: sensor.unit.clone(),
             sample_period_us,
+            main_firmware_version: status.main_firmware_version.clone(),
+            battery_percent: status.battery_percent,
         })
         .await
         .map_err(|_| "Go Direct event receiver closed.".to_string())

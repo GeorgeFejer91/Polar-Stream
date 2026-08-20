@@ -78,6 +78,10 @@ items into the dated history instead of silently deleting them.
 - Complete signed/notarized distribution planning without weakening the current
   draft-release checks.
 - Compare experimental breathing outputs against a reference respiratory signal.
+- Run the identifier-free native GDX-RB verifier with a powered belt, then
+  qualify browser streaming, mixed multi-device load, and a synchronized
+  H10-ACC/GDX-RB reference recording before making compatibility, respiratory
+  agreement, or latency-percentile claims.
 
 ## Later
 
@@ -88,6 +92,10 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-20: added native/browser GDX status metadata and an identifier-free
+  native product-path verifier for exact Force (N), stream health, disconnect,
+  and reconnect. The first physical scan found no advertised GDX-RB, so the
+  hardware gate remains open.
 - 2026-08-20: made ACC breath-phase sensitivity time-normalized using accepted
   sample count at 200 Hz, with a 50 ms compatibility reference and matching
   Rust/Chromium invariance tests. Reference-respiration validation remains open.
