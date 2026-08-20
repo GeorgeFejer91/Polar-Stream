@@ -527,9 +527,28 @@ def path_coordinates(path: str) -> np.ndarray:
 def check_payload(existing: dict, generated: dict) -> list[str]:
     """Compare deterministic structure while tolerating platform floating-point drift."""
     errors: list[str] = []
-    for key in ("schemaVersion", "source", "viewBox"):
+    for key in ("schemaVersion", "viewBox"):
         if existing.get(key) != generated.get(key):
             errors.append(f"top-level {key} differs")
+
+    existing_source = existing.get("source")
+    generated_source = generated["source"]
+    if not isinstance(existing_source, dict):
+        errors.append("top-level source is missing")
+    else:
+        if set(existing_source) != set(generated_source):
+            errors.append("top-level source fields differ")
+        for key, value in generated_source.items():
+            if key == "methodProvenance":
+                continue
+            if existing_source.get(key) != value:
+                errors.append(f"top-level source.{key} differs")
+        provenance = existing_source.get("methodProvenance")
+        if not isinstance(provenance, str) or not re.fullmatch(
+            r"NeuroKit2 \d+\.\d+\.\d+ ECG cleaning; Polar Stream formulas",
+            provenance,
+        ):
+            errors.append("top-level source.methodProvenance is invalid")
 
     expected_ids = [metric_id for metric_id in catalog_ids() if metric_id != "raw_force"]
     existing_metrics = existing.get("metrics", {})
