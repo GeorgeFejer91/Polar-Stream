@@ -685,14 +685,12 @@ fn dominant_rates_for_longest_segment(
         if let Some((left, right)) = paired {
             h10.push(left);
             reference.push(right);
+        } else if h10.len() > best_h10.len() {
+            best_h10 = std::mem::take(&mut h10);
+            best_reference = std::mem::take(&mut reference);
         } else {
-            if h10.len() > best_h10.len() {
-                best_h10 = std::mem::take(&mut h10);
-                best_reference = std::mem::take(&mut reference);
-            } else {
-                h10.clear();
-                reference.clear();
-            }
+            h10.clear();
+            reference.clear();
         }
     }
     if h10.len() > best_h10.len() {

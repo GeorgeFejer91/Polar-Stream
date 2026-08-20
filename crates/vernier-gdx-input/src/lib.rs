@@ -561,8 +561,7 @@ fn respiration_period(sensor: &SensorInfo, requested_period_us: u32) -> Result<u
         return Ok(typical);
     }
     Err(format!(
-        "GDX-RB Force (N) does not accept the requested {} µs period and did not report a valid fallback.",
-        requested_period_us
+        "GDX-RB Force (N) does not accept the requested {requested_period_us} µs period and did not report a valid fallback."
     ))
 }
 
