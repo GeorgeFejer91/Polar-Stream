@@ -334,6 +334,47 @@ For each run, save:
 - manual events such as posture change, speech, cough, strap adjustment, or
   deliberate breath hold.
 
+## Synchronized H10/GDX-RB qualification
+
+The repository includes an offline native-CSV analyzer that replays H10 ACC
+through the current Rust `BreathingProcessor`; it does not maintain a second
+approximation of the product algorithm. Record the H10 and a Vernier GDX-RB
+respiration belt as distinct sources, then run:
+
+```text
+cargo run -p polar-stream --example analyze_respiration_reference -- <h10-native.csv> <gdx-native.csv> --output <new-evidence.json>
+```
+
+Use at least three quiet seated minutes so the 12-second H10 calibration and
+the analyzer's 120-second overlap gate leave useful data. Record separate,
+predeclared sessions for quiet spontaneous breathing, paced breathing, breath
+holds, and movement; do not concatenate conditions or tune settings on the
+reported sessions. Preserve raw files outside the repository and commit only
+reviewed, identifier-free evidence when appropriate.
+
+The timing contract is deliberately conservative. H10 PMD sensor spacing is
+mapped into host time using the fifth percentile of per-notification
+host-receipt-minus-sensor-time offsets, which reduces queue-drain bias without
+claiming clock synchronization. GDX-RB has no exposed absolute device clock,
+so its periodic samples retain the host-receipt/backfill timing used by the
+product. The report therefore cannot separate filter delay, Bluetooth/OS
+delivery delay, and true physiological lag.
+
+Both signals are resampled at 10 Hz with interpolation gaps capped at 0.5
+seconds, then receive the same causal 10-second baseline removal. Agreement is
+reported separately for the signed PCA projection and the normalized 0–1
+waveform. A bounded plus/minus three-second lag search uses polarity anchored
+at zero lag so an oscillatory half-cycle peak cannot silently reverse the
+mounting direction. Positive lag means H10 follows the earlier GDX force.
+
+Evidence includes zero-lag and best-lag correlation, polarity-adjusted
+correlation, normalized RMSE, dominant-rate error over 3–42 breaths/minute,
+30-second window stability, ready/confidence coverage, robust signal spans,
+clock/rate diagnostics, and quality failures. A quality pass only means the
+recording met predeclared analysis gates. The analyzer always leaves
+`physiologicalAcceptanceEstablished` false: acceptance limits require repeated
+held-out participants and conditions, not a favorable correlation in one run.
+
 ## Validation plan
 
 Use a respiratory inductance plethysmography belt, airflow/capnography, or

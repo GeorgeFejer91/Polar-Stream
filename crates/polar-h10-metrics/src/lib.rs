@@ -11,6 +11,7 @@ mod coherence;
 mod ecg;
 mod excitation;
 mod hrv;
+mod reference_validation;
 
 use polar_h10_core::AccSample;
 use serde::Serialize;
@@ -24,6 +25,10 @@ pub use catalog::{
 pub use coherence::CoherenceSnapshot;
 pub use ecg::EcgSnapshot;
 pub use hrv::HrvSnapshot;
+pub use reference_validation::{
+    AgreementError, RespirationReferenceReport, RespirationReferenceSettings, SignalAgreement,
+    TimedReferenceSample, TimedRespirationSample, analyze_respiration_reference,
+};
 
 use breathing_dynamics::BreathingDynamicsProcessor;
 use coherence::CoherenceProcessor;

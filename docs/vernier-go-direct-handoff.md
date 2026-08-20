@@ -234,6 +234,14 @@ disconnect, and reconnect portions of this gate. It does not replace the mixed
 multi-device, browser, under-load, independent-reference, or synchronized
 H10/GDX qualification runs.
 
+For the synchronized portion, save isolated schema-2 native CSVs for H10 ACC
+and GDX-RB Force (N), then use the repository's
+`analyze_respiration_reference` Rust example. The analyzer reconstructs H10
+notification batches, runs the production `BreathingProcessor`, aligns both
+streams under the bounded host-time contract, and emits identifier-free
+descriptive evidence. See `docs/acc-breathing-handoff.md` for the exact command,
+conditions, metrics, and interpretation limits.
+
 ## Current limitations
 
 - The product profile intentionally supports only a metadata-verified GDX-RB

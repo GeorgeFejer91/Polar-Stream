@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-20 — Analyze reference agreement from raw recordings without tuning the product
+
+Reconstruct native H10 ACC notification batches and replay the current Rust
+`BreathingProcessor` rather than implementing an analyzer-only respiration
+algorithm. Map H10 PMD sample spacing into host time with a robust
+fifth-percentile host-minus-sensor offset; retain GDX-RB's explicit host-receipt
+and configured-period timing because Go Direct exposes no comparable absolute
+device clock.
+
+Compare signed projection and normalized waveform separately after matched
+causal baseline removal and a bounded plus/minus three-second lag search.
+Anchor polarity at zero lag so a half-cycle oscillatory match cannot choose the
+opposite mounting direction. Report quality, lag, polarity, normalized error,
+respiratory-rate error, and window stability descriptively. Do not add a
+correlation acceptance threshold or change production samples from one
+recording; physiological acceptance requires predeclared repeated held-out
+physical sessions.
+
 ## 2026-08-20 — Retain identifier-free GDX-RB physical evidence
 
 Decode the stable main-firmware major/minor and battery fields from the Go

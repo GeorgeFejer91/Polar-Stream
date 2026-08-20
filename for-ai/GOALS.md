@@ -77,7 +77,11 @@ items into the dated history instead of silently deleting them.
   measurement-reset counters without delaying acquisition or publication.
 - Complete signed/notarized distribution planning without weakening the current
   draft-release checks.
-- Compare experimental breathing outputs against a reference respiratory signal.
+- Run the checked-in offline Rust analyzer on synchronized native H10 ACC and
+  GDX-RB Force (N) recordings. The production-processor replay, bounded
+  host-time alignment, polarity/lag analysis, and identifier-free evidence
+  schema are implemented; physical paired recordings and held-out acceptance
+  evidence remain pending.
 - Run the identifier-free native GDX-RB verifier with a powered belt, then
   qualify browser streaming, mixed multi-device load, and a synchronized
   H10-ACC/GDX-RB reference recording before making compatibility, respiratory
@@ -92,6 +96,11 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-20: added a bounded offline H10/GDX-RB respiration-reference
+  analyzer that reconstructs native ACC batches, replays the production Rust
+  breathing processor, aligns PMD sensor spacing with host-timed force, and
+  reports separate signed/normalized waveform agreement without turning one
+  descriptive recording into physiological acceptance.
 - 2026-08-20: added native/browser GDX status metadata and an identifier-free
   native product-path verifier for exact Force (N), stream health, disconnect,
   and reconnect. The first physical scan found no advertised GDX-RB, so the

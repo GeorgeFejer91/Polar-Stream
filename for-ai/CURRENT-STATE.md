@@ -126,6 +126,15 @@ Last verified: 2026-08-20
   offset, native OSC/CSV retain the nanosecond value, and Chromium metric events
   and browser CSV carry it directly. HR-only notifications remain host-timed
   because the standard HR characteristic has no PMD device timestamp.
+- An identifier-free offline Rust qualification tool accepts isolated schema-2
+  native H10 ACC and GDX-RB Force (N) CSVs, reconstructs H10 notification
+  batches, and replays them through the current `BreathingProcessor`. It maps
+  PMD sensor spacing into host time with a fifth-percentile receipt-offset
+  anchor, resamples both streams at 10 Hz, applies matched causal baseline
+  removal, and reports bounded lag, mounting polarity, waveform/rate error,
+  window stability, readiness/confidence, robust spans, and timing quality.
+  Recording-quality status remains separate from physiological acceptance,
+  which is always false until repeated held-out physical evidence exists.
 - Breathing readiness measures successive vectors on an independent all-axis
   EMA path before applying its motion-quality threshold. This avoids treating
   ordinary 200 Hz H10 sample noise as broadband body motion while retaining a
