@@ -354,8 +354,9 @@ impl RustyLslPublisher {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn push_scalar(&mut self, id: &str, value: f32) {
-        self.push_values(id, &[value], 1, None);
+        self.push_values(id, &[value], 1, None, None);
     }
 
     pub(crate) fn push_scalar_series<I>(&mut self, id: &str, values: I)
@@ -375,6 +376,31 @@ impl RustyLslPublisher {
         I: IntoIterator<Item = f32>,
     {
         self.push_scalar_series_at_key(id, values, sensor_timestamp_ns);
+    }
+
+    pub(crate) fn push_scalar_series_period_at<I>(
+        &mut self,
+        id: &str,
+        values: I,
+        newest_timestamp_ns: u64,
+        sample_period_us: u32,
+    ) where
+        I: IntoIterator<Item = f32>,
+    {
+        self.values.clear();
+        self.values.extend(values);
+        if self.values.is_empty() {
+            return;
+        }
+        let values = std::mem::take(&mut self.values);
+        self.push_values(
+            id,
+            &values,
+            1,
+            Some(newest_timestamp_ns),
+            Some(f64::from(sample_period_us) / 1_000_000.0),
+        );
+        self.values = values;
     }
 
     pub(crate) fn push_scalar_series_at_key<I>(
@@ -424,7 +450,7 @@ impl RustyLslPublisher {
 
     fn push_buffered(&mut self, id: &str, channels: usize, sensor_timestamp_ns: Option<u64>) {
         let values = std::mem::take(&mut self.values);
-        self.push_values(id, &values, channels, sensor_timestamp_ns);
+        self.push_values(id, &values, channels, sensor_timestamp_ns, None);
         self.values = values;
     }
 
@@ -434,6 +460,7 @@ impl RustyLslPublisher {
         values: &[f32],
         channels: usize,
         sensor_timestamp_ns: Option<u64>,
+        sample_period_seconds: Option<f64>,
     ) {
         let Some(entry) = self.outlets.get(id) else {
             return;
@@ -460,7 +487,9 @@ impl RustyLslPublisher {
             None => local_now,
         };
         for index in 0..records {
-            let backfill = if rate_hz > 0.0 {
+            let backfill = if let Some(period) = sample_period_seconds {
+                (records - index - 1) as f64 * period
+            } else if rate_hz > 0.0 {
                 (records - index - 1) as f64 / rate_hz
             } else {
                 0.0
@@ -746,17 +775,22 @@ fn stream_info_limits() -> PersistentFloat32StreamInfoLimits {
 }
 
 fn stream_metadata(spec: MetricSpec) -> Result<MetadataTree, String> {
+    let (manufacturer, model) = if spec.id == "raw_force" {
+        ("Vernier", "Go Direct")
+    } else {
+        ("Polar", "H10")
+    };
     let mut nodes = Vec::with_capacity(5 + usize::try_from(spec.channels).unwrap_or(0) * 4);
     nodes.push(MetadataNodeInput::new(None, "desc".into(), None));
     nodes.push(MetadataNodeInput::new(
         Some(0),
         "manufacturer".into(),
-        Some("Polar".into()),
+        Some(manufacturer.into()),
     ));
     nodes.push(MetadataNodeInput::new(
         Some(0),
         "model".into(),
-        Some("H10".into()),
+        Some(model.into()),
     ));
     nodes.push(MetadataNodeInput::new(
         Some(0),

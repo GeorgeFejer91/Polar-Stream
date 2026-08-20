@@ -268,10 +268,6 @@ impl LslPublisher {
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
     }
 
-    pub(crate) fn push_scalar(&mut self, id: &str, value: f32) {
-        self.push_values(id, &[value], None);
-    }
-
     pub(crate) fn push_scalar_series<I>(&mut self, id: &str, values: I)
     where
         I: IntoIterator<Item = f32>,
@@ -294,6 +290,38 @@ impl LslPublisher {
             return;
         }
         self.push_notification(id, 1, Some(sensor_timestamp_ns));
+    }
+
+    pub(crate) fn push_scalar_series_period_at<I>(
+        &mut self,
+        id: &str,
+        values: I,
+        newest_timestamp_ns: u64,
+        sample_period_us: u32,
+    ) where
+        I: IntoIterator<Item = f32>,
+    {
+        self.scratch.clear();
+        self.scratch.extend(values);
+        let (Some(api), Some(outlet)) = (&self.api, self.outlets.get_mut(id)) else {
+            return;
+        };
+        if self.scratch.is_empty() {
+            return;
+        }
+        let local_now = unsafe { (api.local_clock)() };
+        let newest = outlet
+            .sensor_clock
+            .map_newest(newest_timestamp_ns, local_now);
+        let count = self.scratch.len();
+        for (index, value) in self.scratch.iter().enumerate() {
+            let backfill = (count - index - 1) as f64 * f64::from(sample_period_us) / 1_000_000.0;
+            let result = unsafe { (api.push_sample)(outlet.handle, value, newest - backfill, 1) };
+            if result != 0 {
+                self.status = format!("LSL push failed ({result})");
+                break;
+            }
+        }
     }
 
     pub(crate) fn push_accelerometer_at(
@@ -364,19 +392,6 @@ impl LslPublisher {
             self.status = format!("LSL push failed ({result})");
         }
     }
-
-    fn push_values(&mut self, id: &str, values: &[f32], timestamp: Option<f64>) {
-        let (Some(api), Some(outlet)) = (&self.api, self.outlets.get(id)) else {
-            return;
-        };
-        // SAFETY: values matches the channel count used to create this outlet.
-        let result = unsafe {
-            (api.push_sample)(outlet.handle, values.as_ptr(), timestamp.unwrap_or(0.0), 1)
-        };
-        if result != 0 {
-            self.status = format!("LSL push failed ({result})");
-        }
-    }
 }
 
 fn append_stream_metadata(api: &LslApi, info: StreamInfo, spec: MetricSpec) {
@@ -393,8 +408,18 @@ fn append_stream_metadata(api: &LslApi, info: StreamInfo, spec: MetricSpec) {
     if description.is_null() {
         return;
     }
-    append_value(append_child_value, description, "manufacturer", "Polar");
-    append_value(append_child_value, description, "model", "H10");
+    let (manufacturer, model) = if spec.id == "raw_force" {
+        ("Vernier", "Go Direct")
+    } else {
+        ("Polar", "H10")
+    };
+    append_value(
+        append_child_value,
+        description,
+        "manufacturer",
+        manufacturer,
+    );
+    append_value(append_child_value, description, "model", model);
     append_value(
         append_child_value,
         description,

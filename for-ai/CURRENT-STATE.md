@@ -1,6 +1,6 @@
 # Current state
 
-Last verified: 2026-08-18
+Last verified: 2026-08-20
 
 ## Implemented
 
@@ -83,12 +83,49 @@ Last verified: 2026-08-18
   passed repaired-reference discovery/acquisition, both Polar Stream sessions,
   four distinct pinned official inlets, 130/200 Hz bands, zero estimated
   loss/reorder, nonzero X/Y/Z, and exact cleanup. The ordinary desktop UI
-  remains single-sensor.
+  was the previous ordinary UI boundary.
+- The ordinary application now admits up to eight mixed Polar H10 and Vernier
+  Go Direct sources. Each source owns an independent input session, decoder,
+  event receiver, metric engine, and output router; shared maps and mutexes are
+  lifecycle-only. Stable source slots add unique stream-name suffixes and map
+  to a fixed eight-color palette propagated through source chips, raw/output
+  cards, and visualizers. UI circular buffers are per source, so selecting a
+  device cannot mix samples from another device.
+  Saved output configuration is transport-free: formula validation uses a
+  destination-disabled router and only connected source routers may create
+  LSL/OSC/CSV endpoints, preventing empty legacy unsuffixed streams.
+- Independent MIT `vernier-gdx-core` and `vernier-gdx-input` crates implement
+  Go Direct command framing, decrementing counters/checksums, 20-byte writes,
+  correlated control responses, bounded fragmented/coalesced frame assembly,
+  periodic/single float and integer measurement decoding, multi-session BLE,
+  first-valid-measurement readiness, bounded queues, and latency/drop health.
+  Cancellation covers setup as well as streaming, terminal events cannot block
+  teardown, physical disconnect is bounded, and finished owners are pruned
+  before new scan/connect admission so failed links do not strand capacity.
+  Device and advertised-sensor metadata are parsed before streaming; the
+  product profile requires a confirmed GDX-RB and channel-1 periodic Force in
+  N. It requests 10 Hz when metadata permits and otherwise uses the plausible
+  reported typical period. Physical Go Direct verification is still pending.
+- Raw Go Direct force is a first-class N-valued output. Notification batches
+  publish before UI work; output timestamps backfill from one host receipt using
+  the configured period. Its LSL nominal rate is irregular (`0`) to avoid false
+  fixed-clock metadata. Per-source filtering prevents empty cross-device outlet
+  types.
 - Immediate raw LSL/OSC publication with canonical names.
 - Raw ECG and ACC LSL chunks preserve H10 sensor-time spacing through separate
   first-frame offsets into the local LSL clock. This prevents setup-buffered
   notification bursts from overlapping while never publishing raw device-clock
   values directly. The liblsl and Rusty LSL backends share this contract.
+- Each ACC-derived breathing snapshot uses the newest PMD sensor timestamp from
+  its accepted notification. Native LSL maps it through the same ACC clock
+  offset, native OSC/CSV retain the nanosecond value, and Chromium metric events
+  and browser CSV carry it directly. HR-only notifications remain host-timed
+  because the standard HR characteristic has no PMD device timestamp.
+- Breathing readiness measures successive vectors on an independent all-axis
+  EMA path before applying its motion-quality threshold. This avoids treating
+  ordinary 200 Hz H10 sample noise as broadband body motion while retaining a
+  deterministic high-amplitude motion rejection gate; Rust and Chromium share
+  the implementation and noisy-clean/motion fixtures.
 - A default-off, mutually exclusive Rusty LSL source backend is pinned to merge
   `8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. Pinned pylsl
   1.18.2/liblsl 1.17.7 broadly discovered and exactly matched independent
@@ -114,7 +151,7 @@ Last verified: 2026-08-18
   real H10 ECG/ACC recording, with its fingerprint checked in the asset. Compact,
   detail, and Formula Lab traces run as closed continuous loops; categorical
   outputs remain stepped.
-- A one-at-a-time output picker exposes all 47 catalog metrics across ECG and
+- A one-at-a-time output picker exposes all 50 catalog metrics across ECG and
   ACC families. Every metric has recorded preview coverage, a concise scientific
   explainer, citation, and mathematical definition.
 - Pre-save preview controls update the recorded outcome for display window,
@@ -131,9 +168,10 @@ Last verified: 2026-08-18
 - Red ECG / blue ACC output-library modes. ACC mode includes raw motion and the
   complete experimental breathing/breathing-dynamics catalog; every choice is
   still added individually rather than through a checkbox list.
-- Shared pre-save ACC breathing controls for the two public breathing outputs:
+- Shared pre-save ACC breathing controls cover the signed projection, normalized
+  0–1 waveform, phase, calibration/range, readiness, and confidence outputs:
   two or three axes (X + Z recommended), smoothing, phase sensitivity and
-  direction; the magnitude output can optionally normalize to 0–1.
+  direction; the signed projection can also use the output normalization layer.
 - A phase-only breathing circle with asymptotic size limits and pause inertia.
 - Public dedicated GitHub repository at `GeorgeFejer91/Polar-Stream`.
 - The legacy Mesmerism-derived `PolarH10` checkout is locally quarantined under
@@ -156,14 +194,23 @@ Last verified: 2026-08-18
   Chromium contexts. It requests a Polar H10, writes the canonical PMD ECG/ACC
   start commands, and decodes ECG, uncompressed/variable-delta ACC, HR/RR, and
   battery notifications into the shared UI event contract.
+- The same Pages runtime now offers an independent Vernier Go Direct Web
+  Bluetooth chooser. It uses the official GDX service/characteristics, mirrors
+  native command/counter response correlation and frame assembly, gates
+  connection on the first channel-1 force batch, supports up to eight
+  user-selected Go Direct sessions, and routes each into its own colored source
+  buffers. Deterministic Playwright coverage validates setup, a fragmented
+  force packet, source identity/color, and cleanup; no physical browser GDX run
+  has yet been completed.
 - A physical Motorola phone running Google Chrome selected and connected to an
   H10 from the public GitHub Pages site on 2026-08-14. This confirms the hosted
   chooser/GATT path, but not yet the timed CSV rates, loss, gaps, or reconnect
   acceptance criteria.
-- The browser adapter includes a JavaScript mirror of the two retained ACC
-  breathing outputs. Playwright validates the browser chooser/GATT contract,
-  commands, protocol edge cases, breathing calibration, and responsive UI with
-  an emulated device.
+- The browser adapter includes a JavaScript mirror of the complete ACC
+  breathing module, including causal baseline removal, normalized waveform,
+  phase, readiness, and confidence. Playwright validates the browser
+  chooser/GATT contract, commands, protocol edge cases, breathing calibration,
+  quality gating, and responsive UI with an emulated device.
 - The Pages runtime is self-contained: browser H10/mock acquisition, supported
   metrics, and visualization run without a localhost companion, installed
   helper, or remote relay. The shared LSL/OSC toggles remain visible in browser
@@ -194,6 +241,10 @@ Last verified: 2026-08-18
   direction, calibration window/range, stale timeout, adaptive bounds/window,
   and robust quantiles. `docs/acc-breathing-handoff.md` documents provenance,
   exact formulas, current/upstream differences, parameters, and validation.
+- ACC breathing phase now thresholds normalized waveform velocity per second,
+  using notification sample count at the requested 200 Hz. A 50 ms reference
+  preserves the prior sensitivity scale for ten-sample batches while Rust and
+  Chromium invariance tests cover equivalent 50/150 ms slopes.
 
 ## Active branch context
 
@@ -204,6 +255,18 @@ Last verified: 2026-08-18
 
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.
+- Go Direct intentionally supports only a metadata-verified GDX-RB channel-1
+  periodic Force (N) profile and rejects generic sensors. Its physical native
+  and Chromium compatibility,
+  sustained loss, reconnect, and latency percentiles remain unverified.
+- Chromium can connect to Go Direct only in a secure context and only after a
+  user-triggered device chooser for each device. A page cannot passively scan
+  or silently enumerate all nearby sensors, and hidden-tab/screen-lock
+  continuity is not guaranteed.
+- The default liblsl path supports per-source outlets. The optional default-off
+  Rusty LSL backend compiles and passes its existing single/two-H10 tests, but
+  its fixed-port registry must be generalized before claiming runtime support
+  for the new ordinary app's arbitrary mixed-source routers.
 - Windows CI validates the WinRT integration and the non-Windows `btleplug` path at compile and unit-test
   level only. Retain the system-managed link values and sample counts from a
   physical Windows run before making timing claims.
@@ -256,7 +319,3 @@ Last verified: 2026-08-18
   encryption, or physical AUX/device validation. It requires clean stereo PCM;
   mono phone microphone inputs, lossy codecs, speaker/microphone paths, and
   native WebView event loss remain unsupported/unvalidated boundaries.
-- Breathing phase sensitivity is currently applied to normalized change per ACC
-  notification batch, not change per second. BLE batch cadence can therefore
-  affect classification and must be corrected/versioned before cross-platform
-  phase equivalence is claimed.

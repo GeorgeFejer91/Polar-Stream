@@ -173,10 +173,20 @@ try {
   await page.screenshot({ path: accelerometerScreenshot, fullPage: true });
   assert.ok((await stat(accelerometerScreenshot)).size > 20_000, "stacked ACC screenshot was unexpectedly empty");
 
+  const multipleSources = await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
+  assert.deepEqual(multipleSources.sourceOptions, ["source-1", "source-2"]);
+  assert.deepEqual(multipleSources.chipColors, ["#00c2ff", "#ffb000"]);
+  assert.equal(multipleSources.selectedSource, "source-2");
+  assert.equal(multipleSources.chartColor, "#ffb000");
+  assert.ok(multipleSources.outputColors.every((color) => color === "#ffb000"));
+  assert.notEqual(multipleSources.forceValue, "—");
+  assert.match(multipleSources.streamName, /_source-2_rawForce$/);
+  await page.screenshot({ path: join(output, "multiple-colored-sources.png"), fullPage: true });
+
   const library = await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));
   assert.equal(library.dialogOpen, true, "metric library did not open in the renderer");
-  assert.equal(library.previewCount, library.catalogCount, "generated preview count differs from catalog count");
-  assert.deepEqual(library.missingPreviewIds, [], "one or more catalog metrics lack a generated preview");
+  assert.equal(library.previewCount, library.catalogCount - 1, "fixture-backed preview count differs from catalog count");
+  assert.deepEqual(library.missingPreviewIds, ["raw_force"], "only the live-hardware Go Direct signal may lack a recorded H10 preview");
   assert.equal(library.source.library, "Recorded Polar H10");
   assert.equal(library.source.version, "60-second anonymized fixture");
   assert.equal(library.source.model, "real-polar-h10-recording");
@@ -235,7 +245,7 @@ try {
   await page.screenshot({ path: previewScreenshot, fullPage: true });
   assert.ok((await stat(previewScreenshot)).size > 20_000, "metric library screenshot was unexpectedly empty");
 
-  process.stdout.write(`Validated stacked raw ACC, ${targets.length} classifier renders, saved controls, and ${library.catalogCount} recorded previews in ${output}\n`);
+  process.stdout.write(`Validated stacked raw ACC, ${targets.length} classifier renders, saved controls, ${library.previewCount} recorded previews, and one explicit live-only Go Direct signal in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

@@ -24,7 +24,7 @@
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
-    breathing: ["Drummond et al. (2021)", "https://consensus.app/papers/details/9389301a991e52ee9210f51939d318d7/?utm_source=unknown"],
+    breathing: ["Schipper et al. (2021)", "https://pubmed.ncbi.nlm.nih.gov/33739305/"],
     complexity: ["Bará et al. (2024)", "https://consensus.app/papers/details/de562a29bb8454eda201852b544fd9d7/?utm_source=unknown"],
     resonance: ["Sévoz-Couche & Laborde (2022)", "https://www.sciencedirect.com/science/article/abs/pii/S0149763422000653"],
     quality: ["Smital et al. (2020)", "https://consensus.app/papers/details/ad2a724fefd55d25baee823438fc672e/?utm_source=unknown"],
@@ -50,7 +50,9 @@
     ...[["rmssd","rmssd","RMSSD","ms"],["ln_rmssd","lnRMSSD","lnRMSSD","ln(ms)"],["sdnn","sdnn","SDNN","ms"],["pnn50","pNN50","pNN50","%"],["sd1","sd1","Poincaré SD1","ms"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"HRV & relaxation")),
     ...[["coherence","coherence","Normalized coherence","0–1"],["coherence_confidence","coherenceConfidence","Coherence confidence","0–1"],["heartmath_coherence","heartMathCoherence","HeartMath-style coherence ratio","ratio"],["coherence_peak_frequency","coherencePeakFrequency","Coherence peak frequency","Hz"],["coherence_peak_power","coherencePeakPower","Coherence peak-band power","ms²"],["coherence_total_power","coherenceTotalPower","Coherence total power","ms²"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"Coherence","resonance")),
     fallbackMetric("acc_breathing_magnitude", "accBreathingMagnitude", "ACC breathing magnitude estimate", "g", "Breathing", "breathing", "Smoothed selected-axis chest-motion projection", false, true, 20),
-    fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing waveform", "0–1", "Breathing", "breathing", "Legacy calibrated chest-motion projection", false, true, 20),
+    fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing waveform", "0–1", "Breathing", "breathing", "Robustly normalized relative chest-motion projection; not lung volume", false, true, 20),
+    fallbackMetric("breathing_signal_confidence", "breathingSignalConfidence", "ACC breathing signal confidence", "0–1", "Breathing", "breathing", "Range, motion, coverage, and periodicity quality index", false, false, 20),
+    fallbackMetric("breathing_signal_ready", "breathingSignalReady", "ACC breathing signal ready", "0/1", "Breathing", "breathing", "Calibration, freshness, and motion gate", false, false, 20),
     fallbackMetric("breathing_phase", "breathingPhase", "Breath phase classifier", "class", "Breathing", "breathing", "+1 inhale · −1 exhale · 0 pause or not ready", false, false, 20),
     fallbackMetric("breathing_calibration", "breathingCalibration", "Breathing calibration", "0–1", "Breathing", "breathing", "Principal-axis calibration progress", false, false, 4),
     fallbackMetric("breathing_axis_range", "breathingAxisRange", "Breathing axis range", "g", "Breathing", "breathing"),
@@ -65,7 +67,14 @@
     fallbackMetric("excitement_score", "excitementScore", "Excite-O-Meter excitement score", "0–1", "Excitation (experimental)", "exciteometer", "1 − mean[Φ(zRR), Φ(zRMSSD)] · live provisional", false, false),
     fallbackMetric("excitometer", "excitometer", "Activation composite (experimental)", "0–1", "Excitation (experimental)", "stress", "Within-session HR ↑ plus lnRMSSD ↓"),
   ];
-  const fallbackCatalog = window.PolarMetricCatalog || legacyFallbackCatalog;
+  const staticCatalog = window.PolarMetricCatalog || legacyFallbackCatalog;
+  const rawForceMetric = fallbackMetric(
+    "raw_force", "rawForce", "Raw Go Direct force", "N", "Raw signals", "breathing",
+    "Verified GDX-RB Force (N) · 10 Hz preferred, metadata fallback", true, false, 0,
+  );
+  const fallbackCatalog = staticCatalog.some((metric) => metric.id === "raw_force")
+    ? staticCatalog
+    : [...staticCatalog.slice(0, 2), rawForceMetric, ...staticCatalog.slice(2)];
 
   const visualDefinitions = {
     raw_ecg: { label: "Raw ECG", unit: "µV", rate: 130, color: "#d85151", symmetric: true },
@@ -77,6 +86,7 @@
         { buffer: "acc_z", label: "Z", color: "#a66d19", symmetric: true },
       ],
     },
+    raw_force: { label: "Raw Go Direct force", unit: "N", rate: 10, color: "#00c2ff" },
     heart_rate: { label: "Heart rate", unit: "bpm", rate: 1, color: "#d85151" },
     rr_interval: { label: "RR interval", unit: "ms", rate: 2, color: "#6c62a8" },
     acc_magnitude: { label: "3D acceleration magnitude", unit: "g", rate: 200, color: "#3b78aa" },
@@ -86,11 +96,20 @@
 
   const accLibraryIds = new Set(fallbackCatalog
     .filter((metric) => metric.id === "raw_acc"
+      || metric.id === "raw_force"
       || metric.id === "acc_magnitude"
       || metric.category === "Breathing"
       || metric.category === "Breathing dynamics")
     .map((metric) => metric.id));
-  const breathingOutputIds = new Set(["acc_breathing_magnitude", "breathing_phase"]);
+  const breathingOutputIds = new Set([
+    "acc_breathing_magnitude",
+    "breathing_volume",
+    "breathing_phase",
+    "breathing_calibration",
+    "breathing_axis_range",
+    "breathing_signal_confidence",
+    "breathing_signal_ready",
+  ]);
   const formulaSources = Object.freeze({
     ecg: { label: "ECG · 130 Hz", variables: "ecg", color: "#d85151" },
     accelerometer: { label: "Accelerometer · 200 Hz", variables: "x, y, z", color: "#3b78aa" },
@@ -155,14 +174,18 @@
   const bufferIds = new Set(Object.entries(visualDefinitions).flatMap(([id, definition]) => (
     [id, ...(definition.channels?.map((channel) => channel.buffer) || [])]
   )));
-  const buffers = Object.fromEntries([...bufferIds].map((id) => [id, new RingBuffer()]));
+  function createBufferBank() {
+    return Object.fromEntries([...bufferIds].map((id) => [id, new RingBuffer()]));
+  }
+  const sourceBuffers = new Map();
+  let buffers = createBufferBank();
   const elements = {};
   const ids = [
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
-    "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value",
+    "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value", "connection-metric-1-label", "connection-metric-1-value", "connection-metric-2-label", "connection-metric-2-value", "active-source-strip",
     "scan-button", "scan-caption", "device-list", "activity-list", "output-state", "raw-ecg-value",
-    "raw-acc-x", "raw-acc-y", "raw-acc-z", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
-    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "included-count", "output-chips", "open-output-dialog", "visual-source",
+    "raw-acc-x", "raw-acc-y", "raw-acc-z", "raw-force-value", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
+    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
     "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "metric-back-button", "dialog-output-status", "save-metric-output", "toast-region",
@@ -190,7 +213,7 @@
     scanning: false,
     configuring: false,
     catalog: fallbackCatalog,
-    outputs: new Set(["raw_ecg", "raw_acc"]),
+    outputs: new Set(["raw_ecg", "raw_acc", "raw_force"]),
     metricOptions: {},
     customFormulas: [],
     formulaDraft: null,
@@ -212,6 +235,8 @@
     connectionGeneration: 0,
     currentDeviceId: null,
     currentInputKind: null,
+    activeSources: new Map(),
+    selectedSourceId: null,
     pendingDevice: null,
     devices: [],
     breathingSettings: defaultBreathingSettings(),
@@ -249,7 +274,8 @@
     const suffix = metric.streamSuffix
       || fallbackCatalog.find((candidate) => candidate.id === metric.id)?.streamSuffix
       || metric.id;
-    return base ? `${base}_${suffix}` : `—_${suffix}`;
+    const slot = app?.activeSources?.get(app.selectedSourceId)?.slot;
+    return base ? `${base}${slot ? `_${slot}` : ""}_${suffix}` : `—_${suffix}`;
   }
 
   function newFormulaId() {
@@ -422,7 +448,7 @@
     const initialConfig = isNative
       ? bootstrap.preferences?.outputConfig || bootstrap.config || {}
       : app.preferences.outputConfig || bootstrap.config || {};
-    app.outputs = new Set(initialConfig.outputs || ["raw_ecg", "raw_acc"]);
+    app.outputs = new Set(initialConfig.outputs || ["raw_ecg", "raw_acc", "raw_force"]);
     app.metricOptions = structuredClone(initialConfig.metricOptions || {});
     app.customFormulas = (initialConfig.customFormulas || []).map(normalizeFormulaDraft);
     app.breathingSettings = configuredBreathingSettings(app.metricOptions);
@@ -662,6 +688,9 @@
       updateVisualLabels();
       requestRender();
     });
+    elements["visual-device"].addEventListener("change", () => {
+      selectSource(elements["visual-device"].value);
+    });
     elements["adjust-visual"].addEventListener("click", () => openModuleSettings(optionIdForVisual(app.selectedVisual)));
     elements["save-module-settings"].addEventListener("click", saveModuleSettings);
 
@@ -707,7 +736,7 @@
     elements["scan-button"].classList.add("scanning");
     elements["scan-button"].querySelector("span").textContent = "Scanning…";
     elements["input-state"].textContent = "Scanning";
-    setTopStatus("Scanning for Polar sensors", "working");
+    setTopStatus(runtime.isBrowser ? "Opening the Polar Bluetooth chooser" : "Scanning for Polar and Vernier sensors", "working");
     addActivity(automatic ? "Looking for last used sensor" : "BLE scan started");
 
     try {
@@ -739,13 +768,13 @@
         app.connected
           ? "Input connected · choose another to switch"
           : polarCount
-            ? "Choose a Polar H10 or mock input"
+            ? "Choose a Polar H10, Vernier GDX-RB, or mock input"
             : "Recorded Polar H10 preview is available",
         app.connected ? "connected" : "idle",
       );
       addActivity(polarCount
-        ? `${polarCount} compatible Polar sensor${polarCount === 1 ? "" : "s"} found · mock also available`
-        : "No Polar sensor found · offline mock remains available");
+        ? `${polarCount} compatible Bluetooth sensor${polarCount === 1 ? "" : "s"} found · mock also available`
+        : "No compatible Bluetooth sensor found · offline mock remains available");
     } catch (error) {
       const message = runtime.formatError(error);
       setTopStatus("Bluetooth scan failed", "error");
@@ -767,9 +796,9 @@
       const orbit = document.createElement("span");
       orbit.className = "empty-orbit";
       const message = document.createElement("p");
-      message.textContent = "No Polar sensors found.";
+      message.textContent = "No compatible Bluetooth sensors found.";
       const hint = document.createElement("small");
-      hint.textContent = "Check Bluetooth, wear the strap, then scan again.";
+      hint.textContent = "Check Bluetooth and sensor power, then scan again.";
       empty.append(orbit, message, hint);
       elements["device-list"].replaceChildren(empty);
       return;
@@ -778,19 +807,20 @@
     const rows = devices.map((device) => {
       const isMock = device.kind === "mock";
       const isWebBluetooth = device.kind === "web-bluetooth";
-      const isCurrent = app.connected && app.currentDeviceId === device.id;
+      const isWebVernier = device.kind === "web-bluetooth-vernier";
+      const isCurrent = [...app.activeSources.values()].some((source) => source.deviceId === device.id);
       const isPending = app.pendingDevice?.id === device.id;
       const isPreferred = app.preferences.lastDevice?.id === device.id;
       const button = document.createElement("button");
-      button.className = `device-row${isMock ? " mock" : ""}${isWebBluetooth ? " browser-bluetooth" : ""}${device.available === false ? " unavailable" : ""}${isCurrent ? " current" : ""}${isPreferred ? " preferred" : ""}`;
+      button.className = `device-row${isMock ? " mock" : ""}${isWebBluetooth || isWebVernier ? " browser-bluetooth" : ""}${device.available === false ? " unavailable" : ""}${isCurrent ? " current" : ""}${isPreferred ? " preferred" : ""}`;
       button.type = "button";
-      button.dataset.inputKind = isMock ? "mock" : isWebBluetooth ? "web-bluetooth" : "polar";
-      button.disabled = app.connecting || isCurrent || device.available === false;
+      button.dataset.inputKind = isMock ? "mock" : isWebVernier ? "web-bluetooth-vernier" : isWebBluetooth ? "web-bluetooth" : device.inputKind || "polar";
+      button.disabled = app.connecting || (isCurrent && !isWebVernier) || device.available === false;
       button.addEventListener("click", () => connectDevice(device));
 
       const icon = document.createElement("span");
       icon.className = "device-icon";
-      icon.textContent = isMock ? "NK" : isWebBluetooth ? "BT" : "H10";
+      icon.textContent = isMock ? "NK" : isWebVernier ? "GDX" : isWebBluetooth ? "BT" : device.inputKind === "vernierGoDirect" ? "GDX" : "H10";
       const copy = document.createElement("span");
       copy.className = "device-copy";
       const nameLine = document.createElement("span");
@@ -823,8 +853,8 @@
             ? "Start demo →"
           : device.available === false
             ? "Unavailable"
-          : isWebBluetooth
-            ? "Choose H10 →"
+          : isWebBluetooth || isWebVernier
+            ? `Choose ${isWebVernier ? "GDX" : "H10"} →`
           : device.rssi == null
             ? "Connect →"
             : `${device.rssi} dBm  →`;
@@ -839,15 +869,16 @@
     const generation = ++app.connectionGeneration;
     const isMock = runtime.isMockDevice(device.id);
     const isWebBluetooth = runtime.isBrowserBluetoothDevice(device.id);
+    const isWebVernier = runtime.isBrowserVernierDevice(device.id);
     app.connecting = true;
     app.pendingDevice = device;
     elements["scan-button"].disabled = true;
-    elements["scan-button"].querySelector("span").textContent = isWebBluetooth ? "Waiting for selection…" : "Connecting…";
+    elements["scan-button"].querySelector("span").textContent = isWebBluetooth || isWebVernier ? "Waiting for selection…" : "Connecting…";
     renderDevices(app.devices);
     setTopStatus(
       isMock
         ? "Starting recorded Polar H10 preview"
-        : isWebBluetooth
+        : isWebBluetooth || isWebVernier
           ? "Waiting for browser Bluetooth selection"
           : automatic ? "Reconnecting to last used Polar H10" : "Connecting to Polar H10",
       "working",
@@ -856,26 +887,34 @@
     elements["device-name"].textContent = device.name;
     elements["connection-detail"].textContent = isMock
       ? "Loading the checked-in anonymized recording…"
-      : isWebBluetooth
-        ? "Choose the Polar H10 in the browser permission prompt…"
+      : isWebBluetooth || isWebVernier
+        ? `Choose the ${isWebVernier ? "Go Direct sensor" : "Polar H10"} in the browser permission prompt…`
       : "Opening the low-energy connection…";
     addActivity(`${isMock ? "Starting" : automatic ? "Reconnecting" : "Connecting"} ${device.name}`);
 
     try {
-      await runtime.connectDevice(device.id, (event) => {
-        if (generation === app.connectionGeneration) handleNativeEvent(event, device);
-      });
+      const source = await runtime.connectDevice(device.id, (event) => handleNativeEvent(event, device));
+      if (source?.id) {
+        const connectedSource = app.activeSources.get(source.id);
+        registerSource({
+          ...source,
+          deviceId: device.id,
+          deviceName: connectedSource?.deviceName || device.name,
+        });
+      }
     } catch (error) {
       if (generation !== app.connectionGeneration) return;
       app.connecting = false;
       app.pendingDevice = null;
       elements["scan-button"].disabled = false;
       elements["scan-button"].querySelector("span").textContent = runtime.isBrowser ? "Choose Polar H10" : "Scan again";
-      if (isWebBluetooth && error?.code === "BLUETOOTH_CHOOSER_CANCELLED") {
+      if ((isWebBluetooth || isWebVernier) && error?.code === "BLUETOOTH_CHOOSER_CANCELLED") {
         setTopStatus("Browser inputs ready");
         elements["input-state"].textContent = "Browser ready";
         elements["device-name"].textContent = "No sensor connected";
-        elements["connection-detail"].textContent = "No sensor was selected. Wear the strap, close other Polar apps, then choose the H10 again.";
+        elements["connection-detail"].textContent = isWebVernier
+          ? "No sensor was selected. Wake the Go Direct sensor, close other Vernier apps, then choose it again."
+          : "No sensor was selected. Wear the strap, close other Polar apps, then choose the H10 again.";
         addActivity("Bluetooth chooser closed without selecting a sensor");
         renderDevices(app.devices);
         return;
@@ -891,23 +930,29 @@
   }
 
   async function disconnectDevice() {
-    const previousGeneration = app.connectionGeneration;
-    app.connectionGeneration += 1;
+    const sourceId = app.selectedSourceId;
+    if (!sourceId) return;
     try {
-      const result = await runtime.disconnectDevice();
-      if (!result?.emitted || app.connected) {
+      const result = await runtime.disconnectDevice(sourceId);
+      if (!result?.emitted && app.activeSources.has(sourceId)) {
         handleNativeEvent({
           kind: "connection", connected: false, streaming: false,
-          deviceName: elements["device-name"].textContent, batteryPercent: null, message: "Disconnected",
+          source: app.activeSources.get(sourceId), deviceName: elements["device-name"].textContent,
+          batteryPercent: null, message: "Disconnected",
         });
       }
     } catch (error) {
-      app.connectionGeneration = previousGeneration;
       toast(runtime.formatError(error), true);
     }
   }
 
   function handleNativeEvent(event, device = null) {
+    const source = eventSource(event, device);
+    if (source && event.kind !== "status" && event.kind !== "error" && event.kind !== "connection") {
+      registerSource(source);
+    }
+    const previousBuffers = buffers;
+    if (source) buffers = buffersForSource(source.id);
     audioDataLink?.capture(event);
     ingestFormulaBatch(event.formulas);
     switch (event.kind) {
@@ -928,6 +973,16 @@
       case "metrics":
         ingestMetrics(event);
         break;
+      case "force":
+        ensureBuffer("raw_force").pushMany(event.values || []);
+        app.sampleCount += (event.values || []).length;
+        markTelemetryDirty();
+        break;
+      case "streamHealth":
+        if (event.droppedBatches || event.malformedFrames) {
+          addActivity(`${source?.label || "Source"}: ${event.droppedBatches || 0} dropped batches · ${event.malformedFrames || 0} malformed frames`);
+        }
+        break;
       case "error":
         if (event.code === "CSV_RECORDING_STOPPED") {
           elements["csv-toggle"].checked = false;
@@ -941,6 +996,116 @@
       default:
         break;
     }
+    buffers = app.selectedSourceId ? buffersForSource(app.selectedSourceId) : previousBuffers;
+    applySourceColor();
+  }
+
+  function eventSource(event, device = null) {
+    if (event?.source?.id) return {
+      ...event.source,
+      deviceId: device?.id,
+      ...(event.deviceName ? { deviceName: event.deviceName } : {}),
+    };
+    if (!device && !event?.simulated && event?.transport !== "web-bluetooth") return null;
+    const browserPolar = event?.transport === "web-bluetooth" || device?.kind === "web-bluetooth";
+    return {
+      id: browserPolar ? "browser-polar-source" : "mock-source",
+      slot: browserPolar ? "browser-polar-source" : "mock-source",
+      label: browserPolar ? "Browser H10" : "Recorded preview",
+      color: browserPolar ? "#00c2ff" : "#7c8c84",
+      inputKind: browserPolar ? "web-bluetooth" : "mock",
+      deviceId: device?.id,
+      deviceName: event?.deviceName || device?.name,
+    };
+  }
+
+  function buffersForSource(sourceId) {
+    if (!sourceBuffers.has(sourceId)) sourceBuffers.set(sourceId, createBufferBank());
+    return sourceBuffers.get(sourceId);
+  }
+
+  function registerSource(source, { focus = false } = {}) {
+    const existing = app.activeSources.get(source.id) || {};
+    app.activeSources.set(source.id, { ...existing, ...source });
+    if (!app.selectedSourceId || focus) selectSource(source.id);
+    else renderActiveSources();
+  }
+
+  function selectSource(sourceId) {
+    if (!app.activeSources.has(sourceId)) return;
+    app.selectedSourceId = sourceId;
+    buffers = buffersForSource(sourceId);
+    const source = app.activeSources.get(sourceId);
+    app.currentInputKind = source.inputKind === "vernierGoDirect"
+      ? "web-bluetooth-vernier"
+      : source.inputKind || null;
+    renderActiveSources();
+    updateSelectedSourceUi();
+    refreshTelemetry();
+    renderOutputs();
+    updateVisualLabels();
+    requestRender();
+  }
+
+  function renderActiveSources() {
+    const sources = [...app.activeSources.values()];
+    const chips = sources.map((source) => {
+      const chip = document.createElement("span");
+      chip.className = `active-source-chip${source.id === app.selectedSourceId ? " selected" : ""}`;
+      chip.style.setProperty("--source-color", source.color);
+      chip.addEventListener("click", () => selectSource(source.id));
+      const label = document.createElement("span");
+      label.textContent = `${source.label} · ${source.deviceName || source.inputKind || "sensor"}`;
+      const close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "×";
+      close.setAttribute("aria-label", `Disconnect ${source.label}`);
+      close.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void runtime.disconnectDevice(source.id);
+      });
+      chip.append(label, close);
+      return chip;
+    });
+    elements["active-source-strip"].replaceChildren(...chips);
+    const options = sources.map((source) => new Option(
+      `${source.label} · ${source.deviceName || source.inputKind || "sensor"}`,
+      source.id,
+    ));
+    elements["visual-device"].replaceChildren(...options);
+    elements["visual-device"].value = app.selectedSourceId || "";
+    elements["visual-device"].disabled = sources.length < 2;
+    applySourceColor();
+  }
+
+  function applySourceColor() {
+    const source = app.activeSources.get(app.selectedSourceId);
+    const color = source?.color || "#9db2a7";
+    elements["chart-shell"].style.setProperty("--source-color", color);
+    elements["chart-shell"].classList.toggle("source-marked", Boolean(source));
+    document.querySelectorAll(".raw-card, .output-card").forEach((card) => {
+      card.style.setProperty("--source-color", color);
+      card.classList.toggle("source-marked", Boolean(source));
+    });
+  }
+
+  function selectedSourceColor(fallback) {
+    return app.activeSources.get(app.selectedSourceId)?.color || fallback;
+  }
+
+  function updateSelectedSourceUi() {
+    const source = app.activeSources.get(app.selectedSourceId);
+    if (!source) return;
+    const isVernier = source.inputKind === "vernierGoDirect";
+    elements["device-name"].textContent = source.deviceName || source.label;
+    elements["connection-detail"].textContent = `${app.activeSources.size} source${app.activeSources.size === 1 ? "" : "s"} streaming · ${source.label}`;
+    elements["battery-value"].textContent = source.batteryPercent == null ? "—" : `${source.batteryPercent}%`;
+    const sampleRate = source.samplePeriodUs > 0 ? 1_000_000 / source.samplePeriodUs : 10;
+    if (isVernier && visualDefinitions.raw_force) visualDefinitions.raw_force.rate = sampleRate;
+    elements["connection-metric-1-label"].textContent = isVernier ? (source.sensorName || "FORCE").toUpperCase() : "ECG";
+    elements["connection-metric-1-value"].textContent = isVernier ? `${sampleRate.toFixed(sampleRate % 1 ? 1 : 0)} Hz` : "130 Hz";
+    elements["connection-metric-2-label"].textContent = isVernier ? "CHANNEL" : "ACC";
+    elements["connection-metric-2-value"].textContent = isVernier ? String(source.sensorNumber ?? 1) : "200 Hz";
   }
 
   function ingestFormulaBatch(batch) {
@@ -966,7 +1131,27 @@
   }
 
   function updateConnection(event, device = null) {
-    app.connected = Boolean(event.connected);
+    const source = eventSource(event, device);
+    if (event.connected && source) registerSource({
+      ...source,
+      deviceName: event.deviceName,
+      batteryPercent: event.batteryPercent,
+      deviceModel: event.deviceModel,
+      sensorNumber: event.sensorNumber,
+      sensorName: event.sensorName,
+      sensorUnit: event.sensorUnit,
+      samplePeriodUs: event.samplePeriodUs,
+      message: event.message,
+    }, { focus: true });
+    if (!event.connected && source) {
+      app.activeSources.delete(source.id);
+      sourceBuffers.delete(source.id);
+      if (app.selectedSourceId === source.id) {
+        app.selectedSourceId = app.activeSources.keys().next().value || null;
+        buffers = app.selectedSourceId ? buffersForSource(app.selectedSourceId) : createBufferBank();
+      }
+    }
+    app.connected = app.activeSources.size > 0;
     const simulated = Boolean(event.simulated || device?.kind === "mock");
     const webBluetooth = event.transport === "web-bluetooth" || device?.kind === "web-bluetooth";
     renderRuntimeContext({
@@ -977,25 +1162,32 @@
     app.pendingDevice = null;
     elements["scan-button"].disabled = false;
     elements["scan-button"].querySelector("span").textContent = runtime.isBrowser ? "Choose Polar H10" : "Scan again";
+    const selectedKind = app.activeSources.get(app.selectedSourceId)?.inputKind;
     if (app.connected) {
-      resetMeasurementVisuals();
       const connectedDevice = device || app.devices.find((candidate) => candidate.name === event.deviceName);
       app.currentDeviceId = connectedDevice?.id || null;
-      app.currentInputKind = simulated ? "mock" : webBluetooth ? "web-bluetooth" : "polar";
+      app.currentInputKind = selectedKind === "vernierGoDirect"
+        ? "web-bluetooth-vernier"
+        : simulated ? "mock" : webBluetooth ? "web-bluetooth" : selectedKind || "polar";
       if (connectedDevice && !simulated && !webBluetooth) {
         app.preferences = { ...app.preferences, lastDevice: { id: connectedDevice.id, name: connectedDevice.name } };
         if (!isNative) app.preferences = preferences.saveLastDevice(connectedDevice);
       }
-    } else {
+    } else if (!app.connected) {
       app.currentDeviceId = null;
       app.currentInputKind = null;
     }
     renderDevices(app.devices);
+    renderActiveSources();
+    if (app.connected) updateSelectedSourceUi();
     elements["connection-card"].classList.toggle("connected", app.connected);
     elements["disconnect-button"].hidden = !app.connected;
     elements["connection-meta"].hidden = !app.connected;
-    elements["device-name"].textContent = app.connected ? event.deviceName : "No sensor connected";
-    elements["connection-detail"].textContent = app.connected ? event.message : "Scan for a nearby chest strap.";
+    const selected = app.activeSources.get(app.selectedSourceId);
+    elements["device-name"].textContent = app.connected ? selected?.deviceName || event.deviceName : "No sensor connected";
+    elements["connection-detail"].textContent = app.connected
+      ? `${app.activeSources.size} source${app.activeSources.size === 1 ? "" : "s"} streaming · ${selected?.label || "source selected"}`
+      : "Scan for nearby Polar H10 and Vernier Go Direct sensors.";
     elements["battery-value"].textContent = event.batteryPercent == null ? "—" : `${event.batteryPercent}%`;
     elements["input-state"].textContent = app.connected
       ? simulated ? "Recorded preview looping" : webBluetooth ? "Browser BLE live" : "Streaming"
@@ -1004,7 +1196,11 @@
       app.connected
         ? simulated
           ? "Recorded H10 preview · seamless loop live"
-          : webBluetooth ? "H10 connected directly to this browser tab" : "Sensor connected · streams live"
+          : webBluetooth
+            ? selectedKind === "vernierGoDirect"
+              ? "Go Direct connected directly to this browser tab"
+              : "H10 connected directly to this browser tab"
+            : "Sensor connected · streams live"
         : runtime.isBrowser ? "Browser inputs ready" : "Ready to connect",
       app.connected ? "connected" : "idle",
     );
@@ -1115,6 +1311,7 @@
     elements["raw-acc-x"].textContent = formatValue(buffers.acc_x.latest(), 0);
     elements["raw-acc-y"].textContent = formatValue(buffers.acc_y.latest(), 0);
     elements["raw-acc-z"].textContent = formatValue(buffers.acc_z.latest(), 0);
+    elements["raw-force-value"].textContent = formatValue(ensureBuffer("raw_force").latest(), 3);
     updateSparkline();
     updateSampleCounter();
   }
@@ -1390,7 +1587,7 @@
   }
 
   function configuredBreathingSettings(metricOptions) {
-    for (const id of ["breathing_phase", "acc_breathing_magnitude"]) {
+    for (const id of breathingOutputIds) {
       const processing = metricOptions?.[id]?.processing || {};
       const stored = processing.breathing || processing.breathingPhase;
       if (stored) return { ...defaultBreathingSettings(), ...structuredClone(stored) };
@@ -2251,6 +2448,7 @@
     elements["output-state"].textContent = `${count} signal${count === 1 ? "" : "s"}`;
     updateStreamNamePreview();
     rebuildVisualOptions();
+    applySourceColor();
   }
 
   function metricOptionFor(id, { forSelection = false } = {}) {
@@ -2585,7 +2783,10 @@
         ? "Live raw accelerometer X, Y, and Z signals in three stacked plots"
         : `Live ${definition?.label || "selected Polar H10"} signal`,
     );
-    const legendItems = definition?.channels || (definition ? [{ label: definition.label, color: definition.color }] : []);
+    const legendItems = definition?.channels || (definition ? [{
+      label: definition.label,
+      color: selectedSourceColor(definition.color),
+    }] : []);
     elements["visual-legend"].replaceChildren(...legendItems.map((item) => {
       const legend = document.createElement("span");
       legend.className = "legend-item";
@@ -2828,7 +3029,7 @@
       const y = padY + (1 - (value - min) / range) * drawHeight;
       if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
     }
-    context.strokeStyle = definition.color;
+    context.strokeStyle = selectedSourceColor(definition.color);
     context.lineWidth = Math.max(1.4, (window.devicePixelRatio || 1) * 0.9);
     context.lineJoin = "round";
     context.lineCap = "round";
@@ -3034,6 +3235,44 @@
   }
 
   async function renderInterfaceScenario(name) {
+    if (name === "multiple-colored-sources") {
+      const polarSource = { id: "source-1", slot: "source-1", label: "Source 1", color: "#00c2ff", inputKind: "polarH10" };
+      const vernierSource = { id: "source-2", slot: "source-2", label: "Source 2", color: "#ffb000", inputKind: "vernierGoDirect" };
+      handleNativeEvent({
+        kind: "connection", source: polarSource, connected: true, streaming: true,
+        deviceName: "Polar H10 A", batteryPercent: 88, message: "Raw ECG and accelerometer are streaming",
+      });
+      handleNativeEvent({
+        kind: "connection", source: vernierSource, connected: true, streaming: true,
+        deviceName: "GDX-RB A", batteryPercent: null, deviceModel: "GDX-RB",
+        sensorNumber: 1, sensorName: "Force", sensorUnit: "N", samplePeriodUs: 100000,
+        message: "Verified Force (N) on channel 1 is streaming at 10.0 Hz",
+      });
+      handleNativeEvent({
+        kind: "force", source: vernierSource, sensorNumber: 1, samplePeriodUs: 100000,
+        values: Array.from({ length: 80 }, (_, index) => 3.2 + Math.sin(index / 7) * 0.45),
+      });
+      refreshTelemetry();
+      app.outputs.add("raw_force");
+      renderOutputs();
+      app.selectedVisual = "raw_force";
+      rebuildVisualOptions();
+      elements["visual-source"].value = "raw_force";
+      updateVisualLabels();
+      resizeCanvas();
+      drawSignal();
+      await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+      return {
+        scenario: name,
+        selectedSource: app.selectedSourceId,
+        sourceOptions: [...elements["visual-device"].options].map((option) => option.value),
+        chipColors: [...elements["active-source-strip"].children].map((chip) => chip.style.getPropertyValue("--source-color")),
+        chartColor: elements["chart-shell"].style.getPropertyValue("--source-color"),
+        outputColors: [...elements["output-chips"].children].map((card) => card.style.getPropertyValue("--source-color")),
+        forceValue: elements["raw-force-value"].textContent,
+        streamName: streamOutputName(app.catalog.find((metric) => metric.id === "raw_force")),
+      };
+    }
     if (name === "metric-library-previews") {
       await Promise.all([ensureMetricPreviews(), ensurePreviewRecording()]);
       app.selectedMetricId = "raw_ecg";
@@ -3134,6 +3373,7 @@
         "breathing-phase-pause",
         "breathing-phase-settings",
         "raw-accelerometer-stacked",
+        "multiple-colored-sources",
         "metric-library-previews",
       ]),
       ready: () => initialization,

@@ -284,7 +284,16 @@ impl OutputRouter {
         }
     }
 
-    pub async fn configure(&self, config: OutputConfig) -> Result<OutputHealth, String> {
+    /// Validates renderer-owned configuration and formula state budgets without
+    /// constructing any transport or recording endpoint.
+    pub fn validate_config(config: OutputConfig) -> Result<OutputConfig, String> {
+        let (config, _) = Self::validated_with_formulas(config)?;
+        Ok(config)
+    }
+
+    fn validated_with_formulas(
+        config: OutputConfig,
+    ) -> Result<(OutputConfig, HashMap<String, CompiledFormula>), String> {
         let config = config.validated()?;
         let mut compiled = HashMap::new();
         let mut total_state_samples = 0usize;
@@ -303,6 +312,11 @@ impl OutputRouter {
             }
             compiled.insert(formula.id.clone(), runtime);
         }
+        Ok((config, compiled))
+    }
+
+    pub async fn configure(&self, config: OutputConfig) -> Result<OutputHealth, String> {
+        let (config, mut compiled) = Self::validated_with_formulas(config)?;
         let mut osc = if config.osc_enabled {
             Some(OscPublisher::connect(OSC_TARGET).await?)
         } else {
@@ -520,6 +534,45 @@ impl OutputRouter {
         error
     }
 
+    /// Publishes one already-received Go Direct notification as a chunk. The
+    /// timestamp denotes the newest sample and the nominal stream rate
+    /// reconstructs earlier samples without delaying the notification.
+    pub fn publish_force(
+        &self,
+        host_receive_timestamp_ns: u64,
+        values: &[f32],
+        sample_period_us: u32,
+    ) -> Option<String> {
+        let Ok(mut inner) = self.inner.lock() else {
+            return None;
+        };
+        if inner.selected.contains("raw_force") {
+            inner.lsl.push_scalar_series_period_at(
+                "raw_force",
+                values.iter().copied(),
+                host_receive_timestamp_ns,
+                sample_period_us,
+            );
+            if let Some(osc) = &mut inner.osc {
+                for (index, value) in values.iter().copied().enumerate() {
+                    let remaining = values.len().saturating_sub(index + 1) as u64;
+                    let timestamp_ns = host_receive_timestamp_ns.saturating_sub(
+                        remaining.saturating_mul(u64::from(sample_period_us)) * 1_000,
+                    );
+                    osc.send_series("raw_force", timestamp_ns, 1, std::iter::once(value));
+                }
+            }
+        }
+        let error = inner.csv.as_ref().and_then(|csv| {
+            csv.publish_force(host_receive_timestamp_ns, values, sample_period_us)
+                .err()
+        });
+        if error.is_some() {
+            inner.csv = None;
+        }
+        error
+    }
+
     pub fn publish_accelerometer(
         &self,
         sensor_timestamp_ns: u64,
@@ -565,6 +618,18 @@ impl OutputRouter {
     }
 
     pub fn publish_metrics(&self, values: &[MetricValue<'_>]) -> Option<String> {
+        self.publish_metrics_at(0, values)
+    }
+
+    /// Publishes one derived snapshot at the newest source-sample timestamp.
+    /// A zero timestamp deliberately retains the backend's local-clock path for
+    /// sources such as standard heart-rate notifications that carry no sensor
+    /// clock in the application event contract.
+    pub fn publish_metrics_at(
+        &self,
+        sensor_timestamp_ns: u64,
+        values: &[MetricValue<'_>],
+    ) -> Option<String> {
         let Ok(mut inner) = self.inner.lock() else {
             return None;
         };
@@ -574,16 +639,18 @@ impl OutputRouter {
                 continue;
             }
             let value = inner.transform(metric.id, metric.value);
-            inner.lsl.push_scalar(metric.id, value);
+            inner
+                .lsl
+                .push_scalar_series_at(metric.id, std::iter::once(value), sensor_timestamp_ns);
             if let Some(osc) = &mut inner.osc {
-                osc.send_series(metric.id, 0, 1, std::iter::once(value));
+                osc.send_series(metric.id, sensor_timestamp_ns, 1, std::iter::once(value));
             }
             recorded.push((metric.id, value));
         }
         let error = inner
             .csv
             .as_ref()
-            .and_then(|csv| csv.publish_metrics(&recorded).err());
+            .and_then(|csv| csv.publish_metrics_at(sensor_timestamp_ns, &recorded).err());
         if error.is_some() {
             inner.csv = None;
         }

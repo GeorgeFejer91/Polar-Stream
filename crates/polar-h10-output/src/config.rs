@@ -5,6 +5,16 @@ pub use polar_h10_metrics::MetricDefinition as MetricSpec;
 use polar_h10_metrics::{BreathingSettings, METRIC_CATALOG};
 use serde::{Deserialize, Serialize};
 
+const BREATHING_OUTPUT_IDS: [&str; 7] = [
+    "breathing_phase",
+    "acc_breathing_magnitude",
+    "breathing_volume",
+    "breathing_calibration",
+    "breathing_axis_range",
+    "breathing_signal_confidence",
+    "breathing_signal_ready",
+];
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputConfig {
@@ -30,7 +40,7 @@ impl Default for OutputConfig {
             osc_enabled: false,
             csv_enabled: false,
             audio_enabled: false,
-            outputs: vec!["raw_ecg".into(), "raw_acc".into()],
+            outputs: vec!["raw_ecg".into(), "raw_acc".into(), "raw_force".into()],
             metric_options: HashMap::new(),
             custom_formulas: Vec::new(),
         }
@@ -101,22 +111,20 @@ impl OutputConfig {
             if !MetricSpec::for_id(id).is_some_and(|metric| metric.normalizable) {
                 options.normalization = NormalizationMode::None;
             }
-            if matches!(id.as_str(), "breathing_phase" | "acc_breathing_magnitude") {
+            if BREATHING_OUTPUT_IDS.contains(&id.as_str()) {
                 options.processing.breathing =
                     Some(options.processing.breathing.unwrap_or_default().clamped());
             } else {
                 options.processing.breathing = None;
             }
         }
-        let shared_breathing = ["breathing_phase", "acc_breathing_magnitude"]
-            .iter()
-            .find_map(|id| {
-                self.metric_options
-                    .get(*id)
-                    .and_then(|options| options.processing.breathing)
-            });
+        let shared_breathing = BREATHING_OUTPUT_IDS.iter().find_map(|id| {
+            self.metric_options
+                .get(*id)
+                .and_then(|options| options.processing.breathing)
+        });
         if let Some(shared_breathing) = shared_breathing {
-            for id in ["breathing_phase", "acc_breathing_magnitude"] {
+            for id in BREATHING_OUTPUT_IDS {
                 if let Some(options) = self.metric_options.get_mut(id) {
                     options.processing.breathing = Some(shared_breathing);
                 }
@@ -270,8 +278,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_to_the_two_raw_streams() {
-        assert_eq!(OutputConfig::default().outputs, ["raw_ecg", "raw_acc"]);
+    fn defaults_to_all_supported_raw_streams() {
+        assert_eq!(
+            OutputConfig::default().outputs,
+            ["raw_ecg", "raw_acc", "raw_force"]
+        );
     }
 
     #[test]
@@ -394,7 +405,7 @@ mod tests {
             },
         );
         metric_options.insert(
-            "acc_breathing_magnitude".into(),
+            "breathing_signal_confidence".into(),
             MetricOutputOptions {
                 processing: MetricProcessingOptions {
                     breathing: Some(BreathingSettings {
@@ -406,8 +417,18 @@ mod tests {
                 ..MetricOutputOptions::default()
             },
         );
+        metric_options.insert("breathing_volume".into(), MetricOutputOptions::default());
+        metric_options.insert(
+            "breathing_signal_ready".into(),
+            MetricOutputOptions::default(),
+        );
         let config = OutputConfig {
-            outputs: vec!["breathing_phase".into(), "acc_breathing_magnitude".into()],
+            outputs: vec![
+                "breathing_phase".into(),
+                "breathing_volume".into(),
+                "breathing_signal_confidence".into(),
+                "breathing_signal_ready".into(),
+            ],
             metric_options,
             ..OutputConfig::default()
         }
@@ -417,13 +438,25 @@ mod tests {
             .processing
             .breathing
             .unwrap();
-        let magnitude = config.metric_options["acc_breathing_magnitude"]
+        let confidence = config.metric_options["breathing_signal_confidence"]
             .processing
             .breathing
             .unwrap();
-        assert_eq!(phase, magnitude);
+        assert_eq!(phase, confidence);
         assert_eq!(phase.axes, [true, true, false]);
         assert_eq!(phase.sensitivity, 0.25);
+        assert_eq!(
+            config.metric_options["breathing_volume"]
+                .processing
+                .breathing,
+            Some(phase)
+        );
+        assert_eq!(
+            config.metric_options["breathing_signal_ready"]
+                .processing
+                .breathing,
+            Some(phase)
+        );
     }
 
     #[test]

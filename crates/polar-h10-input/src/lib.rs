@@ -131,11 +131,17 @@ pub struct InputSessionPool {
 impl InputSessionPool {
     /// Construct the production qualification shape for two distinct H10s.
     pub fn two_h10s() -> Self {
+        Self::with_max_sessions(2)
+    }
+
+    /// Construct a bounded pool. Each session retains an independent platform
+    /// owner and hot path; the bound applies only to lifecycle admission.
+    pub fn with_max_sessions(max_sessions: usize) -> Self {
         Self {
             discovery: Arc::new(InputManager::new()),
             sessions: Mutex::new(HashMap::new()),
             operation_gate: Mutex::new(()),
-            max_sessions: 2,
+            max_sessions: max_sessions.clamp(1, 8),
         }
     }
 
@@ -147,7 +153,7 @@ impl InputSessionPool {
             return Err("Disconnect all sensor sessions before scanning again.".into());
         }
         #[cfg(target_os = "windows")]
-        return self.discovery.scan_for_exact_h10s(2).await;
+        return self.discovery.scan_for_exact_h10s(self.max_sessions).await;
         #[cfg(not(target_os = "windows"))]
         self.discovery.scan().await
     }

@@ -92,6 +92,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 
 .connection-card { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 12px; min-height: 72px; padding: 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 4px 12px rgb(20 35 29 / 4%); }
 .connection-card.connected { border-color: #a9d4bf; background: linear-gradient(135deg, #fff 20%, #edf8f2); }
+.active-source-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.active-source-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--source-color) 55%, #cad8d0); border-radius: 999px; background: color-mix(in srgb, var(--source-color) 10%, white); font-size: 10px; }
+.active-source-chip::before { width: 8px; height: 8px; border-radius: 50%; background: var(--source-color); content: ""; }
+.active-source-chip.selected { box-shadow: 0 0 0 2px color-mix(in srgb, var(--source-color) 30%, transparent); }
+.active-source-chip button { border: 0; background: transparent; color: #7a3434; cursor: pointer; font: inherit; }
 .sensor-glyph { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 8px; background: #edf0ec; color: #718078; }
 .connected .sensor-glyph { background: var(--green-pale); color: var(--green); }
 .sensor-glyph svg { width: 31px; height: 31px; }
@@ -235,6 +240,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .output-card > header button { width: 19px; height: 19px; display: grid; place-items: center; border: 0; border-radius: 50%; background: #eef2ef; color: #607068; font-size: 15px; line-height: 1; }
 .output-card > header button:hover { background: #f5dddd; color: #8f3737; }
 .raw-output-card { border-color: #bad7c8; background: #f4faf6; }
+.source-marked { border-left: 4px solid var(--source-color) !important; }
 .output-card.unavailable { border-style: dashed; opacity: .66; }
 .metric-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 7px; margin-top: 8px; padding-top: 7px; border-top: 1px solid #e8ece8; }
 .metric-controls label { display: grid; grid-template-columns: auto auto; align-items: center; gap: 4px 6px; color: var(--muted); font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }

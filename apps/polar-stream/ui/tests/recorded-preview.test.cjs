@@ -58,14 +58,22 @@ test("recorded playback crosses its circular seam without a value or time break"
   assert.notEqual(fixture.ecg.microvolts.at(-1), fixture.ecg.microvolts[0], "the canonical recording was unexpectedly modified");
 });
 
-test("every catalog metric has a recorded numeric preview and mathematical definition", () => {
+test("every fixture-backed metric has a recorded preview and live-only metrics stay explicit", () => {
+  const liveOnlyMetrics = new Set(["raw_force"]);
   assert.equal(previews.source.model, fixture.source);
-  assert.equal(JSON.stringify(Object.keys(previews.metrics)), JSON.stringify(Array.from(catalog, (metric) => metric.id)));
+  assert.equal(
+    JSON.stringify(Object.keys(previews.metrics)),
+    JSON.stringify(Array.from(catalog, (metric) => metric.id).filter((id) => !liveOnlyMetrics.has(id))),
+  );
   for (const metric of catalog) {
     assert.ok(metric.formula && metric.formula.length > 8, `${metric.id} lacks a mathematical definition`);
     assert.ok(metric.explainer && metric.explainer.length > 20, `${metric.id} lacks scientific context`);
     assert.match(metric.citationUrl, /^https:\/\//, `${metric.id} lacks an HTTPS citation`);
     const preview = previews.metrics[metric.id];
+    if (liveOnlyMetrics.has(metric.id)) {
+      assert.equal(preview, undefined, `${metric.id} must not use a fabricated H10 preview`);
+      continue;
+    }
     assert.ok(preview.channels.length >= 1, `${metric.id} lacks preview channels`);
     for (const channel of preview.channels) {
       assert.ok(channel.values.length >= 20, `${metric.id} preview is too short`);

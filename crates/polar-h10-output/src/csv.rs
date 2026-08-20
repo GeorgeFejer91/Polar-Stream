@@ -29,6 +29,12 @@ enum CsvMessage {
         sensor_timestamp_ns: u64,
         samples: Vec<AccSample>,
     },
+    Force {
+        clock: CaptureClock,
+        host_receive_timestamp_ns: u64,
+        sample_period_us: u32,
+        values: Vec<f32>,
+    },
     HeartRate {
         clock: CaptureClock,
         beats_per_minute: u16,
@@ -36,6 +42,7 @@ enum CsvMessage {
     },
     Metrics {
         clock: CaptureClock,
+        sensor_timestamp_ns: u64,
         values: Vec<(String, f32, String)>,
     },
 }
@@ -138,9 +145,28 @@ impl CsvPublisher {
         })
     }
 
-    pub(crate) fn publish_metrics(&self, values: &[(&str, f32)]) -> Result<(), String> {
+    pub(crate) fn publish_force(
+        &self,
+        host_receive_timestamp_ns: u64,
+        values: &[f32],
+        sample_period_us: u32,
+    ) -> Result<(), String> {
+        self.send(CsvMessage::Force {
+            clock: self.clock(),
+            host_receive_timestamp_ns,
+            sample_period_us,
+            values: values.to_vec(),
+        })
+    }
+
+    pub(crate) fn publish_metrics_at(
+        &self,
+        sensor_timestamp_ns: u64,
+        values: &[(&str, f32)],
+    ) -> Result<(), String> {
         self.send(CsvMessage::Metrics {
             clock: self.clock(),
+            sensor_timestamp_ns,
             values: values
                 .iter()
                 .map(|(id, value)| {
@@ -165,6 +191,7 @@ impl CsvPublisher {
         }
         self.send(CsvMessage::Metrics {
             clock: self.clock(),
+            sensor_timestamp_ns: 0,
             values: values.to_vec(),
         })
     }
@@ -273,7 +300,7 @@ fn write_header(
     writeln!(writer, "# started_at_unix_ms,{started_at_ms:.3}")?;
     writeln!(
         writer,
-        "# scope,All received raw ECG and ACC; HR/RR; and every derived metric produced by the active processors."
+        "# scope,All received raw ECG, ACC, and Go Direct force; HR/RR; and every derived metric produced by the active processors."
     )?;
     writeln!(
         writer,
@@ -320,6 +347,25 @@ fn write_message(writer: &mut impl Write, message: CsvMessage) -> std::io::Resul
                 )?;
             }
         }
+        CsvMessage::Force {
+            clock,
+            host_receive_timestamp_ns,
+            sample_period_us,
+            values,
+        } => {
+            let count = values.len();
+            let rate_hz = 1_000_000.0 / f64::from(sample_period_us.max(1));
+            for (index, value) in values.into_iter().enumerate() {
+                let offset_s = sample_offset_s(index, count, rate_hz);
+                writeln!(
+                    writer,
+                    "{:.3},{:.6},{},raw_force,{index},,,,{value},N",
+                    clock.host_timestamp_ms - offset_s * 1_000.0,
+                    (clock.relative_time_s - offset_s).max(0.0),
+                    sensor_timestamp(host_receive_timestamp_ns, index, count, rate_hz),
+                )?;
+            }
+        }
         CsvMessage::HeartRate {
             clock,
             beats_per_minute,
@@ -337,9 +383,13 @@ fn write_message(writer: &mut impl Write, message: CsvMessage) -> std::io::Resul
                 write_scalar(writer, clock, "rr_interval", index, interval, "ms")?;
             }
         }
-        CsvMessage::Metrics { clock, values } => {
+        CsvMessage::Metrics {
+            clock,
+            sensor_timestamp_ns,
+            values,
+        } => {
             for (index, (id, value, unit)) in values.into_iter().enumerate() {
-                write_scalar(writer, clock, &id, index, value, &unit)?;
+                write_scalar_at(writer, clock, sensor_timestamp_ns, &id, index, value, &unit)?;
             }
         }
     }
@@ -354,11 +404,29 @@ fn write_scalar(
     value: f32,
     unit: &str,
 ) -> std::io::Result<()> {
+    write_scalar_at(writer, clock, 0, id, index, value, unit)
+}
+
+fn write_scalar_at(
+    writer: &mut impl Write,
+    clock: CaptureClock,
+    sensor_timestamp_ns: u64,
+    id: &str,
+    index: usize,
+    value: f32,
+    unit: &str,
+) -> std::io::Result<()> {
+    let sensor_timestamp = if sensor_timestamp_ns == 0 {
+        String::new()
+    } else {
+        sensor_timestamp_ns.to_string()
+    };
     writeln!(
         writer,
-        "{:.3},{:.6},,{},{index},,,,{value},{}",
+        "{:.3},{:.6},{},{},{index},,,,{value},{}",
         clock.host_timestamp_ms,
         clock.relative_time_s,
+        sensor_timestamp,
         csv_cell(id),
         csv_cell(unit),
     )
@@ -417,6 +485,9 @@ mod tests {
             )
             .unwrap();
         publisher.publish_heart_rate(61, &[983.5]).unwrap();
+        publisher
+            .publish_metrics_at(3_000_000_000, &[("breathing_volume", 0.75)])
+            .unwrap();
         drop(publisher);
 
         let mut contents = String::new();
@@ -431,6 +502,7 @@ mod tests {
         assert!(contents.contains(",raw_acc,0,3,-4,5,,mg"));
         assert!(contents.contains(",heart_rate,0,,,,61,bpm"));
         assert!(contents.contains(",rr_interval,0,,,,983.5,ms"));
+        assert!(contents.contains(",3000000000,breathing_volume,0,,,,0.75,0–1"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

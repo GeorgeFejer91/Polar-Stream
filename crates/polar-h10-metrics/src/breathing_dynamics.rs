@@ -68,7 +68,7 @@ pub(crate) struct BreathingDynamicsProcessor {
 
 impl BreathingDynamicsProcessor {
     pub(crate) fn push(&mut self, input: BreathingSnapshot) -> Option<BreathingDynamicsSnapshot> {
-        if !input.calibrated || input.phase == BreathingPhase::BadSignal {
+        if !input.ready || input.phase == BreathingPhase::BadSignal {
             return None;
         }
         let Some((last_time, last_volume)) = self.last else {
@@ -118,8 +118,9 @@ impl BreathingDynamicsProcessor {
         Some(BreathingDynamicsSnapshot {
             interval: compute_features(&self.intervals),
             amplitude: compute_features(&self.amplitudes),
-            confidence_01: (self.intervals.len().max(self.amplitudes.len()) as f32 / 200.0)
-                .clamp(0.0, 1.0),
+            confidence_01: ((self.intervals.len().max(self.amplitudes.len()) as f32 / 200.0)
+                .clamp(0.0, 1.0)
+                * input.confidence_01),
         })
     }
 
@@ -475,7 +476,9 @@ mod tests {
             result = processor
                 .push(BreathingSnapshot {
                     calibrated: true,
+                    ready: true,
                     calibration_progress_01: 1.0,
+                    confidence_01: 1.0,
                     volume_01: volume,
                     magnitude_g: volume - 0.5,
                     phase: crate::BreathingPhase::Pausing,

@@ -1,0 +1,16 @@
+[package]
+name = "vernier-gdx-input"
+description = "Bounded low-latency BLE acquisition for Vernier Go Direct sensors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+btleplug = "0.12"
+futures-util.workspace = true
+serde.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+vernier-gdx-core = { path = "../vernier-gdx-core" }

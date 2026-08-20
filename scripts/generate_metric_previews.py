@@ -235,6 +235,62 @@ def smooth_standardize(values: np.ndarray) -> np.ndarray:
     return (values - np.mean(values)) / max(np.std(values), 1e-9)
 
 
+def breathing_quality_preview(
+    acc: np.ndarray,
+    acc_rate: int,
+    projection: np.ndarray,
+    times: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Mirror the documented causal quality terms for the recorded fixture."""
+    alpha = max(0.001, min(1.0, 2 / (0.75 * acc_rate + 1)))
+    filtered = acc[0] / 1_000
+    previous = filtered.copy()
+    motion_delta_ema = 0.0
+    motion_scores = np.ones(len(acc), dtype=float)
+    for index in range(1, len(acc)):
+        filtered = filtered + (acc[index] / 1_000 - filtered) * alpha
+        delta = float(np.linalg.norm(filtered - previous))
+        previous = filtered.copy()
+        motion_delta_ema += (delta - motion_delta_ema) * 0.01
+        motion_scores[index] = 1 / (1 + (motion_delta_ema / 0.001) ** 2)
+
+    calibration_samples = projection[: 12 * acc_rate]
+    low, high = np.quantile(calibration_samples, [0.05, 0.95])
+    contracted_span = max(0.0, float(high - low) * 0.94)
+    calibrated = contracted_span >= 0.01
+    range_score = min(1.0, contracted_span / 0.02)
+    projection_20_hz = projection[:: max(1, round(acc_rate / 20))]
+    projection_times = np.arange(len(projection_20_hz)) / 20
+    readiness = np.zeros(len(times), dtype=float)
+    confidence = np.zeros(len(times), dtype=float)
+    for index, second in enumerate(times):
+        motion = float(np.interp(second, np.arange(len(acc)) / acc_rate, motion_scores))
+        ready = calibrated and second >= 12 and motion >= 0.35
+        readiness[index] = 1.0 if ready else 0.0
+        if not ready:
+            continue
+        history = projection_20_hz[
+            (projection_times >= max(12, second - 20)) & (projection_times <= second)
+        ]
+        coverage = min(1.0, len(history) / 160)
+        periodicity = 0.0
+        if len(history) >= 80:
+            centered = history - np.mean(history)
+            maximum_lag = min(250, len(centered) - 40)
+            for lag in range(29, maximum_lag + 1):
+                left = centered[:-lag]
+                right = centered[lag:]
+                denominator = float(np.sqrt(np.sum(left * left) * np.sum(right * right)))
+                if denominator > 1e-12:
+                    correlation = float(np.sum(left * right) / denominator)
+                    periodicity = max(periodicity, max(0.0, correlation))
+        confidence[index] = min(
+            1.0,
+            range_score * motion * (0.40 + 0.60 * coverage * periodicity),
+        )
+    return readiness, confidence
+
+
 def path_for(values: np.ndarray, minimum: float, maximum: float, *, step: bool = False) -> str:
     values = close_loop(values)
     scale = max(maximum - minimum, 1e-9)
@@ -356,6 +412,9 @@ def generate() -> dict:
         for second in times
     ])
     values["breathing_axis_range"] = rolling_range
+    readiness, confidence = breathing_quality_preview(acc, acc_rate, rsp_clean, times)
+    values["breathing_signal_ready"] = readiness
+    values["breathing_signal_confidence"] = confidence
 
     peak_candidates = np.asarray(nk.signal_findpeaks(rsp_clean, relative_height_min=0.05)["Peaks"], dtype=int)
     minimum_peak_distance = max(1, round(acc_rate * 2.0))
@@ -412,7 +471,7 @@ def generate() -> dict:
             color = palette["excitation"]
         channel_series[metric_id] = [("Value", color, metric_values)]
 
-    ids = catalog_ids()
+    ids = [metric_id for metric_id in catalog_ids() if metric_id != "raw_force"]
     missing = [metric_id for metric_id in ids if metric_id not in channel_series]
     extra = [metric_id for metric_id in channel_series if metric_id not in ids]
     if missing or extra:
@@ -422,7 +481,7 @@ def generate() -> dict:
     for metric_id in ids:
         previews[metric_id] = make_preview(
             channel_series[metric_id],
-            step=metric_id == "breathing_phase",
+            step=metric_id in {"breathing_phase", "breathing_signal_ready"},
             duration=(beat_end - beat_start) / SAMPLE_RATE if metric_id == "raw_ecg" else DURATION_SECONDS,
         )
     return {
@@ -472,7 +531,7 @@ def check_payload(existing: dict, generated: dict) -> list[str]:
         if existing.get(key) != generated.get(key):
             errors.append(f"top-level {key} differs")
 
-    expected_ids = catalog_ids()
+    expected_ids = [metric_id for metric_id in catalog_ids() if metric_id != "raw_force"]
     existing_metrics = existing.get("metrics", {})
     generated_metrics = generated["metrics"]
     if list(existing_metrics) != expected_ids:
@@ -567,10 +626,10 @@ def main() -> int:
             for error in errors:
                 print(f"- {error}", file=sys.stderr)
             return 1
-        print(f"Validated {len(catalog_ids())} recorded Polar H10 metric previews with cross-platform numeric tolerances")
+        print(f"Validated {len(payload['metrics'])} recorded Polar H10 metric previews with cross-platform numeric tolerances")
         return 0
     OUTPUT.write_text(rendered, encoding="utf-8")
-    print(f"Generated {len(catalog_ids())} metric previews in {OUTPUT.relative_to(ROOT)}")
+    print(f"Generated {len(payload['metrics'])} metric previews in {OUTPUT.relative_to(ROOT)}")
     return 0
 
 

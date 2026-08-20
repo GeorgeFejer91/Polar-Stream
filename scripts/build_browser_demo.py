@@ -18,6 +18,7 @@ REQUIRED_ASSETS = (
     "index.html",
     "styles.css",
     "polar-web-bluetooth.js",
+    "vernier-web-bluetooth.js",
     "browser-session.js",
     "audio-data-link.js",
     "metric-catalog.js",
@@ -44,6 +45,7 @@ def validate_sources() -> None:
     for name in (
         "styles.css",
         "polar-web-bluetooth.js",
+        "vernier-web-bluetooth.js",
         "browser-session.js",
         "audio-data-link.js",
         "metric-catalog.js",

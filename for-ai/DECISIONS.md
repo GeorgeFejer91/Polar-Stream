@@ -1,5 +1,111 @@
 # Decision log
 
+## 2026-08-20 — Gate motion after all-axis noise attenuation
+
+Calculate the breathing motion-quality residual from successive vectors on a
+dedicated all-axis EMA path, using the configured respiration smoothing
+strength, rather than from raw 200 Hz sample deltas. The canonical recorded H10
+fixture contains ordinary per-sample variation large enough to fail the raw
+threshold despite a usable low-frequency component. Filtering all axes before
+the residual keeps axis selection from hiding movement, attenuates sensor noise,
+and still rejects deterministic broadband motion. Rust and Chromium own the
+same update order and regression fixtures.
+
+## 2026-08-20 — Timestamp ACC-derived respiration at the source frame
+
+Publish each breathing snapshot once per accepted accelerometer notification at
+that notification's newest H10 PMD sensor timestamp. Map it into local LSL time
+through the existing ACC first-frame offset, retain the raw nanosecond timestamp
+for OSC/CSV, and propagate it through the Chromium metric event and browser CSV.
+This permits raw/derived alignment without conflating sensor time with host
+calculation or arrival time. HR-only metrics remain host-timed because the
+standard heart-rate characteristic supplies no comparable PMD timestamp.
+
+## 2026-08-20 — Normalize breath phase by sensor time and keep holds separate
+
+Classify ACC breathing phase from normalized waveform velocity per second, not
+raw change per BLE notification. Derive batch duration from the accepted ACC
+sample count at the requested 200 Hz. Divide the existing sensitivity-derived
+delta threshold by a 50 ms compatibility reference, preserving its scale for a
+common ten-sample notification while making equivalent slopes invariant across
+MTU/browser/OS batch sizes. Rust and Chromium own the same constants and tests.
+
+The Lalidis Mateo belt thesis reinforces that fixed normalized control, signed
+movement, and adaptive normalized control are different contracts. Its tested
+PZT belt drifted materially during breath retention. Polar Stream therefore
+keeps the signed ACC projection and normalized waveform continuous and does not
+silently freeze either as a retained-lung-level estimate. Any future hold-aware
+interaction output must be separately named, quality-bearing, and validated
+against synchronized respiratory reference data.
+
+## 2026-08-20 — Treat respiration as a qualified waveform, not volume
+
+Expose the Polar H10 ACC result as an experimental one-dimensional
+respiratory-effort module analogous in shape—not measurement semantics—to a
+respiration-belt curve. Preserve the signed PCA projection in g and the existing
+`breathing_volume` compatibility ID for a robust 0–1 waveform, but label the
+latter as an ACC breathing waveform because it is neither lung volume nor
+airflow. Use only causal processing: selected-axis EMA, 12-second PCA
+calibration, 10-second baseline removal, and bounded adaptive quantiles.
+
+Add separate readiness and confidence streams instead of hiding questionable
+samples. Readiness requires calibration, fresh notifications, and an all-axis
+motion score; confidence combines calibrated range, motion, history coverage,
+and positive autocorrelation. Confidence is an app-specific quality index, not
+a probability. Phase becomes zero when not ready, while the continuous signal
+and raw X/Y/Z remain publishable for audit and later reprocessing. Native Rust
+and browser JavaScript must retain the same constants and deterministic tests.
+
+Tighten Go Direct from a generic channel-1 assumption to a GDX-RB product
+profile. Parse device and all advertised sensor metadata, confirm the GDX-RB
+identity, and accept only periodic channel-1 Force in N. Prefer 100,000 µs when
+the sensor reports that rate as valid; otherwise use its plausible typical
+period. Reject unknown Go Direct products rather than presenting their channel
+as a respiration belt. Respyra and the Lalidis Mateo thesis are behavioral and
+methodological references only; no third-party implementation is copied into
+the Rust or browser hot paths.
+
+## 2026-08-20 — Add independent Go Direct and mixed-source routing
+
+Implement Vernier Go Direct as an independent MIT protocol/input pair rather
+than importing Respyra or GPL protocol code. The platform-neutral core owns
+command bytes, counters, checksums, bounded frame assembly, and measurement
+decoding; the BLE input owns discovery, GATT lifecycle, correlated setup,
+first-frame readiness, bounded queues, and health. The initial product target is
+channel 1 with a 10 Hz fallback period. A physical device gate remains required.
+Session cancellation owns the complete negotiation/stream future, teardown
+events are non-blocking, peripheral disconnect is bounded, and scan/connect
+prune completed owners before applying capacity rules.
+
+Generalize the ordinary application to at most eight simultaneous mixed inputs.
+Every source receives an independent input owner, processing engine, output
+router, stable slot, stream suffix, and fixed palette color. Shared locks are
+lifecycle-only, display buffers are per source, and display loss cannot become
+raw output backpressure. Filter output modules by input kind so sources never
+advertise signal types they cannot produce.
+
+Keep saved output configuration separate from transport ownership. Validate
+formula state limits through a destination-disabled router, then create and
+configure transports only inside connected source routers. Do not retain the
+legacy global router because it would advertise empty unsuffixed outlets.
+
+Publish Go Direct notification batches immediately and preserve the configured
+intra-batch period with explicit backfilled timestamps. Advertise raw force as
+irregular-rate LSL metadata because the implemented path has no equivalent to
+the H10 absolute sensor timestamp. Do not convert receipt time into a false
+device-clock claim.
+
+Mirror the Go Direct protocol in the canonical browser UI because Chromium Web
+Bluetooth can access the official GDX service. Keep this a separate adapter,
+require HTTPS/localhost and a user-triggered chooser per device, and use only
+browser-local CSV/live-channel outputs. Deterministic emulation proves the
+software contract; physical browser compatibility and latency remain open.
+
+The production/default liblsl backend is the multi-source native output path.
+The optional Rusty LSL backend retains its compile/test coverage but cannot be
+described as arbitrary mixed-source runtime support until its fixed discovery
+registry is generalized beyond the older one-registry/two-H10 coordinator.
+
 ## 2026-08-18 — Qualify two H10s with independent native session owners
 
 The published reference proved that two H10s can run concurrently when each

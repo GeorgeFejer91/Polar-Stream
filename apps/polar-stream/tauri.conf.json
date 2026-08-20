@@ -37,8 +37,8 @@
       "resources/": ""
     },
     "category": "DeveloperTool",
-    "shortDescription": "Low-latency Polar H10 stream bridge",
-    "longDescription": "Connect a Polar H10 and publish raw ECG, accelerometer, and selected metrics over LSL or OSC.",
+    "shortDescription": "Low-latency Polar and Vernier stream bridge",
+    "longDescription": "Connect multiple Polar H10 and Vernier Go Direct sensors and publish source-scoped raw signals and metrics over LSL or OSC.",
     "macOS": {
       "minimumSystemVersion": "10.15",
       "infoPlist": "Info.plist",

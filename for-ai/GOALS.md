@@ -78,9 +78,6 @@ items into the dated history instead of silently deleting them.
 - Complete signed/notarized distribution planning without weakening the current
   draft-release checks.
 - Compare experimental breathing outputs against a reference respiratory signal.
-- Make phase classification time-normalized rather than notification-batch
-  dependent, version the behavior, and compare old/new output on retained raw
-  ACC plus an independent respiratory reference.
 
 ## Later
 
@@ -91,6 +88,9 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-20: made ACC breath-phase sensitivity time-normalized using accepted
+  sample count at 200 Hz, with a 50 ms compatibility reference and matching
+  Rust/Chromium invariance tests. Reference-respiration validation remains open.
 - 2026-08-18: added a bounded native two-H10 qualification pool with one shared
   exact discovery snapshot, two independent Windows session owners, one Rusty
   discovery registry, and four persistent ECG/ACC outlets. A same-epoch

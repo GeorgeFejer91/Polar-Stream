@@ -1,7 +1,8 @@
 # Polar Stream
 
-Polar Stream is a compact, low-latency desktop bridge for Polar H10 raw ECG and
-accelerometer data. Its interface has three focused areas: sensor input, stream
+Polar Stream is a compact, low-latency desktop bridge for simultaneous Polar
+H10 ECG/accelerometer and Vernier Go Direct force inputs. Its interface has
+three focused areas: sensor input, stream
 output, and live visualization. The output library starts with a prominent
 red ECG / blue accelerometer selector. ECG mode contains the H10's core ECG,
 heart-rate, HRV, coherence, Excite-O-Meter and experimental activation outputs;
@@ -31,12 +32,14 @@ OSC, and CSV streams; specialized multi-stage metrics remain documented without
 pretending that a misleading one-line scalar template is equivalent.
 
 Every output module has a saved visualizer window and, where meaningful,
-normalization controls. Before either ACC breathing output is added, the user
-chooses two or three axes (X + Z recommended) and a smoothing window. The
-three-state phase classifier also exposes sensitivity and direction inversion;
-the continuous magnitude estimate can be published in g or normalized to 0–1.
-Both are explicitly unvalidated and should be compared with a respiratory
-reference. The classifier circle expands or shrinks with phase alone, approaches
+normalization controls. Before an ACC breathing output is added, the user
+chooses two or three axes (X + Z recommended) and a smoothing window. The module
+exposes a signed chest-motion projection in g, its robustly normalized 0–1
+waveform, a three-state phase classifier, and explicit readiness/confidence
+companions. Sensitivity and direction inversion remain configurable. Every
+output is an unvalidated respiratory-effort surrogate—not lung volume or
+airflow—and should be compared with a synchronized respiratory reference. The
+classifier circle expands or shrinks with phase alone, approaches
 its size limits asymptotically, and eases its velocity toward rest during pauses.
 
 Raw acceleration is presented as one visualizer choice with X, Y, and Z in
@@ -51,10 +54,13 @@ the visualizer source.
 The [live Polar Stream browser demo](https://georgefejer91.github.io/Polar-Stream/)
 is deployed from the same `apps/polar-stream/ui/` HTML, CSS, and JavaScript used
 by the Tauri application. On supported Chrome/Edge browsers, choose **Polar H10
-via browser** to grant Web Bluetooth permission and stream ECG, ACC, HR, and RR
-directly in the tab. A physical Motorola/Chrome smoke test selected and connected
+via browser** for ECG, ACC, HR, and RR, or **Vernier Go Direct via browser** for
+a metadata-verified GDX-RB channel-1 Force (N) stream. Each browser device is granted through its own
+Web Bluetooth chooser; Go Direct sessions receive stable source colors and
+separate visual buffers. A physical Motorola/Chrome smoke test selected and connected
 to an H10 from the public Pages site on 2026-08-14. The full two-minute CSV,
-sample-rate, loss, and reconnect acceptance run is still pending. Web Bluetooth
+sample-rate, loss, and reconnect acceptance run is still pending, and Go Direct
+has not yet received a physical browser run. Web Bluetooth
 requires HTTPS (or localhost), an explicit user chooser, and browser/OS support.
 Unsupported phones and browsers keep the input visible with a compatibility
 explanation.
@@ -197,7 +203,9 @@ The frontend is plain HTML, CSS, and JavaScript inside a Tauri 2 system WebView.
 Acquisition and publication stay native in Rust:
 
 - `polar-h10-core`: PMD and heart-rate decoding.
-- `polar-h10-input`: BLE discovery, connection, and typed sensor events.
+- `polar-h10-input`: bounded multi-H10 BLE discovery, connection, and typed events.
+- `vernier-gdx-core`: independent Go Direct command/framing and measurement decoding.
+- `vernier-gdx-input`: bounded multi-device native BLE sessions and latency health.
 - `polar-h10-metrics`: independent ECG, HRV, coherence, breathing, complexity,
   and experimental processors plus the evidence-backed metric catalog.
 - `polar-h10-math`: bounded custom scalar formulas, stateful DSP/HRV functions,
@@ -206,7 +214,8 @@ Acquisition and publication stay native in Rust:
 - `apps/polar-stream`: thin Tauri coordinator and shared three-panel UI.
 
 Derived processors are demand-driven by the selected output set. Raw batches are
-published immediately in Rust; no timer-based batching is added, and a bounded
+published immediately in Rust; Go Direct notification batches retain their
+configured intra-batch sample spacing, no timer-based batching is added, and a bounded
 display-only queue prevents a slow WebView from delaying LSL or OSC.
 Native preferences are stored by one schema-versioned Rust service, and the
 frontend reaches the seven-command IPC surface only through a small runtime
@@ -220,6 +229,9 @@ legacy-output mapping are in [the metric evidence inventory](docs/metric-evidenc
 The exact ACC breathing lineage, formulas, settings, known batch-timing
 limitation, and proposed reference-validation protocol are in the
 [ACC-derived breathing handoff](docs/acc-breathing-handoff.md).
+The [Go Direct and multi-source handoff](docs/vernier-go-direct-handoff.md)
+documents the native/browser protocol paths, timing contract, source identity,
+and remaining hardware gates.
 The [optional Rusty LSL backend guide](docs/rusty-lsl-backend.md) records the
 separate default-off transport, interoperability evidence, and remaining
 device/licensing gates.
@@ -241,7 +253,7 @@ settings workflow, all metric-library SVGs, the staged Pages application, and
 touch layouts. Checks cover canvas geometry, color, labels, saved controls,
 preview coverage, Pages parity, recorded H10 replay, Formula Lab behavior, bounded browser recording and
 CSV download, audio packet/WAV decode, the tab-local live event contract,
-emulated Android-style Web Bluetooth, and responsive overflow:
+emulated Android-style Polar and Go Direct Web Bluetooth, and responsive overflow:
 
 ```bash
 npm ci

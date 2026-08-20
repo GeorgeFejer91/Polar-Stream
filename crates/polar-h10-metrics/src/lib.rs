@@ -71,7 +71,9 @@ impl MetricSelection {
                 | "breathing_volume"
                 | "breathing_phase"
                 | "breathing_calibration"
-                | "breathing_axis_range" => selection.breathing = true,
+                | "breathing_axis_range"
+                | "breathing_signal_confidence"
+                | "breathing_signal_ready" => selection.breathing = true,
                 "breathing_rate" | "breathing_dynamics_confidence" => {
                     selection.breathing = true;
                     selection.breathing_dynamics = true;
@@ -431,5 +433,41 @@ mod tests {
         assert_eq!(phase_values.len(), 1);
         assert_eq!(phase_values[0].id, "breathing_phase");
         assert!([-1.0, 0.0, 1.0].contains(&phase_values[0].value));
+    }
+
+    #[test]
+    fn breathing_waveform_and_quality_outputs_remain_independently_selectable() {
+        let mut waveform =
+            MetricEngine::with_selection(MetricSelection::from_ids(["breathing_volume"]));
+        let mut confidence = MetricEngine::with_selection(MetricSelection::from_ids([
+            "breathing_signal_confidence",
+        ]));
+        let mut ready =
+            MetricEngine::with_selection(MetricSelection::from_ids(["breathing_signal_ready"]));
+
+        let mut waveform_values = Vec::new();
+        let mut confidence_values = Vec::new();
+        let mut ready_values = Vec::new();
+        for index in 0..2_500 {
+            let sample = AccSample {
+                x_mg: 0,
+                y_mg: 0,
+                z_mg: 1_000
+                    + (25.0 * (index as f32 / 200.0 * std::f32::consts::TAU * 0.2).sin()) as i16,
+            };
+            waveform_values = waveform.process_accelerometer(&[sample]);
+            confidence_values = confidence.process_accelerometer(&[sample]);
+            ready_values = ready.process_accelerometer(&[sample]);
+        }
+
+        assert_eq!(waveform_values.len(), 1);
+        assert_eq!(waveform_values[0].id, "breathing_volume");
+        assert!((0.0..=1.0).contains(&waveform_values[0].value));
+        assert_eq!(confidence_values.len(), 1);
+        assert_eq!(confidence_values[0].id, "breathing_signal_confidence");
+        assert!((0.0..=1.0).contains(&confidence_values[0].value));
+        assert_eq!(ready_values.len(), 1);
+        assert_eq!(ready_values[0].id, "breathing_signal_ready");
+        assert_eq!(ready_values[0].value, 1.0);
     }
 }

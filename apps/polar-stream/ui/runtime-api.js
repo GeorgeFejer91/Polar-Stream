@@ -6,6 +6,7 @@
   const isRenderer = new URLSearchParams(window.location.search).has("renderer");
   const mode = isNative ? "native" : isRenderer ? "renderer" : "browser-demo";
   const webBluetooth = window.PolarWebBluetooth;
+  const vernierBluetooth = window.VernierWebBluetooth;
   const mockDevice = Object.freeze({
     id: "recorded-h10-preview",
     name: "Recorded Polar H10 preview",
@@ -29,8 +30,15 @@
     "heart_rate",
     "rr_interval",
     "acc_breathing_magnitude",
+    "breathing_volume",
     "breathing_phase",
+    "breathing_calibration",
+    "breathing_axis_range",
+    "breathing_signal_confidence",
+    "breathing_signal_ready",
   ]);
+  const browserVernierOutputs = new Set(["raw_force"]);
+  const nativeSources = new Set();
   let activeInput = null;
 
   function deliverInputEvent(callback, event) {
@@ -49,6 +57,22 @@
       kind: "web-bluetooth",
       detail: status.reason,
       sourceLabel: "EXPERIMENTAL",
+      available: status.supported,
+      rssi: null,
+    });
+  }
+
+  function browserVernierModule() {
+    const status = vernierBluetooth?.supportStatus() || {
+      supported: false,
+      reason: "The Go Direct browser Bluetooth adapter did not load.",
+    };
+    return Object.freeze({
+      id: vernierBluetooth?.moduleId || "web-bluetooth-vernier-gdx",
+      name: "Vernier Go Direct via browser",
+      kind: "web-bluetooth-vernier",
+      detail: status.reason,
+      sourceLabel: "GDX · EXPERIMENTAL",
       available: status.supported,
       rssi: null,
     });
@@ -167,7 +191,9 @@
     isBrowser: mode === "browser-demo",
     mode,
     getInputModules() {
-      return mode === "browser-demo" ? [mockDevice, browserBluetoothModule()] : [mockDevice];
+      return mode === "browser-demo"
+        ? [mockDevice, browserBluetoothModule(), browserVernierModule()]
+        : [mockDevice];
     },
     isMockDevice(deviceId) {
       return deviceId === mockDevice.id;
@@ -175,13 +201,21 @@
     isBrowserBluetoothDevice(deviceId) {
       return mode === "browser-demo" && deviceId === (webBluetooth?.moduleId || "web-bluetooth-polar-h10");
     },
+    isBrowserVernierDevice(deviceId) {
+      return mode === "browser-demo" && deviceId === (vernierBluetooth?.moduleId || "web-bluetooth-vernier-gdx");
+    },
     outputSupport(metricId, inputKind) {
+      if (inputKind === "web-bluetooth-vernier") {
+        return browserVernierOutputs.has(metricId)
+          ? { supported: true, reason: null }
+          : { supported: false, reason: "Browser Go Direct input currently exposes its selected raw force channel." };
+      }
       if (inputKind !== "web-bluetooth" || browserBluetoothOutputs.has(metricId)) {
         return { supported: true, reason: null };
       }
       return {
         supported: false,
-        reason: "This derived processor currently requires the desktop app. Browser H10 input provides raw ECG/ACC, HR/RR, and the two experimental ACC breathing outputs.",
+        reason: "This derived processor currently requires the desktop app. Browser H10 input provides raw ECG/ACC, HR/RR, and the experimental ACC respiration waveform with readiness and confidence outputs.",
       };
     },
     formatError(error) {
@@ -203,7 +237,10 @@
     },
     async connectDevice(deviceId, onEvent) {
       if (deviceId === mockDevice.id) {
-        if (activeInput === "native" && isNative) await invoke("disconnect_device");
+        if (activeInput === "native" && isNative) {
+          await Promise.all([...nativeSources].map((sourceId) => invoke("disconnect_device", { sourceId })));
+          nativeSources.clear();
+        }
         if (activeInput === "web-bluetooth") await webBluetooth.disconnect();
         return startDemo((event) => deliverInputEvent(onEvent, event));
       }
@@ -216,6 +253,10 @@
         activeInput = "web-bluetooth";
         return;
       }
+      if (this.isBrowserVernierDevice(deviceId)) {
+        const source = await vernierBluetooth.connect((event) => deliverInputEvent(onEvent, event));
+        return source;
+      }
       if (!isNative) {
         throw new RuntimeError("BROWSER_BLE_UNAVAILABLE", "This input is not available in the browser.");
       }
@@ -224,9 +265,10 @@
       events.onmessage = onEvent;
       const result = await invoke("connect_device", { deviceId, events });
       activeInput = "native";
+      if (result?.id) nativeSources.add(result.id);
       return result;
     },
-    async disconnectDevice() {
+    async disconnectDevice(sourceId = null) {
       if (activeInput === "mock") {
         stopDemo({ notify: true });
         return { emitted: true };
@@ -235,8 +277,20 @@
         activeInput = null;
         return webBluetooth.disconnect();
       }
+      if (sourceId?.startsWith("browser-source-")) {
+        return vernierBluetooth.disconnect(sourceId);
+      }
+      if (isNative && sourceId) {
+        nativeSources.delete(sourceId);
+        if (!nativeSources.size) activeInput = null;
+        return invoke("disconnect_device", { sourceId });
+      }
+      if (isNative && nativeSources.size) {
+        await Promise.all([...nativeSources].map((id) => invoke("disconnect_device", { sourceId: id })));
+        nativeSources.clear();
+      }
       activeInput = null;
-      return isNative ? invoke("disconnect_device") : undefined;
+      return undefined;
     },
     async updateOutputConfig(config) {
       if (mode === "browser-demo" && (config.lslEnabled || config.oscEnabled)) {

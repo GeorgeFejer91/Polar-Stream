@@ -10,6 +10,7 @@
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="stylesheet" href="styles.css" />
     <script src="polar-web-bluetooth.js" defer></script>
+    <script src="vernier-web-bluetooth.js" defer></script>
     <script src="browser-session.js" defer></script>
     <script src="audio-data-link.js" defer></script>
     <script src="metric-catalog.js" defer></script>
@@ -44,7 +45,7 @@
           <span class="section-number">01</span>
           <div>
             <p class="eyebrow">Input</p>
-            <h1 id="input-heading">Polar H10</h1>
+            <h1 id="input-heading">Polar H10 + Vernier</h1>
           </div>
           <span class="section-state" id="input-state">Idle</span>
         </header>
@@ -55,15 +56,16 @@
           </div>
           <div class="connection-copy">
             <strong id="device-name">No sensor connected</strong>
-            <span id="connection-detail">Scan for a nearby chest strap.</span>
+            <span id="connection-detail">Scan for nearby Polar H10 and Vernier Go Direct sensors.</span>
           </div>
           <button class="text-button danger" id="disconnect-button" hidden>Disconnect</button>
         </div>
+        <div class="active-source-strip" id="active-source-strip" aria-live="polite"></div>
 
         <div class="connection-meta" id="connection-meta" hidden>
           <span><small>BATTERY</small><strong id="battery-value">—</strong></span>
-          <span><small>ECG</small><strong>130 Hz</strong></span>
-          <span><small>ACC</small><strong>200 Hz</strong></span>
+          <span><small id="connection-metric-1-label">ECG</small><strong id="connection-metric-1-value">130 Hz</strong></span>
+          <span><small id="connection-metric-2-label">ACC</small><strong id="connection-metric-2-value">200 Hz</strong></span>
         </div>
 
         <div class="scan-row">
@@ -77,8 +79,8 @@
         <div class="device-list" id="device-list" aria-live="polite">
           <div class="empty-state" id="device-empty">
             <span class="empty-orbit" aria-hidden="true"></span>
-            <p>Your H10 will appear here.</p>
-            <small>Wear the strap and wet the electrodes before scanning.</small>
+            <p>Your H10 or Go Direct sensor will appear here.</p>
+            <small>Wear and wet the H10 strap, or wake the Go Direct sensor, before scanning.</small>
           </div>
         </div>
 
@@ -114,6 +116,10 @@
               <span><small>Z</small><strong id="raw-acc-z">—</strong></span>
             </div>
             <small class="sample-rate">200 samples/s · 3 axes</small>
+          </article>
+          <article class="raw-card force-card">
+            <header><span class="signal-swatch"></span><strong>Raw Go Direct force</strong><small>N</small></header>
+            <div class="raw-reading"><span id="raw-force-value">—</span><small>configured 10 samples/s</small></div>
           </article>
         </div>
 
@@ -205,6 +211,8 @@
         </header>
 
         <div class="visual-toolbar">
+          <label for="visual-device">Source</label>
+          <select id="visual-device"><option value="">Preview / no source</option></select>
           <label for="visual-source">Display</label>
           <select id="visual-source"></select>
           <button class="secondary-button visual-adjust-button" id="adjust-visual" type="button">Adjust</button>

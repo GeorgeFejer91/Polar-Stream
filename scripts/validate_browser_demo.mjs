@@ -231,6 +231,145 @@ async function installFakeWebBluetooth(page) {
   });
 }
 
+async function installFakeVernierWebBluetooth(page) {
+  await page.addInitScript(() => {
+    const uuids = {
+      service: "d91714ef-28b9-4f91-ba16-f0d9a604f112",
+      command: "f4bf14a6-c7d5-4b6d-8aa8-df1a7c83adcb",
+      response: "b41e6675-a329-40e0-aa01-44d2f444babe",
+    };
+    const writes = [];
+    let pendingCommand = [];
+
+    function writeFixedText(bytes, offset, length, text) {
+      const encoded = new TextEncoder().encode(text).slice(0, length);
+      bytes.set(encoded, offset);
+    }
+
+    function commandResponse(id, counter, command) {
+      if (id === 0x55) {
+        const response = new Uint8Array(158);
+        response.set([0x58, response.length, 0, 0, id, counter]);
+        writeFixedText(response, 6, 16, "GDX-RB");
+        writeFixedText(response, 38, 32, "GDX-RB TEST");
+        writeFixedText(response, 94, 64, "Go Direct Respiration Belt");
+        return response;
+      }
+      if (id === 0x51) {
+        return Uint8Array.from([0x58, 10, 0, 0, id, counter, 0x02, 0, 0, 0]);
+      }
+      if (id === 0x50) {
+        const response = new Uint8Array(154);
+        response.set([0x58, response.length, 0, 0, id, counter]);
+        response[6] = command[5];
+        const view = new DataView(response.buffer);
+        view.setUint32(8, 1, true);
+        response[12] = 0;
+        response[13] = 0;
+        writeFixedText(response, 14, 60, "Force");
+        writeFixedText(response, 74, 32, "N");
+        view.setFloat64(106, 0.01, true);
+        view.setFloat64(114, -50, true);
+        view.setFloat64(122, 50, true);
+        view.setUint32(130, 50000, true);
+        view.setBigUint64(134, 1000000n, true);
+        view.setUint32(142, 100000, true);
+        view.setUint32(146, 1000, true);
+        return response;
+      }
+      return Uint8Array.from([0x58, 6, 0, 0, id, counter]);
+    }
+
+    class FakeCharacteristic extends EventTarget {
+      constructor(uuid) {
+        super();
+        this.uuid = uuid;
+        this.value = new DataView(new ArrayBuffer(0));
+      }
+      async startNotifications() { return this; }
+      async stopNotifications() { return this; }
+      async writeValueWithResponse(value) {
+        const bytes = Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+        writes.push(bytes);
+        pendingCommand.push(...bytes);
+        while (pendingCommand.length >= 2 && pendingCommand.length >= pendingCommand[1]) {
+          const command = pendingCommand.splice(0, pendingCommand[1]);
+          const id = command[4];
+          const counter = command[2];
+          const response = commandResponse(id, counter, command);
+          for (let offset = 0; offset < response.length; offset += 20) {
+            characteristics.response.emit(response.slice(offset, offset + 20));
+          }
+        }
+      }
+      async writeValue(value) { return this.writeValueWithResponse(value); }
+      emit(bytes) {
+        const value = Uint8Array.from(bytes);
+        this.value = new DataView(value.buffer);
+        this.dispatchEvent(new Event("characteristicvaluechanged"));
+      }
+    }
+
+    const characteristics = {
+      command: new FakeCharacteristic(uuids.command),
+      response: new FakeCharacteristic(uuids.response),
+    };
+    const server = {
+      connected: false,
+      async getPrimaryService(uuid) {
+        if (String(uuid).toLowerCase() !== uuids.service) throw new DOMException("Service unavailable", "NotFoundError");
+        return {
+          async getCharacteristic(characteristicUuid) {
+            const normalized = String(characteristicUuid).toLowerCase();
+            if (normalized === uuids.command) return characteristics.command;
+            if (normalized === uuids.response) return characteristics.response;
+            throw new DOMException("Characteristic unavailable", "NotFoundError");
+          },
+        };
+      },
+      disconnect() {
+        this.connected = false;
+        device.dispatchEvent(new Event("gattserverdisconnected"));
+      },
+    };
+    const device = new EventTarget();
+    device.name = "GDX-RB TEST";
+    device.id = "fake-vernier-gdx";
+    device.gatt = {
+      get connected() { return server.connected; },
+      async connect() {
+        server.connected = true;
+        return server;
+      },
+      disconnect() { server.disconnect(); },
+    };
+    let activationAtRequest = null;
+    Object.defineProperty(navigator, "bluetooth", {
+      configurable: true,
+      value: {
+        async requestDevice(options) {
+          activationAtRequest = navigator.userActivation?.isActive ?? null;
+          window.__vernierFake.lastRequest = options;
+          return device;
+        },
+      },
+    });
+    window.__vernierFake = {
+      writes,
+      lastRequest: null,
+      get activationAtRequest() { return activationAtRequest; },
+      emitNormal(values) {
+        const payload = new Uint8Array(9 + values.length * 4);
+        payload.set([0x20, payload.length, 0, 0, 0x06, 0x02, 0, values.length, 0]);
+        const view = new DataView(payload.buffer);
+        values.forEach((value, index) => view.setFloat32(9 + index * 4, value, true));
+        characteristics.response.emit(payload.slice(0, 7));
+        characteristics.response.emit(payload.slice(7));
+      },
+    };
+  });
+}
+
 await mkdir(output, { recursive: true });
 const manifest = JSON.parse(await readFile(join(root, "browser-demo-manifest.json"), "utf8"));
 assert.equal(manifest.canonicalSource, "apps/polar-stream/ui");
@@ -331,6 +470,20 @@ try {
   assert.equal(boundedRecorder.status.stopReason, "capacity");
   assert.equal(boundedRecorder.status.rowCount, 2);
   assert.match(boundedRecorder.csv, /,raw_ecg,0,,,,1,uV/);
+  const metricTimestampCsv = await desktop.evaluate(async () => {
+    let now = 2_000;
+    const recorder = window.PolarBrowserSession.createRecorder({ maxRows: 10, now: () => now });
+    recorder.configure({ streamName: "Metric timestamp test", outputs: ["breathing_volume"] });
+    recorder.start({ deviceName: "Fixture", inputKind: "mock" });
+    now = 2_100;
+    recorder.capture({
+      kind: "metrics",
+      sensorTimestampNs: "3000000000",
+      values: [{ id: "breathing_volume", value: 0.75 }],
+    }, now);
+    return recorder.createBlob().text();
+  });
+  assert.match(metricTimestampCsv, /,3000000000,breathing_volume,0,,,,0\.75,/);
   const audioFixture = await desktop.evaluate(() => {
     const packet = window.PolarAudioDataLink.encodeBatch({
       ecg: [1, -2, 3],
@@ -445,7 +598,19 @@ try {
     window.__polarFake.useLegacyControlWrites();
   });
   await bluetooth.locator("#scan-button").click();
-  await bluetooth.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
+  try {
+    await bluetooth.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
+  } catch (error) {
+    const diagnostic = await bluetooth.evaluate(() => ({
+      inputState: document.querySelector("#input-state")?.textContent,
+      appState: document.querySelector("#app-state-text")?.textContent,
+      detail: document.querySelector("#connection-detail")?.textContent,
+      toast: document.querySelector(".toast")?.textContent,
+      writes: window.__polarFake?.writes,
+      gattConnectAttempts: window.__polarFake?.gattConnectAttempts,
+    }));
+    throw new Error(`Polar Web Bluetooth fixture did not connect: ${JSON.stringify(diagnostic)}`, { cause: error });
+  }
   assert.equal(await bluetooth.locator("#battery-value").textContent(), "87%");
   assert.equal(await bluetooth.locator("#runtime-path-label").textContent(), "Browser Bluetooth · experimental");
   const bluetoothContract = await bluetooth.evaluate(() => ({
@@ -505,7 +670,36 @@ try {
       });
       snapshot = processor.push(samples, block * 100);
     }
-    return { decoded, compressed, malformedCode, snapshot };
+    const noisyProcessor = window.PolarWebBluetooth.createBreathingProcessor({
+      calibrationWindowSeconds: 1,
+      minimumAxisRangeG: 0.001,
+      smoothingWindowSeconds: 0.75,
+    });
+    let noisySnapshot = null;
+    for (let block = 0; block < 125; block += 1) {
+      const samples = Array.from({ length: 20 }, (_, offset) => {
+        const index = block * 20 + offset;
+        const noise = index % 2 === 0 ? 3 : -3;
+        return {
+          xMg: noise,
+          yMg: -noise,
+          zMg: 1000 + noise + Math.round(30 * Math.sin(index / 200 * Math.PI * 2 * 0.25)),
+        };
+      });
+      noisySnapshot = noisyProcessor.push(samples, block * 100);
+    }
+    const threshold = processor.phaseVelocityThresholdPerSecond();
+    const equivalentBatchPhases = [
+      processor.classifyPhaseDelta(0.004, 0.05),
+      processor.classifyPhaseDelta(0.012, 0.15),
+      processor.classifyPhaseDelta(-0.004, 0.05),
+      processor.classifyPhaseDelta(-0.012, 0.15),
+      processor.classifyPhaseDelta(0.002, 0.05),
+      processor.classifyPhaseDelta(0.006, 0.15),
+    ];
+    return {
+      decoded, compressed, malformedCode, snapshot, noisySnapshot, threshold, equivalentBatchPhases,
+    };
   });
   assert.deepEqual(protocolChecks.decoded.microvolts, [1, -1, -8388608]);
   assert.equal(protocolChecks.decoded.sensorTimestampNs, "42");
@@ -516,13 +710,53 @@ try {
   ]);
   assert.equal(protocolChecks.malformedCode, "PMD_FRAME_TOO_SHORT");
   assert.equal(protocolChecks.snapshot.calibrated, true, "browser breathing processor did not calibrate");
+  assert.equal(protocolChecks.snapshot.ready, true, "browser breathing waveform did not become ready");
+  assert.ok(protocolChecks.snapshot.confidence01 > 0, "browser breathing confidence did not become positive");
   assert.ok(protocolChecks.snapshot.axisRangeG >= 0.001, "browser breathing range is too small");
+  assert.equal(protocolChecks.noisySnapshot.ready, true, "ordinary three-axis sensor noise blocked browser readiness");
+  assert.ok(protocolChecks.noisySnapshot.confidence01 > 0.20, "noisy clean browser waveform lost confidence");
+  assert.ok(Math.abs(protocolChecks.threshold - 0.06) < 1e-6, "browser phase velocity threshold drifted from Rust");
+  assert.deepEqual(protocolChecks.equivalentBatchPhases, [1, 1, -1, -1, 0, 0]);
   await bluetooth.locator("#open-output-dialog").click();
   await bluetooth.locator('.metric-option[data-metric-id="ecg_mean"]').click();
   assert.equal(await bluetooth.locator("#save-metric-output").textContent(), "Desktop only");
   assert.match(await bluetooth.locator("#dialog-output-status").textContent(), /requires the desktop app/);
   await assertNoHorizontalOverflow(bluetooth, "desktop Web Bluetooth input");
   await bluetooth.close();
+
+  const vernier = await browser.newPage({ viewport: { width: 1280, height: 820 }, deviceScaleFactor: 1 });
+  await installFakeVernierWebBluetooth(vernier);
+  await vernier.goto(baseUrl, { waitUntil: "networkidle" });
+  const vernierRow = vernier.locator('.device-row[data-input-kind="web-bluetooth-vernier"]');
+  assert.match(await vernierRow.textContent(), /Vernier Go Direct via browser/);
+  assert.match(await vernierRow.textContent(), /Choose GDX/);
+  await vernierRow.click();
+  await vernier.waitForFunction(() => window.VernierWebBluetooth.activeSources().length === 1);
+  const vernierContract = await vernier.evaluate(() => ({
+    request: window.__vernierFake.lastRequest,
+    activationAtRequest: window.__vernierFake.activationAtRequest,
+    writes: window.__vernierFake.writes,
+  }));
+  assert.deepEqual(vernierContract.request.filters, [{ namePrefix: "GDX" }]);
+  assert.deepEqual(vernierContract.request.optionalServices, ["d91714ef-28b9-4f91-ba16-f0d9a604f112"]);
+  assert.equal(vernierContract.activationAtRequest, true, "Go Direct chooser lost its initiating user activation");
+  assert.ok(vernierContract.writes.length >= 8, "Go Direct setup did not send the complete initialization sequence");
+  assert.equal(vernierContract.writes[0][0], 0x58);
+  assert.equal(vernierContract.writes[0][4], 0x1a);
+  await vernier.evaluate(() => window.__vernierFake.emitNormal([1.25, -2.5, 3.75]));
+  await vernier.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
+  await vernier.waitForFunction(() => document.querySelector("#raw-force-value")?.textContent === "3.750");
+  assert.equal(await vernier.locator("#connection-metric-1-label").textContent(), "FORCE");
+  assert.equal(await vernier.locator("#connection-metric-1-value").textContent(), "10 Hz");
+  assert.equal(await vernier.locator("#connection-metric-2-value").textContent(), "1");
+  assert.match(await vernier.locator("#connection-detail").textContent(), /Browser source 1/);
+  assert.match(await vernier.locator("#app-state-text").textContent(), /Go Direct connected directly/);
+  assert.match(await vernier.locator(".active-source-chip").textContent(), /Browser source 1.*GDX-RB TEST/);
+  assert.equal(await vernier.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), "#00c2ff");
+  await assertNoHorizontalOverflow(vernier, "desktop Go Direct Web Bluetooth input");
+  await vernier.locator("#disconnect-button").click();
+  await vernier.locator("#input-state").filter({ hasText: "Browser ready" }).waitFor();
+  await vernier.close();
 
   const phone = await browser.newPage({
     viewport: { width: 390, height: 844 },
@@ -614,7 +848,7 @@ try {
   assert.ok(await narrow.locator(".device-row.mock").isVisible(), "mock input is not visible at 320px");
   await narrow.close();
 
-  process.stdout.write(`Validated canonical Pages parity, recorded H10 replay, Formula Lab, Web Bluetooth PMD, and responsive layouts in ${output}\n`);
+  process.stdout.write(`Validated canonical Pages parity, recorded H10 replay, Formula Lab, Polar PMD + Vernier Go Direct Web Bluetooth, and responsive layouts in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

@@ -6,6 +6,8 @@ members = [
     "crates/polar-h10-math",
     "crates/polar-h10-metrics",
     "crates/polar-h10-output",
+    "crates/vernier-gdx-core",
+    "crates/vernier-gdx-input",
 ]
 resolver = "2"
 

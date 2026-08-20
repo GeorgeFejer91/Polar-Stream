@@ -57,9 +57,8 @@ const LFHF_URL: &str = "https://pubmed.ncbi.nlm.nih.gov/23431279/";
 const RESONANCE_REVIEW: &str = "Sévoz-Couche & Laborde (2022)";
 const RESONANCE_URL: &str =
     "https://www.sciencedirect.com/science/article/abs/pii/S0149763422000653";
-const BREATH_ACC: &str = "Drummond et al. (2021)";
-const BREATH_ACC_URL: &str =
-    "https://consensus.app/papers/details/9389301a991e52ee9210f51939d318d7/?utm_source=unknown";
+const BREATH_ACC: &str = "Schipper et al. (2021)";
+const BREATH_ACC_URL: &str = "https://pubmed.ncbi.nlm.nih.gov/33739305/";
 const BREATH_COMPLEXITY: &str = "Bará et al. (2024)";
 const BREATH_COMPLEXITY_URL: &str =
     "https://consensus.app/papers/details/de562a29bb8454eda201852b544fd9d7/?utm_source=unknown";
@@ -105,6 +104,7 @@ fn formula_for(id: &str) -> &'static str {
     match id {
         "raw_ecg" => "y(t) = ECG(t) [µV]; x-axis = sensor time t",
         "raw_acc" => "a(t) = [x(t), y(t), z(t)] [mg]",
+        "raw_force" => "F(t) = Go Direct force measurement [N]",
         "acc_magnitude" => "|a(t)| = √(x(t)² + y(t)² + z(t)²) / 1000",
         "ecg_mean" => "μECG(t) = (1/N) Σ ECGᵢ over the preceding 5 s",
         "ecg_rms" => "RMS(t) = √[(1/N) Σ ECGᵢ²] over the preceding 5 s",
@@ -131,9 +131,13 @@ fn formula_for(id: &str) -> &'static str {
             "b(t) = smoothed projection of selected ACC axes onto the calibrated principal axis"
         }
         "breathing_volume" => "volume(t) = clamp[(b(t)−q₀.₀₅)/(q₀.₉₅−q₀.₀₅), 0, 1]",
-        "breathing_phase" => "phase(t) = signΔ(volume(t)) with sensitivity threshold; {−1,0,+1}",
+        "breathing_phase" => "phase(t) = threshold[(volume(t)−volume(t−Δt))/Δt]; {−1,0,+1}",
         "breathing_calibration" => "progress(t) = collected calibration samples / required samples",
         "breathing_axis_range" => "axisRange = q₀.₉₅(b) − q₀.₀₅(b)",
+        "breathing_signal_confidence" => {
+            "confidence = rangeQuality · motionQuality · (0.4 + 0.6·coverage·periodicity)"
+        }
+        "breathing_signal_ready" => "ready = calibrated ∧ fresh ∧ motionQuality ≥ 0.35",
         "breathing_rate" => "rate = 60 / mean(same-polarity extremum intervals)",
         "breathing_dynamics_confidence" => {
             "confidence = clamp(max(Ninterval,Namplitude) / 200, 0, 1)"
@@ -213,6 +217,8 @@ fn formula_source_for(id: &str) -> &'static str {
         | "breathing_phase"
         | "breathing_calibration"
         | "breathing_axis_range"
+        | "breathing_signal_confidence"
+        | "breathing_signal_ready"
         | "breathing_rate"
         | "breathing_dynamics_confidence"
         | "breath_interval_mean"
@@ -296,6 +302,24 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         3,
         200.0,
         "Accelerometer"
+    ),
+    metric!(
+        "raw_force",
+        "rawForce",
+        "Raw Go Direct force",
+        "Verified GDX-RB Force (N) · 10 Hz preferred, metadata fallback",
+        "N",
+        "Raw signals",
+        "The Go Direct force channel is forwarded as measured by the Vernier device. Notification batches are preserved and intra-batch timestamps use the configured sample period.",
+        "protocol interoperability",
+        "Vernier Go Direct examples",
+        "https://github.com/VernierST/godirect-examples",
+        "vernier go direct respiration belt force newton raw",
+        true,
+        false,
+        1,
+        0.0,
+        "RespirationForce"
     ),
     metric!(
         "acc_magnitude",
@@ -694,13 +718,49 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         "Breathing"
     ),
     metric!(
+        "breathing_signal_confidence",
+        "breathingSignalConfidence",
+        "ACC breathing signal confidence",
+        "Range, motion, coverage, and periodicity quality index",
+        "0–1",
+        "Breathing",
+        "Confidence summarizes whether the calibrated H10 chest-motion projection is strong, recent, relatively periodic, and not dominated by broadband movement. It is an app-specific signal-quality index rather than a probability of physiological correctness, and low values should cause downstream analyses to reject or flag the waveform.",
+        "experimental quality indicator",
+        BREATH_ACC,
+        BREATH_ACC_URL,
+        "breath respiration waveform signal confidence quality motion periodicity",
+        false,
+        false,
+        1,
+        20.0,
+        "Breathing"
+    ),
+    metric!(
+        "breathing_signal_ready",
+        "breathingSignalReady",
+        "ACC breathing signal ready",
+        "Calibration, freshness, and motion gate",
+        "0/1",
+        "Breathing",
+        "Ready becomes one only after principal-axis calibration while samples are fresh and the short-term movement score remains acceptable. It is a processing-readiness flag, not evidence that the waveform equals airflow or lung volume.",
+        "experimental readiness indicator",
+        BREATH_ACC,
+        BREATH_ACC_URL,
+        "breath respiration waveform ready calibration freshness motion gate",
+        false,
+        false,
+        1,
+        20.0,
+        "Breathing"
+    ),
+    metric!(
         "breathing_phase",
         "breathingPhase",
         "Breath phase classifier",
         "+1 inhale · −1 exhale · 0 pause or not ready",
         "class",
         "Breathing",
-        "Phase classifies the calibrated ACC waveform into three public states: inhale, exhale, or pause/not ready. It is an unvalidated motion classification rather than airflow; movement, posture, strap placement and axis choice can obscure or reverse the inferred phase.",
+        "Phase classifies the calibrated ACC waveform velocity into three public states: inhale, exhale, or pause/not ready. Its threshold is normalized per second from the accepted ACC sample count so BLE batch size does not change the classification scale. It remains an unvalidated motion classification rather than airflow; movement, posture, strap placement and axis choice can obscure or reverse the inferred phase.",
         "unvalidated experimental classification",
         BREATH_ACC,
         BREATH_ACC_URL,

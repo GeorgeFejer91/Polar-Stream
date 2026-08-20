@@ -323,7 +323,10 @@ mod tests {
         fs::write(&path, b"{broken").unwrap();
         let snapshot = PreferencesStore::load(path.clone()).snapshot();
         assert_eq!(snapshot.schema_version, SCHEMA_VERSION);
-        assert_eq!(snapshot.output_config.outputs, ["raw_ecg", "raw_acc"]);
+        assert_eq!(
+            snapshot.output_config.outputs,
+            ["raw_ecg", "raw_acc", "raw_force"]
+        );
         let _ = fs::remove_file(path);
     }
 

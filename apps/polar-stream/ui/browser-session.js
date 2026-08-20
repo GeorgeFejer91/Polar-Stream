@@ -20,9 +20,15 @@
   const units = Object.freeze({
     raw_ecg: "uV",
     raw_acc: "mg",
+    raw_force: "N",
     acc_magnitude: "g",
     acc_breathing_magnitude: "g",
+    breathing_volume: "0-1",
     breathing_phase: "class",
+    breathing_calibration: "0-1",
+    breathing_axis_range: "g",
+    breathing_signal_confidence: "0-1",
+    breathing_signal_ready: "0/1",
     heart_rate: "bpm",
     rr_interval: "ms",
   });
@@ -206,12 +212,28 @@
         }
         return;
       }
+      if (event.kind === "force") {
+        const values = Array.isArray(event.values) ? event.values : [];
+        const rateHz = 1_000_000 / Math.max(1, Number(event.samplePeriodUs) || 100_000);
+        const stream = event.source?.slot ? `${event.source.slot}_raw_force` : "raw_force";
+        for (let index = 0; index < values.length; index += 1) {
+          const offsetSeconds = (values.length - 1 - index) / rateHz;
+          if (!this.append([
+            (hostTimestampMs - offsetSeconds * 1000).toFixed(3),
+            Math.max(0, elapsed - offsetSeconds).toFixed(6),
+            sensorTimestamp(event.hostReceiveTimestampNs, index, values.length, rateHz),
+            stream, index, "", "", "", finite(values[index]), units.raw_force,
+          ])) break;
+        }
+        return;
+      }
       if (event.kind === "metrics" && Array.isArray(event.values)) {
         for (let index = 0; index < event.values.length; index += 1) {
           const metric = event.values[index];
           if (!metric) continue;
           if (!this.append([
-            hostTimestampMs.toFixed(3), elapsed.toFixed(6), "", metric.id, index,
+            hostTimestampMs.toFixed(3), elapsed.toFixed(6),
+            sensorTimestamp(event.sensorTimestampNs, 0, 1, 1), metric.id, index,
             "", "", "", finite(metric.value), this.config.metricUnits[metric.id] || units[metric.id] || "",
           ])) break;
         }
@@ -230,7 +252,7 @@
         `# input_kind,${csvCell(this.source?.inputKind || "browser")}\n`,
         `# configured_outputs,${csvCell(this.config.outputs.join("|"))}\n`,
         `# stop_reason,${csvCell(this.stopReason || "export")}\n`,
-        "# scope,All received raw ECG and ACC plus every metric event produced in this browser session.\n",
+        "# scope,All received raw ECG, ACC, and Go Direct force plus every metric event produced in this browser session.\n",
         "# timing,Sensor timestamps are reconstructed backwards from the final PMD frame timestamp when available.\n",
         csvRow(CSV_COLUMNS),
       ];

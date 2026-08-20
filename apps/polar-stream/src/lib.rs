@@ -4,7 +4,11 @@
 mod error;
 mod preferences;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 
 #[cfg(feature = "rusty-lsl-backend")]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use polar_h10_core::AccSample;
-use polar_h10_input::{DeviceSummary, InputEvent, InputManager};
+use polar_h10_input::{InputEvent as PolarInputEvent, InputSessionPool as PolarInputSessionPool};
 use polar_h10_metrics::{
     BreathingSettings, METRIC_CATALOG, MetricDefinition, MetricEngine, MetricSample,
     MetricSelection, metric_formula_definition,
@@ -24,6 +28,9 @@ use polar_h10_output::{MetricValue, OutputConfig, OutputHealth, OutputRouter};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, ipc::Channel, path::BaseDirectory};
 use tauri_plugin_opener::OpenerExt;
+use vernier_gdx_input::{
+    InputEvent as GdxInputEvent, InputSessionPool as GdxInputSessionPool, SessionConfig,
+};
 
 use error::{CommandError, CommandResult};
 use preferences::{PreferencesSnapshot, PreferencesStore, SavedDevice};
@@ -59,8 +66,14 @@ async fn stop_and_join_lsl_poll(
 }
 
 struct AppState {
-    input: Arc<InputManager>,
-    output: Arc<OutputRouter>,
+    polar_input: Arc<PolarInputSessionPool>,
+    gdx_input: Arc<GdxInputSessionPool>,
+    output_config: RwLock<OutputConfig>,
+    source_outputs: Arc<tokio::sync::Mutex<HashMap<String, Arc<OutputRouter>>>>,
+    active_sources: Arc<tokio::sync::Mutex<HashMap<String, SourceDescriptor>>>,
+    input_configuration: tokio::sync::Mutex<()>,
+    bundled_lsl: Option<PathBuf>,
+    recording_directory: PathBuf,
     preferences: Arc<PreferencesStore>,
     output_configuration: tokio::sync::Mutex<()>,
     processing_settings: tokio::sync::watch::Sender<ProcessingSettings>,
@@ -77,16 +90,53 @@ impl AppState {
         let (processing_settings, _) =
             tokio::sync::watch::channel(ProcessingSettings::from_config(&initial_config));
         Self {
-            input: Arc::new(InputManager::new()),
-            output: Arc::new(OutputRouter::with_bundled_lsl_and_recordings(
-                bundled_lsl,
-                recording_directory,
-            )),
+            polar_input: Arc::new(PolarInputSessionPool::with_max_sessions(MAX_INPUT_SOURCES)),
+            gdx_input: Arc::new(GdxInputSessionPool::new(MAX_INPUT_SOURCES)),
+            output_config: RwLock::new(initial_config),
+            source_outputs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            active_sources: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            input_configuration: tokio::sync::Mutex::new(()),
+            bundled_lsl,
+            recording_directory,
             preferences,
             output_configuration: tokio::sync::Mutex::new(()),
             processing_settings,
         }
     }
+}
+
+const MAX_INPUT_SOURCES: usize = 8;
+const SOURCE_COLORS: [&str; MAX_INPUT_SOURCES] = [
+    "#00c2ff", "#ffb000", "#ff5c8a", "#7bd88f", "#b392f0", "#ff7b54", "#58d6c7", "#e5d85c",
+];
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum InputKind {
+    PolarH10,
+    VernierGoDirect,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceDescriptor {
+    id: String,
+    slot: String,
+    label: String,
+    color: &'static str,
+    input_kind: InputKind,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceSummary {
+    id: String,
+    name: String,
+    rssi: Option<i16>,
+    input_kind: InputKind,
+    model_code: String,
+    detail: String,
+    respiration_belt_candidate: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,16 +147,24 @@ struct ProcessingSettings {
 
 impl ProcessingSettings {
     fn from_config(config: &OutputConfig) -> Self {
-        let breathing = ["breathing_phase", "acc_breathing_magnitude"]
-            .iter()
-            .find_map(|id| {
-                config
-                    .metric_options
-                    .get(*id)
-                    .and_then(|options| options.processing.breathing)
-            })
-            .unwrap_or_default()
-            .clamped();
+        let breathing = [
+            "breathing_volume",
+            "breathing_signal_confidence",
+            "breathing_signal_ready",
+            "breathing_phase",
+            "acc_breathing_magnitude",
+            "breathing_calibration",
+            "breathing_axis_range",
+        ]
+        .iter()
+        .find_map(|id| {
+            config
+                .metric_options
+                .get(*id)
+                .and_then(|options| options.processing.breathing)
+        })
+        .unwrap_or_default()
+        .clamped();
         Self {
             breathing,
             metrics: MetricSelection::from_ids(config.outputs.iter().map(String::as_str)),
@@ -122,34 +180,242 @@ impl ProcessingSettings {
 )]
 enum AppEvent {
     Status {
+        source: SourceDescriptor,
         phase: String,
         message: String,
     },
     Connection {
+        source: SourceDescriptor,
         connected: bool,
         streaming: bool,
         device_name: String,
         battery_percent: Option<u8>,
+        device_model: Option<String>,
+        sensor_number: Option<u8>,
+        sensor_name: Option<String>,
+        sensor_unit: Option<String>,
+        sample_period_us: Option<u32>,
         message: String,
     },
     Ecg {
+        source: SourceDescriptor,
         sensor_timestamp_ns: u64,
         microvolts: Vec<i32>,
         formulas: FormulaPublishBatch,
     },
     Accelerometer {
+        source: SourceDescriptor,
         sensor_timestamp_ns: u64,
         samples: Vec<AccSample>,
         formulas: FormulaPublishBatch,
     },
     Metrics {
+        source: SourceDescriptor,
         values: Vec<MetricSample>,
         formulas: FormulaPublishBatch,
     },
+    Force {
+        source: SourceDescriptor,
+        sensor_number: u8,
+        host_receive_timestamp_ns: u64,
+        sample_period_us: u32,
+        sequence: u64,
+        values: Vec<f32>,
+        dropped_before: u64,
+        decode_latency_ns: u64,
+    },
+    StreamHealth {
+        source: SourceDescriptor,
+        notifications: u64,
+        samples: u64,
+        malformed_frames: u64,
+        dropped_batches: u64,
+        queue_high_water: usize,
+        decode_latency_p50_ns: u64,
+        decode_latency_p95_ns: u64,
+        decode_latency_p99_ns: u64,
+        max_decode_latency_ns: u64,
+    },
     Error {
+        source: SourceDescriptor,
         code: &'static str,
         message: String,
     },
+}
+
+enum DeviceEventReceiver {
+    Polar(tokio::sync::mpsc::Receiver<PolarInputEvent>),
+    Vernier(tokio::sync::mpsc::Receiver<GdxInputEvent>),
+}
+
+enum UnifiedInputEvent {
+    Status {
+        phase: &'static str,
+        message: String,
+    },
+    Connected {
+        device_name: String,
+        battery_percent: Option<u8>,
+        device_model: Option<String>,
+        sensor_number: Option<u8>,
+        sensor_name: Option<String>,
+        sensor_unit: Option<String>,
+        sample_period_us: Option<u32>,
+    },
+    Ecg {
+        sensor_timestamp_ns: u64,
+        microvolts: Vec<i32>,
+    },
+    Accelerometer {
+        sensor_timestamp_ns: u64,
+        samples: Vec<AccSample>,
+    },
+    HeartRate {
+        beats_per_minute: u16,
+        rr_intervals_ms: Vec<f32>,
+    },
+    Force {
+        sensor_number: u8,
+        host_receive_timestamp_ns: u64,
+        sample_period_us: u32,
+        sequence: u64,
+        values: Vec<f32>,
+        dropped_before: u64,
+        decode_latency_ns: u64,
+    },
+    StreamHealth {
+        notifications: u64,
+        samples: u64,
+        malformed_frames: u64,
+        dropped_batches: u64,
+        queue_high_water: usize,
+        decode_latency_p50_ns: u64,
+        decode_latency_p95_ns: u64,
+        decode_latency_p99_ns: u64,
+        max_decode_latency_ns: u64,
+    },
+    Error(String),
+    Disconnected {
+        device_name: String,
+        battery_percent: Option<u8>,
+    },
+}
+
+impl DeviceEventReceiver {
+    async fn recv(&mut self) -> Option<UnifiedInputEvent> {
+        match self {
+            Self::Polar(receiver) => receiver.recv().await.map(|event| match event {
+                PolarInputEvent::Status { phase, message } => {
+                    UnifiedInputEvent::Status { phase, message }
+                }
+                PolarInputEvent::Connected {
+                    device_name,
+                    battery_percent,
+                } => UnifiedInputEvent::Connected {
+                    device_name,
+                    battery_percent,
+                    device_model: Some("Polar H10".into()),
+                    sensor_number: None,
+                    sensor_name: None,
+                    sensor_unit: None,
+                    sample_period_us: None,
+                },
+                PolarInputEvent::Ecg {
+                    sensor_timestamp_ns,
+                    microvolts,
+                } => UnifiedInputEvent::Ecg {
+                    sensor_timestamp_ns,
+                    microvolts,
+                },
+                PolarInputEvent::Accelerometer {
+                    sensor_timestamp_ns,
+                    samples,
+                } => UnifiedInputEvent::Accelerometer {
+                    sensor_timestamp_ns,
+                    samples,
+                },
+                PolarInputEvent::HeartRate {
+                    beats_per_minute,
+                    rr_intervals_ms,
+                } => UnifiedInputEvent::HeartRate {
+                    beats_per_minute,
+                    rr_intervals_ms,
+                },
+                PolarInputEvent::Error(message) => UnifiedInputEvent::Error(message),
+                PolarInputEvent::Disconnected {
+                    device_name,
+                    battery_percent,
+                } => UnifiedInputEvent::Disconnected {
+                    device_name,
+                    battery_percent,
+                },
+            }),
+            Self::Vernier(receiver) => receiver.recv().await.map(|event| match event {
+                GdxInputEvent::Status { phase, message } => {
+                    UnifiedInputEvent::Status { phase, message }
+                }
+                GdxInputEvent::Connected {
+                    device_name,
+                    model_code,
+                    sensor_number,
+                    sensor_name,
+                    sensor_unit,
+                    sample_period_us,
+                } => UnifiedInputEvent::Connected {
+                    device_name,
+                    battery_percent: None,
+                    device_model: Some(model_code),
+                    sensor_number: Some(sensor_number),
+                    sensor_name: Some(sensor_name),
+                    sensor_unit: Some(sensor_unit),
+                    sample_period_us: Some(sample_period_us),
+                },
+                GdxInputEvent::Samples {
+                    sensor_number,
+                    host_receive_timestamp_ns,
+                    sample_period_us,
+                    sequence,
+                    values,
+                    dropped_before,
+                    decode_latency_ns,
+                } => UnifiedInputEvent::Force {
+                    sensor_number,
+                    host_receive_timestamp_ns,
+                    sample_period_us,
+                    sequence,
+                    values,
+                    dropped_before,
+                    decode_latency_ns,
+                },
+                GdxInputEvent::StreamHealth {
+                    notifications,
+                    samples,
+                    malformed_frames,
+                    dropped_batches,
+                    queue_high_water,
+                    decode_latency_p50_ns,
+                    decode_latency_p95_ns,
+                    decode_latency_p99_ns,
+                    max_decode_latency_ns,
+                } => UnifiedInputEvent::StreamHealth {
+                    notifications,
+                    samples,
+                    malformed_frames,
+                    dropped_batches,
+                    queue_high_water,
+                    decode_latency_p50_ns,
+                    decode_latency_p95_ns,
+                    decode_latency_p99_ns,
+                    max_decode_latency_ns,
+                },
+                GdxInputEvent::Error(message) => UnifiedInputEvent::Error(message),
+                GdxInputEvent::Disconnected { device_name } => UnifiedInputEvent::Disconnected {
+                    device_name,
+                    battery_percent: None,
+                },
+            }),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -237,11 +503,63 @@ fn validate_saved_device(device: SavedDevice) -> CommandResult<SavedDevice> {
 
 #[tauri::command]
 async fn scan_devices(state: State<'_, AppState>) -> CommandResult<Vec<DeviceSummary>> {
-    state
-        .input
-        .scan()
-        .await
-        .map_err(|message| CommandError::new("BLUETOOTH_SCAN_FAILED", message, true))
+    let _configuration = state.input_configuration.lock().await;
+    if !state.active_sources.lock().await.is_empty() {
+        return Err(CommandError::new(
+            "SCAN_WHILE_STREAMING",
+            "Disconnect active sources before refreshing Bluetooth discovery.",
+            true,
+        ));
+    }
+    let polar = state.polar_input.scan().await;
+    let vernier = state.gdx_input.scan().await;
+    let mut devices = Vec::new();
+    if let Ok(found) = &polar {
+        devices.extend(found.iter().map(|device| DeviceSummary {
+            id: format!("polar:{}", device.id),
+            name: device.name.clone(),
+            rssi: device.rssi,
+            input_kind: InputKind::PolarH10,
+            model_code: "H10".into(),
+            detail: "Polar H10 · ECG + accelerometer".into(),
+            respiration_belt_candidate: false,
+        }));
+    }
+    if let Ok(found) = &vernier {
+        devices.extend(found.iter().map(|device| DeviceSummary {
+            id: format!("vernier:{}", device.id),
+            name: device.name.clone(),
+            rssi: device.rssi,
+            input_kind: InputKind::VernierGoDirect,
+            model_code: device.model_code.into(),
+            detail: if device.respiration_belt_candidate {
+                format!("{} · respiration belt · Force (N)", device.model_code)
+            } else {
+                format!(
+                    "{} · model and channels verified on connection",
+                    device.model_name
+                )
+            },
+            respiration_belt_candidate: device.respiration_belt_candidate,
+        }));
+    }
+    if devices.is_empty() {
+        let message = format!(
+            "Polar scan: {}; Go Direct scan: {}",
+            polar.err().unwrap_or_else(|| "no matching sensors".into()),
+            vernier
+                .err()
+                .unwrap_or_else(|| "no matching sensors".into())
+        );
+        return Err(CommandError::new("BLUETOOTH_SCAN_FAILED", message, true));
+    }
+    devices.sort_by(|left, right| {
+        right
+            .rssi
+            .cmp(&left.rssi)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(devices)
 }
 
 #[tauri::command]
@@ -249,16 +567,62 @@ async fn connect_device(
     state: State<'_, AppState>,
     device_id: String,
     events: Channel<AppEvent>,
-) -> CommandResult<()> {
-    let mut input_events = state
-        .input
-        .connect(&device_id)
-        .await
-        .map_err(|message| CommandError::new("POLAR_CONNECTION_FAILED", message, true))?;
-    let output = state.output.clone();
-    let preferences = state.preferences.clone();
-    let mut processing_settings = state.processing_settings.subscribe();
+) -> CommandResult<SourceDescriptor> {
+    let _configuration = state.input_configuration.lock().await;
+    let (input_kind, raw_device_id) = parse_device_id(&device_id)?;
+    let source = allocate_source(&state.active_sources, input_kind).await?;
+    let mut input_events = match input_kind {
+        InputKind::PolarH10 => DeviceEventReceiver::Polar(
+            state
+                .polar_input
+                .connect(&source.slot, raw_device_id)
+                .await
+                .map_err(|message| CommandError::new("POLAR_CONNECTION_FAILED", message, true))?,
+        ),
+        InputKind::VernierGoDirect => DeviceEventReceiver::Vernier(
+            state
+                .gdx_input
+                .connect(&source.slot, raw_device_id, SessionConfig::default())
+                .await
+                .map_err(|message| CommandError::new("VERNIER_CONNECTION_FAILED", message, true))?,
+        ),
+    };
+    let output = Arc::new(OutputRouter::with_bundled_lsl_and_recordings(
+        state.bundled_lsl.clone(),
+        state.recording_directory.clone(),
+    ));
+    let config = source_output_config(current_output_config(&state)?, &source)?;
+    if let Err(message) = output.configure(config).await {
+        match input_kind {
+            InputKind::PolarH10 => {
+                let _ = state.polar_input.disconnect(&source.slot).await;
+            }
+            InputKind::VernierGoDirect => {
+                let _ = state.gdx_input.disconnect(&source.slot).await;
+            }
+        }
+        return Err(CommandError::new(
+            "OUTPUT_CONFIGURATION_FAILED",
+            message,
+            true,
+        ));
+    }
     output.reset_measurement();
+    state
+        .source_outputs
+        .lock()
+        .await
+        .insert(source.id.clone(), output.clone());
+    state
+        .active_sources
+        .lock()
+        .await
+        .insert(source.id.clone(), source.clone());
+    let preferences = state.preferences.clone();
+    let active_sources = state.active_sources.clone();
+    let source_outputs = state.source_outputs.clone();
+    let mut processing_settings = state.processing_settings.subscribe();
+    let task_source = source.clone();
     tauri::async_runtime::spawn(async move {
         // Keep WebView serialization completely off the sensor/output path. A
         // slow or hidden renderer may lose display frames, but never raw LSL or
@@ -279,10 +643,12 @@ async fn connect_device(
             let output = output.clone();
             let ui_tx = ui_tx.clone();
             let stop = lsl_poll_stop.clone();
+            let poll_source = task_source.clone();
             tokio::task::spawn_blocking(move || {
                 run_lsl_poll_loop(stop.as_ref(), LSL_POLL_INTERVAL, || {
                     if let Some(message) = output.poll_lsl() {
                         let _ = ui_tx.try_send(AppEvent::Error {
+                            source: poll_source.clone(),
                             code: "LSL_TRANSPORT_WARNING",
                             message,
                         });
@@ -301,19 +667,26 @@ async fn connect_device(
                 metrics_engine.apply_breathing_settings(settings.breathing);
             }
             let continue_streaming = match event {
-                InputEvent::Status { phase, message } => ui_tx
+                UnifiedInputEvent::Status { phase, message } => ui_tx
                     .send(AppEvent::Status {
+                        source: task_source.clone(),
                         phase: phase.into(),
                         message,
                     })
                     .await
                     .is_ok(),
-                InputEvent::Connected {
+                UnifiedInputEvent::Connected {
                     device_name,
                     battery_percent,
+                    device_model,
+                    sensor_number,
+                    sensor_name,
+                    sensor_unit,
+                    sample_period_us,
                 } => {
                     let save_preferences = preferences.clone();
                     let save_events = ui_tx.clone();
+                    let save_source = task_source.clone();
                     let saved_device = SavedDevice {
                         id: device_id.clone(),
                         name: device_name.clone(),
@@ -323,6 +696,7 @@ async fn connect_device(
                         {
                             let _ = save_events
                                 .send(AppEvent::Error {
+                                    source: save_source,
                                     code: "PREFERENCES_WRITE_FAILED",
                                     message: format!(
                                         "Connected, but the preferred sensor could not be saved: {message}"
@@ -333,21 +707,42 @@ async fn connect_device(
                     });
                     ui_tx
                         .send(AppEvent::Connection {
+                            source: task_source.clone(),
                             connected: true,
                             streaming: true,
                             device_name,
                             battery_percent,
-                            message: "Raw ECG and accelerometer are streaming".into(),
+                            device_model,
+                            sensor_number,
+                            sensor_name: sensor_name.clone(),
+                            sensor_unit: sensor_unit.clone(),
+                            sample_period_us,
+                            message: match task_source.input_kind {
+                                InputKind::PolarH10 => {
+                                    "Raw ECG and accelerometer are streaming".into()
+                                }
+                                InputKind::VernierGoDirect => format!(
+                                    "Verified {} ({}) on channel {} is streaming at {:.1} Hz",
+                                    sensor_name.as_deref().unwrap_or("Force"),
+                                    sensor_unit.as_deref().unwrap_or("N"),
+                                    sensor_number.unwrap_or(1),
+                                    sample_period_us
+                                        .filter(|period| *period > 0)
+                                        .map(|period| 1_000_000.0 / period as f64)
+                                        .unwrap_or(10.0),
+                                ),
+                            },
                         })
                         .await
                         .is_ok()
                 }
-                InputEvent::Ecg {
+                UnifiedInputEvent::Ecg {
                     sensor_timestamp_ns,
                     microvolts,
                 } => {
                     let output_open = forward_output_warning(
                         &ui_tx,
+                        &task_source,
                         output.publish_ecg(sensor_timestamp_ns, &microvolts),
                     );
                     let formulas = output.process_ecg_formulas(sensor_timestamp_ns, &microvolts);
@@ -356,6 +751,7 @@ async fn connect_device(
                         || !forward_display_event(
                             &ui_tx,
                             AppEvent::Ecg {
+                                source: task_source.clone(),
                                 sensor_timestamp_ns,
                                 microvolts,
                                 formulas,
@@ -364,15 +760,23 @@ async fn connect_device(
                     {
                         false
                     } else {
-                        publish_metrics(&output, &ui_tx, derived, FormulaPublishBatch::default())
+                        publish_metrics(
+                            &output,
+                            &ui_tx,
+                            &task_source,
+                            sensor_timestamp_ns,
+                            derived,
+                            FormulaPublishBatch::default(),
+                        )
                     }
                 }
-                InputEvent::Accelerometer {
+                UnifiedInputEvent::Accelerometer {
                     sensor_timestamp_ns,
                     samples,
                 } => {
                     let output_open = forward_output_warning(
                         &ui_tx,
+                        &task_source,
                         output.publish_accelerometer(sensor_timestamp_ns, &samples),
                     );
                     let formulas =
@@ -382,6 +786,7 @@ async fn connect_device(
                         || !forward_display_event(
                             &ui_tx,
                             AppEvent::Accelerometer {
+                                source: task_source.clone(),
                                 sensor_timestamp_ns,
                                 samples,
                                 formulas,
@@ -390,15 +795,23 @@ async fn connect_device(
                     {
                         false
                     } else {
-                        publish_metrics(&output, &ui_tx, derived, FormulaPublishBatch::default())
+                        publish_metrics(
+                            &output,
+                            &ui_tx,
+                            &task_source,
+                            sensor_timestamp_ns,
+                            derived,
+                            FormulaPublishBatch::default(),
+                        )
                     }
                 }
-                InputEvent::HeartRate {
+                UnifiedInputEvent::HeartRate {
                     beats_per_minute,
                     rr_intervals_ms,
                 } => {
                     let output_open = forward_output_warning(
                         &ui_tx,
+                        &task_source,
                         output.publish_heart_rate(beats_per_minute, &rr_intervals_ms),
                     );
                     let formulas =
@@ -407,37 +820,112 @@ async fn connect_device(
                         && publish_metrics(
                             &output,
                             &ui_tx,
+                            &task_source,
+                            0,
                             metrics_engine.process_heart_rate(beats_per_minute, &rr_intervals_ms),
                             formulas,
                         )
                 }
-                InputEvent::Error(message) => forward_display_event(
+                UnifiedInputEvent::Force {
+                    sensor_number,
+                    host_receive_timestamp_ns,
+                    sample_period_us,
+                    sequence,
+                    values,
+                    dropped_before,
+                    decode_latency_ns,
+                } => {
+                    let output_open = forward_output_warning(
+                        &ui_tx,
+                        &task_source,
+                        output.publish_force(host_receive_timestamp_ns, &values, sample_period_us),
+                    );
+                    output_open
+                        && forward_display_event(
+                            &ui_tx,
+                            AppEvent::Force {
+                                source: task_source.clone(),
+                                sensor_number,
+                                host_receive_timestamp_ns,
+                                sample_period_us,
+                                sequence,
+                                values,
+                                dropped_before,
+                                decode_latency_ns,
+                            },
+                        )
+                }
+                UnifiedInputEvent::StreamHealth {
+                    notifications,
+                    samples,
+                    malformed_frames,
+                    dropped_batches,
+                    queue_high_water,
+                    decode_latency_p50_ns,
+                    decode_latency_p95_ns,
+                    decode_latency_p99_ns,
+                    max_decode_latency_ns,
+                } => forward_display_event(
+                    &ui_tx,
+                    AppEvent::StreamHealth {
+                        source: task_source.clone(),
+                        notifications,
+                        samples,
+                        malformed_frames,
+                        dropped_batches,
+                        queue_high_water,
+                        decode_latency_p50_ns,
+                        decode_latency_p95_ns,
+                        decode_latency_p99_ns,
+                        max_decode_latency_ns,
+                    },
+                ),
+                UnifiedInputEvent::Error(message) => forward_display_event(
                     &ui_tx,
                     AppEvent::Error {
+                        source: task_source.clone(),
                         code: "SENSOR_DATA_WARNING",
                         message,
                     },
                 ),
-                InputEvent::Disconnected {
+                UnifiedInputEvent::Disconnected {
                     device_name,
                     battery_percent,
                 } => {
                     let phase_sent = publish_metrics(
                         &output,
                         &ui_tx,
-                        vec![MetricSample {
-                            id: "breathing_phase",
-                            value: 0.0,
-                        }],
+                        &task_source,
+                        0,
+                        vec![
+                            MetricSample {
+                                id: "breathing_phase",
+                                value: 0.0,
+                            },
+                            MetricSample {
+                                id: "breathing_signal_confidence",
+                                value: 0.0,
+                            },
+                            MetricSample {
+                                id: "breathing_signal_ready",
+                                value: 0.0,
+                            },
+                        ],
                         FormulaPublishBatch::default(),
                     );
                     phase_sent
                         && ui_tx
                             .send(AppEvent::Connection {
+                                source: task_source.clone(),
                                 connected: false,
                                 streaming: false,
                                 device_name,
                                 battery_percent,
+                                device_model: None,
+                                sensor_number: None,
+                                sensor_name: None,
+                                sensor_unit: None,
+                                sample_period_us: None,
                                 message: "Disconnected".into(),
                             })
                             .await
@@ -455,6 +943,7 @@ async fn connect_device(
                     .await
             {
                 let _ = ui_tx.try_send(AppEvent::Error {
+                    source: task_source.clone(),
                     code: "LSL_TRANSPORT_WARNING",
                     message: message.into(),
                 });
@@ -462,13 +951,17 @@ async fn connect_device(
         }
         drop(ui_tx);
         let _ = ui_task.await;
+        active_sources.lock().await.remove(&task_source.id);
+        source_outputs.lock().await.remove(&task_source.id);
     });
-    Ok(())
+    Ok(source)
 }
 
 fn publish_metrics(
     output: &OutputRouter,
     ui_tx: &tokio::sync::mpsc::Sender<AppEvent>,
+    source: &SourceDescriptor,
+    sensor_timestamp_ns: u64,
     values: Vec<MetricSample>,
     formulas: FormulaPublishBatch,
 ) -> bool {
@@ -486,18 +979,32 @@ fn publish_metrics(
             value: metric.value,
         })
         .collect::<Vec<_>>();
-    let output_open = forward_output_warning(ui_tx, output.publish_metrics(&routed));
-    output_open && forward_display_event(ui_tx, AppEvent::Metrics { values, formulas })
+    let output_open = forward_output_warning(
+        ui_tx,
+        source,
+        output.publish_metrics_at(sensor_timestamp_ns, &routed),
+    );
+    output_open
+        && forward_display_event(
+            ui_tx,
+            AppEvent::Metrics {
+                source: source.clone(),
+                values,
+                formulas,
+            },
+        )
 }
 
 fn forward_output_warning(
     ui_tx: &tokio::sync::mpsc::Sender<AppEvent>,
+    source: &SourceDescriptor,
     message: Option<String>,
 ) -> bool {
     message.is_none_or(|message| {
         forward_display_event(
             ui_tx,
             AppEvent::Error {
+                source: source.clone(),
                 code: "CSV_RECORDING_STOPPED",
                 message,
             },
@@ -513,14 +1020,99 @@ fn forward_display_event(ui_tx: &tokio::sync::mpsc::Sender<AppEvent>, event: App
 }
 
 #[tauri::command]
-async fn disconnect_device(state: State<'_, AppState>) -> CommandResult<()> {
-    state
-        .input
-        .disconnect()
+async fn disconnect_device(state: State<'_, AppState>, source_id: String) -> CommandResult<()> {
+    let _configuration = state.input_configuration.lock().await;
+    let source = state
+        .active_sources
+        .lock()
         .await
-        .map_err(|message| CommandError::new("POLAR_DISCONNECT_FAILED", message, true))?;
-    state.output.reset_measurement();
+        .get(&source_id)
+        .cloned()
+        .ok_or_else(|| CommandError::new("UNKNOWN_SOURCE", "That source is not active.", false))?;
+    let result = match source.input_kind {
+        InputKind::PolarH10 => state.polar_input.disconnect(&source.slot).await,
+        InputKind::VernierGoDirect => state.gdx_input.disconnect(&source.slot).await,
+    };
+    result.map_err(|message| CommandError::new("SENSOR_DISCONNECT_FAILED", message, true))?;
+    state.active_sources.lock().await.remove(&source_id);
+    if let Some(output) = state.source_outputs.lock().await.remove(&source_id) {
+        output.reset_measurement();
+    }
     Ok(())
+}
+
+fn parse_device_id(device_id: &str) -> CommandResult<(InputKind, &str)> {
+    if let Some(id) = device_id.strip_prefix("polar:") {
+        Ok((InputKind::PolarH10, id))
+    } else if let Some(id) = device_id.strip_prefix("vernier:") {
+        Ok((InputKind::VernierGoDirect, id))
+    } else {
+        Err(CommandError::new(
+            "UNKNOWN_SENSOR_KIND",
+            "The selected device does not carry a supported sensor kind.",
+            false,
+        ))
+    }
+}
+
+async fn allocate_source(
+    active: &tokio::sync::Mutex<HashMap<String, SourceDescriptor>>,
+    input_kind: InputKind,
+) -> CommandResult<SourceDescriptor> {
+    let active = active.lock().await;
+    for (index, color) in SOURCE_COLORS.iter().enumerate() {
+        let id = format!("source-{}", index + 1);
+        if !active.contains_key(&id) {
+            return Ok(SourceDescriptor {
+                slot: id.clone(),
+                id,
+                label: format!("Source {}", index + 1),
+                color,
+                input_kind,
+            });
+        }
+    }
+    Err(CommandError::new(
+        "INPUT_CAPACITY_REACHED",
+        format!("At most {MAX_INPUT_SOURCES} simultaneous sources are supported."),
+        true,
+    ))
+}
+
+fn source_output_config(
+    mut config: OutputConfig,
+    source: &SourceDescriptor,
+) -> CommandResult<OutputConfig> {
+    config.stream_name = format!("{}_{}", config.stream_name, source.slot);
+    match source.input_kind {
+        InputKind::PolarH10 => {
+            config.outputs.retain(|id| id != "raw_force");
+        }
+        InputKind::VernierGoDirect => {
+            config.outputs.retain(|id| id == "raw_force");
+            config.custom_formulas.clear();
+        }
+    }
+    config
+        .metric_options
+        .retain(|id, _| config.outputs.contains(id));
+    config
+        .validated()
+        .map_err(|message| CommandError::new("OUTPUT_CONFIGURATION_FAILED", message, true))
+}
+
+fn current_output_config(state: &AppState) -> CommandResult<OutputConfig> {
+    state
+        .output_config
+        .read()
+        .map(|config| config.clone())
+        .map_err(|_| {
+            CommandError::new(
+                "OUTPUT_CONFIGURATION_FAILED",
+                "The output configuration lock is unavailable.",
+                true,
+            )
+        })
 }
 
 #[tauri::command]
@@ -539,12 +1131,52 @@ async fn update_output_config(
     // toggle fire close together. Serialize the rare reconfiguration lifecycle
     // so an older async OSC setup cannot overwrite a newer selection.
     let _configuration = state.output_configuration.lock().await;
-    let health = state
-        .output
-        .configure(config)
-        .await
-        .map_err(|message| CommandError::new("OUTPUT_CONFIGURATION_FAILED", message, true))?;
-    let applied = state.output.config();
+    let applied = OutputRouter::validate_config(config)
+        .map_err(|message| CommandError::new("OUTPUT_CONFIGURATION_FAILED", message, false))?;
+    let sources = state.active_sources.lock().await.clone();
+    let outputs = state.source_outputs.lock().await.clone();
+    for (source_id, output) in &outputs {
+        let Some(source) = sources.get(source_id) else {
+            continue;
+        };
+        output
+            .configure(source_output_config(applied.clone(), source)?)
+            .await
+            .map_err(|message| CommandError::new("OUTPUT_CONFIGURATION_FAILED", message, true))?;
+    }
+    state
+        .output_config
+        .write()
+        .map_err(|_| {
+            CommandError::new(
+                "OUTPUT_CONFIGURATION_FAILED",
+                "The output configuration lock is unavailable.",
+                true,
+            )
+        })?
+        .clone_from(&applied);
+    let source_count = sources.len();
+    let route_status = |enabled: bool| {
+        if !enabled {
+            "Off".into()
+        } else if source_count == 0 {
+            "Waiting for a connected source".into()
+        } else {
+            format!("Active for {source_count} source(s)")
+        }
+    };
+    let health = OutputHealth {
+        stream_name: applied.stream_name.clone(),
+        lsl: route_status(applied.lsl_enabled),
+        osc: route_status(applied.osc_enabled),
+        csv: route_status(applied.csv_enabled),
+        audio: route_status(applied.audio_enabled),
+        formulas: outputs
+            .values()
+            .next()
+            .map(|output| output.formula_health())
+            .unwrap_or_default(),
+    };
     state
         .processing_settings
         .send_replace(ProcessingSettings::from_config(&applied));
@@ -661,11 +1293,45 @@ fn lsl_resource_path() -> &'static str {
     "liblsl"
 }
 
-#[cfg(all(test, feature = "rusty-lsl-backend"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "rusty-lsl-backend")]
     use std::sync::atomic::AtomicUsize;
 
+    #[test]
+    fn source_outputs_are_filtered_to_the_connected_sensor_kind() {
+        let config = OutputConfig {
+            outputs: vec!["raw_ecg".into(), "raw_acc".into(), "raw_force".into()],
+            ..OutputConfig::default()
+        };
+        let polar = SourceDescriptor {
+            id: "source-1".into(),
+            slot: "source-1".into(),
+            label: "Source 1".into(),
+            color: SOURCE_COLORS[0],
+            input_kind: InputKind::PolarH10,
+        };
+        let vernier = SourceDescriptor {
+            id: "source-2".into(),
+            slot: "source-2".into(),
+            label: "Source 2".into(),
+            color: SOURCE_COLORS[1],
+            input_kind: InputKind::VernierGoDirect,
+        };
+
+        let polar_config = source_output_config(config.clone(), &polar).unwrap();
+        assert_eq!(polar_config.outputs.len(), 2);
+        assert!(polar_config.outputs.iter().any(|id| id == "raw_ecg"));
+        assert!(polar_config.outputs.iter().any(|id| id == "raw_acc"));
+        assert_eq!(polar_config.stream_name, "Polar-H10_source-1");
+
+        let vernier_config = source_output_config(config, &vernier).unwrap();
+        assert_eq!(vernier_config.outputs, ["raw_force"]);
+        assert_eq!(vernier_config.stream_name, "Polar-H10_source-2");
+    }
+
+    #[cfg(feature = "rusty-lsl-backend")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn rusty_lsl_polling_uses_the_blocking_pool_and_stops_within_a_bound() {
         let stop = Arc::new(AtomicBool::new(false));

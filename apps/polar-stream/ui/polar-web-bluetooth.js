@@ -249,6 +249,7 @@
       this.calibration = [];
       this.lastCalibrationAttemptSeconds = Number.NEGATIVE_INFINITY;
       this.center = [0, 0, 0];
+      this.baseline = [0, 0, 0];
       this.axis = [0, 1, 0];
       this.boundMin = -0.02;
       this.boundMax = 0.02;
@@ -261,6 +262,9 @@
       this.hasEmittedVolume = false;
       this.elapsedSeconds = 0;
       this.lastPushAt = null;
+      this.motionFiltered = [0, 0, 0];
+      this.hasMotionFiltered = false;
+      this.motionDeltaEmaG = 0;
     }
 
     applySettings(settings) {
@@ -276,8 +280,17 @@
       return Math.max(0.001, Math.min(1, 2 / (this.settings.smoothingWindowSeconds * SAMPLE_RATE_HZ + 1)));
     }
 
-    phaseDeltaThreshold() {
-      return 0.0005 + ((1 - this.settings.sensitivity) ** 2) * 0.015625;
+    phaseVelocityThresholdPerSecond() {
+      return (0.0005 + ((1 - this.settings.sensitivity) ** 2) * 0.015625) / 0.05;
+    }
+
+    classifyPhaseDelta(normalizedDelta, batchDurationSeconds) {
+      const duration = Math.max(1 / SAMPLE_RATE_HZ, batchDurationSeconds);
+      const velocity = normalizedDelta / duration;
+      const threshold = this.phaseVelocityThresholdPerSecond();
+      if (velocity > threshold) return 1;
+      if (velocity < -threshold) return -1;
+      return 0;
     }
 
     push(samples, nowMilliseconds = performance.now()) {
@@ -289,7 +302,19 @@
       const alpha = this.smoothingAlpha();
 
       for (const sample of samples) {
-        const current = [sample.xMg / 1000, sample.yMg / 1000, sample.zMg / 1000]
+        const raw = [sample.xMg / 1000, sample.yMg / 1000, sample.zMg / 1000];
+        if (!this.hasMotionFiltered) {
+          this.motionFiltered = [...raw];
+          this.hasMotionFiltered = true;
+        } else {
+          const previous = [...this.motionFiltered];
+          this.motionFiltered = this.motionFiltered
+            .map((axis, index) => axis + (raw[index] - axis) * alpha);
+          const delta = subtract(this.motionFiltered, previous);
+          const magnitude = Math.sqrt(dot(delta, delta));
+          this.motionDeltaEmaG += (magnitude - this.motionDeltaEmaG) * 0.01;
+        }
+        const current = raw
           .map((axis, index) => this.settings.axes[index] ? axis : 0);
         if (!this.hasFiltered) {
           this.filtered = current;
@@ -309,26 +334,34 @@
           }
         }
         if (this.calibrated) {
-          this.projection = dot(subtract(this.filtered, this.center), this.axis);
+          const baselineAlpha = 1 / (SAMPLE_RATE_HZ * 10);
+          this.baseline = this.baseline.map((axis, index) => (
+            axis + (this.filtered[index] - axis) * baselineAlpha
+          ));
+          this.projection = dot(subtract(this.filtered, this.baseline), this.axis);
           this.updateAdaptiveBounds();
           latestVolume = inverseLerp(this.boundMin, this.boundMax, this.projection);
         }
       }
 
+      const motionScore = this.motionScore();
+      const ready = this.calibrated && !stale && motionScore >= 0.35;
+      const confidence = ready ? this.signalConfidence(motionScore) : 0;
       let phase = 0;
-      if (this.calibrated && !stale) {
+      if (ready) {
         if (!this.hasEmittedVolume) {
           this.hasEmittedVolume = true;
         } else {
           const delta = latestVolume - this.lastEmittedVolume;
-          if (delta > this.phaseDeltaThreshold()) phase = 1;
-          else if (delta < -this.phaseDeltaThreshold()) phase = -1;
+          phase = this.classifyPhaseDelta(delta, samples.length / SAMPLE_RATE_HZ);
         }
       }
       this.lastEmittedVolume = latestVolume;
       const values = [
         { id: "breathing_calibration", value: Math.max(0, Math.min(1, this.calibration.length / this.calibrationTarget())) },
         { id: "breathing_phase", value: phase },
+        { id: "breathing_signal_confidence", value: confidence },
+        { id: "breathing_signal_ready", value: ready ? 1 : 0 },
       ];
       if (this.calibrated) {
         values.push(
@@ -339,6 +372,8 @@
       }
       return {
         calibrated: this.calibrated,
+        ready,
+        confidence01: confidence,
         phase,
         magnitudeG: this.projection,
         volume01: latestVolume,
@@ -388,6 +423,7 @@
       high -= ease;
       if (high <= low) return;
       this.center = center;
+      this.baseline = [...center];
       this.axis = axis;
       this.boundMin = low;
       this.boundMax = high;
@@ -397,7 +433,6 @@
     }
 
     updateAdaptiveBounds() {
-      if (!this.settings.adaptiveBounds) return;
       const last = this.adaptiveProjections[this.adaptiveProjections.length - 1];
       if (last && this.elapsedSeconds - last.time < 0.05) return;
       this.adaptiveProjections.push({ time: this.elapsedSeconds, value: this.projection });
@@ -405,6 +440,7 @@
       while (this.adaptiveProjections.length && this.adaptiveProjections[0].time < cutoff) {
         this.adaptiveProjections.shift();
       }
+      if (!this.settings.adaptiveBounds) return;
       if (this.elapsedSeconds - this.lastAdaptiveUpdateSeconds < 0.5
         || this.adaptiveProjections.length < 80) return;
       this.lastAdaptiveUpdateSeconds = this.elapsedSeconds;
@@ -417,6 +453,44 @@
         || span > this.calibrationSpan * 2) return;
       this.boundMin += (low - this.boundMin) * 0.2;
       this.boundMax += (high - this.boundMax) * 0.2;
+    }
+
+    motionScore() {
+      const threshold = Math.max(this.settings.minimumAxisRangeG * 0.1, 0.001);
+      const ratio = this.motionDeltaEmaG / threshold;
+      return Math.max(0, Math.min(1, 1 / (1 + ratio * ratio)));
+    }
+
+    signalConfidence(motionScore) {
+      const rangeScore = Math.max(0, Math.min(1,
+        (this.boundMax - this.boundMin) / (this.settings.minimumAxisRangeG * 2)));
+      const coverage = Math.max(0, Math.min(1, this.adaptiveProjections.length / (SAMPLE_RATE_HZ * 0.8)));
+      return Math.max(0, Math.min(1,
+        rangeScore * motionScore * (0.4 + 0.6 * coverage * this.periodicityScore())));
+    }
+
+    periodicityScore() {
+      if (this.adaptiveProjections.length < 80) return 0;
+      const samples = this.adaptiveProjections.map((entry) => entry.value);
+      const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+      const centered = samples.map((value) => value - mean);
+      const maximumLag = Math.min(250, centered.length - 40);
+      let best = 0;
+      for (let lag = 29; lag <= maximumLag; lag += 1) {
+        let covariance = 0;
+        let leftEnergy = 0;
+        let rightEnergy = 0;
+        for (let index = lag; index < centered.length; index += 1) {
+          const left = centered[index - lag];
+          const right = centered[index];
+          covariance += left * right;
+          leftEnergy += left * left;
+          rightEnergy += right * right;
+        }
+        const denominator = Math.sqrt(leftEnergy * rightEnergy);
+        if (denominator > 1e-12) best = Math.max(best, Math.max(0, Math.min(1, covariance / denominator)));
+      }
+      return best;
     }
   }
 
@@ -532,7 +606,10 @@
 
     updateConfig(config = {}) {
       this.outputs = new Set(config.outputs || []);
-      const candidates = ["breathing_phase", "acc_breathing_magnitude"];
+      const candidates = [
+        "breathing_volume", "breathing_signal_confidence", "breathing_signal_ready",
+        "breathing_phase", "acc_breathing_magnitude", "breathing_calibration", "breathing_axis_range",
+      ];
       let settings = defaultBreathingSettings();
       for (const id of candidates) {
         const processing = config.metricOptions?.[id]?.processing || {};
@@ -556,6 +633,7 @@
       }
       this.onEvent = onEvent;
       this.updateConfig(config);
+      this.breathing.reset();
       this.disconnecting = false;
       try {
         this.emit({ kind: "status", message: "Choose your Polar H10 in the browser Bluetooth prompt…" });
@@ -678,9 +756,18 @@
         const frame = decodePmd(event.target.value);
         this.emit(frame);
         if (frame.kind === "accelerometer"
-          && (this.outputs.has("breathing_phase") || this.outputs.has("acc_breathing_magnitude"))) {
+          && [
+            "breathing_volume", "breathing_signal_confidence", "breathing_signal_ready",
+            "breathing_phase", "acc_breathing_magnitude", "breathing_calibration", "breathing_axis_range",
+          ].some((id) => this.outputs.has(id))) {
           const snapshot = this.breathing.push(frame.samples);
-          if (snapshot) this.emit({ kind: "metrics", values: snapshot.values });
+          if (snapshot) {
+            this.emit({
+              kind: "metrics",
+              sensorTimestampNs: frame.sensorTimestampNs,
+              values: snapshot.values,
+            });
+          }
         }
       } catch (error) {
         this.emit({ kind: "error", message: `Skipped malformed browser PMD frame: ${error.message}` });
@@ -730,6 +817,7 @@
         this.disconnecting = false;
       }
       if (emit && (wasConnected || this.onEvent)) {
+        this.emitBreathingUnavailable();
         this.emit({
           kind: "connection",
           connected: false,
@@ -761,6 +849,7 @@
       this.pmdData = null;
       this.heartRate = null;
       this.device = null;
+      this.emitBreathingUnavailable();
       this.emit({
         kind: "connection",
         connected: false,
@@ -772,6 +861,15 @@
         message: "The H10 left Bluetooth range or disconnected",
       });
       this.onEvent = null;
+    }
+
+    emitBreathingUnavailable() {
+      const values = [
+        { id: "breathing_phase", value: 0 },
+        { id: "breathing_signal_confidence", value: 0 },
+        { id: "breathing_signal_ready", value: 0 },
+      ].filter(({ id }) => this.outputs.has(id));
+      if (values.length) this.emit({ kind: "metrics", values });
     }
 
     emit(event) {

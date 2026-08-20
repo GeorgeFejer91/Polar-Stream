@@ -2813,6 +2813,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "uuid",
+ "vernier-gdx-input",
 ]
 
 [[package]]
@@ -4415,6 +4416,26 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "vernier-gdx-core"
+version = "0.4.0"
+dependencies = [
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "vernier-gdx-input"
+version = "0.4.0"
+dependencies = [
+ "btleplug",
+ "futures-util",
+ "serde",
+ "tokio",
+ "uuid",
+ "vernier-gdx-core",
 ]
 
 [[package]]
