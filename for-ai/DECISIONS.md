@@ -807,11 +807,25 @@ checked-in fixture remains unchanged. This conditioning is identified as
 recorded-preview behavior and cannot enter live H10 acquisition, native raw
 publication, or physical-device claims.
 
-Compact and detail metric SVGs tile closed paths, and Formula Lab continuously
-scrolls two closed copies of its recorded before/after trace. Categorical
-outputs such as breathing phase remain integer-stepped rather than acquiring
-invented intermediate values. Reduced-motion users receive the same closed
-trace as a static view instead of forced animation.
+The selected metric SVG tiles a closed path, and Formula Lab continuously
+scrolls two closed copies of its recorded before/after trace. Metric list rows
+remain static so the library never runs dozens of concurrent decorative
+animations. Categorical outputs such as breathing phase remain integer-stepped
+rather than acquiring invented intermediate values. Reduced-motion users receive
+the same closed trace as a static view instead of forced animation.
+
+## 2026-08-22 — Metric detail is a concise preview, summary, and reviewed sources
+
+Clicking a metric opens one focused window with exactly three content sections:
+one looping SVG output example, a two- or three-sentence scientific summary, and
+two or three reviewed sources. Formula definitions, stream metadata, evidence
+badges, and pre-add settings do not appear in this window; Formula Lab and the
+post-add **Adjust** flow retain those capabilities.
+
+The Rust catalog is authoritative for each metric's source set, and the browser
+asset is generated from it. Native citation opening accepts only an exact HTTPS
+URL from the selected metric's reviewed set, preventing arbitrary shell-open
+requests from a modified frontend.
 
 ## 2026-08-15 — Completed edits synchronize source, desktop install, and live Pages
 

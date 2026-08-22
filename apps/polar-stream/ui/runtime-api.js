@@ -325,7 +325,7 @@
       return invoke("update_output_config", { config });
     },
     async openMetricCitation(metricId, url) {
-      if (isNative) return invoke("open_metric_citation", { metricId });
+      if (isNative) return invoke("open_metric_citation", { metricId, sourceUrl: url });
       const parsed = new URL(url);
       if (parsed.protocol !== "https:") {
         throw new RuntimeError("UNSAFE_CITATION_URL", "Only HTTPS citations can be opened.");

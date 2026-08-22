@@ -1,6 +1,6 @@
 # Current state
 
-Last verified: 2026-08-20
+Last verified: 2026-08-22
 
 ## Implemented
 
@@ -168,14 +168,15 @@ Last verified: 2026-08-20
   and explicitly experimental metric modules.
 - Three-panel Tauri UI with remembered native preferences.
 - Deterministic metric previews derived from the canonical anonymized 60-second
-  real H10 ECG/ACC recording, with its fingerprint checked in the asset. Compact,
-  detail, and Formula Lab traces run as closed continuous loops; categorical
-  outputs remain stepped.
+  real H10 ECG/ACC recording, with its fingerprint checked in the asset. Only the
+  selected metric renders an SVG loop; list rows remain static. Formula Lab
+  traces also run as closed continuous loops, and categorical outputs remain
+  stepped.
 - A one-at-a-time output picker exposes all 50 catalog metrics across ECG and
-  ACC families. Every metric has recorded preview coverage, a concise scientific
-  explainer, citation, and mathematical definition.
-- Pre-save preview controls update the recorded outcome for display window,
-  normalization, and the full experimental breathing configuration.
+  ACC families. Each selected metric shows exactly one SVG output loop, a
+  two- or three-sentence scientific explainer, and two or three reviewed sources.
+  Formula definitions and output settings remain available through Formula Lab
+  and post-add **Adjust** controls instead of crowding this preview.
 - Formula Lab maps source variables, keeps time as the automatic x-axis, offers
   metric templates plus explained calculator keys, validates formulas in Rust,
   and compares recorded input/output before saving.
@@ -188,7 +189,7 @@ Last verified: 2026-08-20
 - Red ECG / blue ACC output-library modes. ACC mode includes raw motion and the
   complete experimental breathing/breathing-dynamics catalog; every choice is
   still added individually rather than through a checkbox list.
-- Shared pre-save ACC breathing controls cover the signed projection, normalized
+- Shared post-add ACC breathing controls cover the signed projection, normalized
   0–1 waveform, phase, calibration/range, readiness, and confidence outputs:
   two or three axes (X + Z recommended), smoothing, phase sensitivity and
   direction; the signed projection can also use the output normalization layer.

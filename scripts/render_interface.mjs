@@ -206,34 +206,28 @@ try {
   assert.equal(library.source.version, "60-second anonymized fixture");
   assert.equal(library.source.model, "real-polar-h10-recording");
   assert.match(library.source.fixtureSha256, /^[a-f0-9]{64}$/);
-  assert.equal(await page.locator(".metric-option .metric-preview-svg").count(), library.visibleCount);
-  assert.equal(await page.locator(".metric-preview-missing").count(), 0);
+  assert.equal(await page.locator(".metric-option .metric-preview-svg").count(), 0, "metric rows must not animate before selection");
   assert.ok(!library.visibleIds.includes("raw_acc"), "ACC outputs leaked into ECG mode");
   assert.ok(!library.visibleIds.includes("breathing_phase"), "ACC breathing leaked into ECG mode");
-  const coverage = await page.locator(".metric-preview-compact").evaluateAll((figures) => figures.map((figure) => ({
-    id: figure.dataset.metricId,
-    paths: figure.querySelectorAll("path.metric-preview-line").length,
-    animations: figure.querySelectorAll("animateTransform").length,
-    pathLength: [...figure.querySelectorAll("path.metric-preview-line")]
-      .reduce((sum, path) => sum + (path.getAttribute("d")?.length || 0), 0),
-    minimum: Number(figure.dataset.minimum),
-    maximum: Number(figure.dataset.maximum),
-  })));
-  assert.equal(new Set(coverage.map((preview) => preview.id)).size, library.visibleCount);
-  for (const preview of coverage) {
-    assert.ok(preview.paths >= 1, `${preview.id} has no generated SVG path`);
-    assert.equal(preview.animations, 1, `${preview.id} compact preview is not continuously looped`);
-    assert.ok(preview.pathLength > 120, `${preview.id} SVG path was unexpectedly small`);
-    assert.ok(Number.isFinite(preview.minimum) && Number.isFinite(preview.maximum), `${preview.id} has no finite range`);
-    assert.ok(preview.maximum >= preview.minimum, `${preview.id} has an inverted range`);
+  for (const metric of library.detailCoverage) {
+    assert.ok(metric.sentenceCount >= 2 && metric.sentenceCount <= 3, `${metric.id} summary is not two or three sentences`);
+    assert.ok(metric.sourceCount >= 2 && metric.sourceCount <= 3, `${metric.id} does not have two or three sources`);
+    assert.equal(new Set(metric.sourceUrls).size, metric.sourceCount, `${metric.id} repeats a source`);
+    assert.ok(metric.sourceUrls.every((url) => /^https:\/\//.test(url)), `${metric.id} has a non-HTTPS source`);
   }
 
   for (const metricId of ["raw_ecg", "rmssd", "excitement_score"]) {
-    await page.locator(`.metric-option:has(.metric-preview[data-metric-id="${metricId}"])`).click();
+    await page.locator(`.metric-option[data-metric-id="${metricId}"]`).click();
     const detail = page.locator(`.metric-preview-large[data-metric-id="${metricId}"]`);
     assert.equal(await detail.count(), 1, `${metricId} did not render a selected-metric preview`);
     assert.ok(await detail.locator(".metric-preview-line").count() >= 2, `${metricId} preview path is missing`);
     assert.equal(await detail.locator("animateTransform").count(), 1, `${metricId} preview is not looped`);
+    assert.equal(await page.locator("#metric-detail article > section").count(), 3, `${metricId} detail contains extra sections`);
+    assert.equal(await page.locator(".metric-scientific-summary").count(), 1);
+    const sourceLinks = page.locator(".metric-source-list a");
+    const sourceLinkCount = await sourceLinks.count();
+    assert.ok(sourceLinkCount >= 2 && sourceLinkCount <= 3, `${metricId} source list has the wrong size`);
+    assert.equal(await page.locator(".metric-preview-settings, .metric-formula-context, .metric-stream-preview, .breathing-selection-settings").count(), 0);
   }
   await page.getByRole("button", { name: /ACC metrics/ }).click();
   assert.equal(await page.locator("#output-dialog").getAttribute("data-family"), "acc");
@@ -242,25 +236,18 @@ try {
   assert.ok(accIds.includes("raw_acc") && accIds.includes("breathing_phase") && accIds.includes("breath_interval_sampen"));
   assert.match(await page.locator("#metric-library-summary").textContent(), new RegExp(`^${accIds.length} of ${accIds.length} ACC metrics$`));
 
-  await page.locator('.metric-option[data-metric-id="acc_breathing_magnitude"]').click();
-  assert.equal(await page.locator(".experimental-badge").textContent(), "Not validated");
-  const selectionSettings = page.locator(".breathing-selection-settings");
-  assert.equal(await selectionSettings.getByLabel("Normalize output to 0–1").isChecked(), true);
-  assert.equal(await selectionSettings.getByLabel("X · recommended").isChecked(), true);
-  assert.equal(await selectionSettings.getByLabel("Y · rotational").isChecked(), false);
-  assert.equal(await selectionSettings.getByLabel("Z · recommended").isChecked(), true);
-
-  await page.locator('.metric-option[data-metric-id="breathing_phase"]').click();
-  assert.equal(await selectionSettings.getByLabel("Sensitivity").inputValue(), "0.6");
-  assert.equal(await selectionSettings.getByLabel("Invert inhale / exhale").isChecked(), false);
-  assert.match(await page.locator("#metric-detail").textContent(), /inhale \(\+1\), pause\/not ready \(0\), and exhale \(−1\)/);
-  assert.match(await page.locator(".metric-preview-provenance").textContent(), /Recorded Polar H10 · 60-second anonymized fixture/);
-  assert.match(await page.locator(".metric-preview-note").textContent(), /anonymized 60-second ECG\/ACC recording/);
+  for (const metricId of ["acc_breathing_magnitude", "breathing_phase", "breath_interval_sampen"]) {
+    await page.locator(`.metric-option[data-metric-id="${metricId}"]`).click();
+    assert.equal(await page.locator(`.metric-preview-large[data-metric-id="${metricId}"] animateTransform`).count(), 1);
+    assert.equal(await page.locator(".metric-scientific-summary").count(), 1);
+    assert.ok(await page.locator(".metric-source-list a").count() >= 2);
+    assert.equal(await page.locator("#metric-detail article > section").count(), 3, `${metricId} detail contains extra sections`);
+  }
   const previewScreenshot = join(output, "metric-library-previews.png");
   await page.screenshot({ path: previewScreenshot, fullPage: true });
   assert.ok((await stat(previewScreenshot)).size > 20_000, "metric library screenshot was unexpectedly empty");
 
-  process.stdout.write(`Validated stacked raw ACC, ${targets.length} classifier renders, saved controls, ${library.previewCount} recorded previews, and one explicit live-only Go Direct signal in ${output}\n`);
+  process.stdout.write(`Validated stacked raw ACC, ${targets.length} classifier renders, ${library.previewCount} concise clicked-metric previews with reviewed sources, saved controls, and one explicit live-only Go Direct signal in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

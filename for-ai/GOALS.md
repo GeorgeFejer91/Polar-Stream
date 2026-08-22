@@ -41,13 +41,14 @@ items into the dated history instead of silently deleting them.
 2. Keep the metric picker and Formula Lab evidence-first and approachable.
    - Preserve one-at-a-time output addition and the responsive ECG/ACC filter
      layout.
-   - Keep recorded previews for every catalog metric and update them live for
-     settings that affect display or published values.
-   - Keep compact, detail, Formula Lab, and recorded-input displays continuously
+   - Keep recorded preview coverage for every catalog metric, but animate only
+     the selected metric rather than every library row.
+   - Keep selected-detail, Formula Lab, and recorded-input displays continuously
      looped without a boundary gap; preserve categorical outputs as stepped states.
-   - Keep concise scientific context, citations, and mathematical definitions
-     on every metric; retain the Excite-O-Meter source link and distinguish it
-     from Polar Stream's experimental activation composite.
+   - Keep each selected metric focused on one SVG loop, a two- or three-sentence
+     scientific summary, and two or three reviewed sources. Retain the
+     Excite-O-Meter source and distinguish it from Polar Stream's experimental
+     activation composite.
    - Keep Formula Lab source-clock constraints, automatic time axis, templates,
      explained insert keyboard, recorded before/after preview, native resource
      bounds, and per-formula fault isolation.

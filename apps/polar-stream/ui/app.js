@@ -25,16 +25,64 @@
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
     breathing: ["Schipper et al. (2021)", "https://pubmed.ncbi.nlm.nih.gov/33739305/"],
-    complexity: ["Bará et al. (2024)", "https://consensus.app/papers/details/de562a29bb8454eda201852b544fd9d7/?utm_source=unknown"],
+    complexity: ["Bará et al. (2024)", "https://doi.org/10.1016/j.bbe.2024.04.004"],
     resonance: ["Sévoz-Couche & Laborde (2022)", "https://www.sciencedirect.com/science/article/abs/pii/S0149763422000653"],
-    quality: ["Smital et al. (2020)", "https://consensus.app/papers/details/ad2a724fefd55d25baee823438fc672e/?utm_source=unknown"],
-    stress: ["Immanuel et al. (2023)", "https://consensus.app/papers/details/14838ea9a9045710b4a676dbb7d595aa/?utm_source=unknown"],
+    quality: ["Smital et al. (2020)", "https://pubmed.ncbi.nlm.nih.gov/31995473/"],
+    stress: ["Immanuel et al. (2023)", "https://pmc.ncbi.nlm.nih.gov/articles/PMC10614455/"],
     exciteometer: ["Excite-O-Meter source implementation", "https://github.com/luisqtr/exciteometer/blob/main/docs/1_UserManual.md#scientific-disclaimer"],
   };
+  const fallbackSourceGroups = {
+    hrv: [
+      ["ESC/NASPE Task Force (1996)", "https://pubmed.ncbi.nlm.nih.gov/8737210/"],
+      ["Laborde, Mosley & Thayer (2017)", "https://pubmed.ncbi.nlm.nih.gov/28265249/"],
+      evidenceLinks.hrv,
+    ],
+    breathing: [
+      evidenceLinks.breathing,
+      ["Bates et al. (2021)", "https://pubmed.ncbi.nlm.nih.gov/33937389/"],
+      ["Aliverti (2024)", "https://pubmed.ncbi.nlm.nih.gov/38392009/"],
+    ],
+    complexity: [
+      evidenceLinks.complexity,
+      ["Angelini et al. (2007)", "https://pubmed.ncbi.nlm.nih.gov/17950584/"],
+      evidenceLinks.breathing,
+    ],
+    resonance: [
+      evidenceLinks.resonance,
+      ["Lehrer & Gevirtz (2014)", "https://pubmed.ncbi.nlm.nih.gov/25101026/"],
+      ["Laborde, Mosley & Thayer (2017)", "https://pubmed.ncbi.nlm.nih.gov/28265249/"],
+    ],
+    quality: [
+      evidenceLinks.quality,
+      ["Satija, Ramkumar & Manikandan (2018)", "https://pubmed.ncbi.nlm.nih.gov/29994590/"],
+      ["Liu et al. (2022)", "https://pubmed.ncbi.nlm.nih.gov/36359421/"],
+    ],
+    stress: [
+      evidenceLinks.stress,
+      ["Quintero et al. (2021)", "https://michagaebler.github.io/doc/Quintero2021_EoM.pdf"],
+      ["Laborde, Mosley & Thayer (2017)", "https://pubmed.ncbi.nlm.nih.gov/28265249/"],
+    ],
+    exciteometer: [
+      evidenceLinks.exciteometer,
+      ["Quintero et al. (2021)", "https://michagaebler.github.io/doc/Quintero2021_EoM.pdf"],
+      evidenceLinks.stress,
+    ],
+  };
+  function fallbackSources(id, source) {
+    const candidates = id === "raw_force"
+      ? [
+        ["Vernier GDX-RB user manual", "https://www.vernier.com/manuals/GDX-RB"],
+        ["Vernier Go Direct examples", "https://github.com/VernierST/godirect-examples"],
+        evidenceLinks.breathing,
+      ]
+      : fallbackSourceGroups[source] || fallbackSourceGroups.hrv;
+    return candidates.slice(0, 3).map(([label, url]) => ({ label, url }));
+  }
   const fallbackMetric = (id, streamSuffix, label, unit, category, source = "hrv", detail = "Real-time derived metric", raw = false, normalizable = true, rateHz = 0) => ({
     id, streamSuffix, label, detail, unit, category, raw, normalizable, rateHz,
     evidence: raw ? "device signal" : "research metric",
     citationLabel: evidenceLinks[source][0], citationUrl: evidenceLinks[source][1],
+    sources: fallbackSources(id, source),
     keywords: `${label} ${category}`.toLowerCase(),
     explainer: `${label} is exposed as a descriptive research signal using the formula named in this card. Its physiological meaning depends on signal quality, recording context and the cited method; it is not a diagnosis or a standalone emotional-state measure.`,
   });
@@ -1354,10 +1402,10 @@
     return element;
   }
 
-  function createMetricPreview(metric, { compact = false, animated = false } = {}) {
-    const data = metricPreviewData(metric, compact);
+  function createMetricPreview(metric, { animated = false } = {}) {
+    const data = metricPreviewData(metric);
     const figure = document.createElement("figure");
-    figure.className = `metric-preview${compact ? " metric-preview-compact" : " metric-preview-large"}`;
+    figure.className = "metric-preview metric-preview-large";
     figure.dataset.metricId = metric.id;
     if (!data?.channels?.length) {
       figure.classList.add("metric-preview-missing");
@@ -1374,13 +1422,12 @@
       class: "metric-preview-svg",
       viewBox: `0 0 ${width} ${height}`,
       preserveAspectRatio: "none",
-      role: compact ? "presentation" : "img",
-      "aria-hidden": compact ? "true" : "false",
-      "aria-label": compact ? "" : `Recorded Polar H10 outcome preview of ${metric.label}`,
+      role: "img",
+      "aria-label": `Recorded Polar H10 outcome preview of ${metric.label}`,
     });
     const title = svgElement("title");
     title.textContent = `${metric.label}: recorded Polar H10 outcome preview`;
-    svg.append(title, svgElement("rect", { class: "metric-preview-background", width, height, rx: compact ? 5 : 8 }));
+    svg.append(title, svgElement("rect", { class: "metric-preview-background", width, height, rx: 8 }));
     for (const fraction of [0.25, 0.5, 0.75]) {
       svg.append(svgElement("line", {
         class: "metric-preview-grid",
@@ -1394,7 +1441,7 @@
     const clipId = `metric-preview-clip-${metricPreviewSequence += 1}`;
     const definitions = svgElement("defs");
     const clipPath = svgElement("clipPath", { id: clipId });
-    clipPath.append(svgElement("rect", { width, height, rx: compact ? 5 : 8 }));
+    clipPath.append(svgElement("rect", { width, height, rx: 8 }));
     definitions.append(clipPath);
     svg.append(definitions);
     const group = svgElement("g", { "clip-path": `url(#${clipId})` });
@@ -1404,7 +1451,7 @@
           class: "metric-preview-line",
           d: channel.path || previewPath(channel.values, data.minimum, data.maximum, width, height, metric.id === "breathing_phase"),
           stroke: channel.color,
-          "stroke-width": compact ? 1.3 : 2,
+          "stroke-width": 2,
           transform: offset ? `translate(${offset} 0)` : "",
         }));
       }
@@ -1423,26 +1470,15 @@
     }
     svg.append(group);
     figure.append(svg);
-
-    if (!compact) {
-      const caption = document.createElement("figcaption");
-      const legend = data.channels.map((channel) => channel.label).join(" · ");
-      caption.textContent = metric.id === "breathing_phase"
-        ? `${legend} · −1 exhale · 0 pause/not ready · +1 inhale`
-        : `${legend} · ${data.durationSeconds}s recorded view · ${formatPreviewRange(data.minimum, data.maximum, previewUnit(metric))}`;
-      figure.append(caption);
-    }
     return figure;
   }
 
-  function metricPreviewData(metric, compact) {
+  function metricPreviewData(metric) {
     const stored = metricPreviews?.metrics?.[metric.id];
     if (!stored?.channels?.length) return stored;
-    const settings = compact || app.selectedMetricId !== metric.id
-      ? { normalization: "none", windowSeconds: 60, displayWindowSeconds: stored.durationSeconds }
-      : app.libraryMetricDraft || metricOptionFor(metric.id, { forSelection: true });
+    const settings = app.libraryMetricDraft || metricOptionFor(metric.id, { forSelection: true });
 
-    if (!compact && previewRecording && metric.formulaTemplate) {
+    if (previewRecording && metric.formulaTemplate) {
       try {
         const result = formulaPreview.preview(previewRecording, {
           id: `preview-${metric.id}`,
@@ -1563,31 +1599,12 @@
     }).join("");
   }
 
-  function previewUnit(metric) {
-    return app.selectedMetricId === metric.id && app.libraryMetricDraft?.normalization !== "none" ? "0–1" : metric.unit;
-  }
-
-  function formatPreviewRange(minimum, maximum, unit) {
-    const significant = (value) => Math.abs(value) >= 100
-      ? Math.round(value).toLocaleString()
-      : Number(value).toLocaleString(undefined, { maximumFractionDigits: Math.abs(value) < 1 ? 3 : 1 });
-    return `${significant(minimum)}–${significant(maximum)} ${unit}`;
-  }
-
   function createMetricPreviewPanel(metric) {
     const section = document.createElement("section");
     section.className = "metric-preview-panel";
-    const header = document.createElement("div");
     const title = document.createElement("h4");
-    title.textContent = "Seamless recorded outcome preview";
-    const provenance = document.createElement("span");
-    provenance.className = "metric-preview-provenance";
-    provenance.textContent = `${metricPreviews?.source?.library || "Recorded Polar H10"} · ${metricPreviews?.source?.version || "canonical fixture"}`;
-    header.append(title, provenance);
-    const note = document.createElement("p");
-    note.className = "metric-preview-note";
-    note.textContent = "The preview continuously loops the anonymized 60-second ECG/ACC recording with a presentation-only seam. It shows how the selected settings transform that recording, not expected personal values or validation accuracy.";
-    section.append(header, createMetricPreview(metric, { animated: true }), note);
+    title.textContent = "Animated output preview";
+    section.append(title, createMetricPreview(metric, { animated: true }));
     return section;
   }
 
@@ -1687,7 +1704,6 @@
       state.textContent = app.outputs.has(metric.id)
         ? "ADDED"
         : support.supported ? "›" : "DESKTOP";
-      const preview = createMetricPreview(metric, { compact: true, animated: true });
       option.addEventListener("click", () => {
         app.selectedMetricId = metric.id;
         app.libraryMetricDraft = structuredClone(metricOptionFor(metric.id, { forSelection: true }));
@@ -1699,7 +1715,7 @@
         renderMetricDetail();
         setMetricLibraryView("detail");
       });
-      option.append(mark, copy, preview, state);
+      option.append(mark, copy, state);
       return option;
     });
     if (!options.length) {
@@ -1745,91 +1761,45 @@
     category.textContent = metric.category;
     const title = document.createElement("h3");
     title.textContent = metric.label;
-    const evidence = document.createElement("span");
-    evidence.className = "evidence-badge";
-    evidence.textContent = metric.evidence || "research metric";
-    header.append(category, title, evidence);
+    header.append(category, title);
 
-    const measurement = document.createElement("section");
-    const measurementTitle = document.createElement("h4");
-    measurementTitle.textContent = "What this output measures";
-    const measurementCopy = document.createElement("p");
-    measurementCopy.textContent = metric.detail;
-    measurement.append(measurementTitle, measurementCopy);
-
-    const consensus = document.createElement("section");
-    const consensusTitle = document.createElement("h4");
-    consensusTitle.textContent = "Current scientific view";
-    const consensusCopy = document.createElement("p");
-    consensusCopy.textContent = metric.explainer;
-    consensus.append(consensusTitle, consensusCopy);
+    const summary = document.createElement("section");
+    summary.className = "metric-scientific-summary";
+    const summaryTitle = document.createElement("h4");
+    summaryTitle.textContent = "Scientific summary";
+    const summaryCopy = document.createElement("p");
+    summaryCopy.textContent = metric.explainer;
+    summary.append(summaryTitle, summaryCopy);
 
     const source = document.createElement("section");
-    source.className = "metric-source";
+    source.className = "metric-sources";
     const sourceTitle = document.createElement("h4");
-    sourceTitle.textContent = "Research source";
-    const citation = document.createElement("a");
-    citation.href = isNative ? `#citation-${metric.id}` : metric.citationUrl;
-    if (!isNative) {
-      citation.target = "_blank";
-      citation.rel = "noreferrer";
-    }
-    citation.textContent = `${metric.citationLabel} ↗`;
-    citation.addEventListener("click", (event) => {
-      event.preventDefault();
-      runtime.openMetricCitation(metric.id, metric.citationUrl)
-        .catch((error) => toast(runtime.formatError(error), true));
-    });
-    source.append(sourceTitle, citation);
-
-    const mathematics = document.createElement("section");
-    mathematics.className = "metric-formula-context";
-    const mathematicsTitle = document.createElement("h4");
-    mathematicsTitle.textContent = "Equivalent mathematical definition";
-    const formula = document.createElement("code");
-    formula.textContent = metric.formula || "See the processor implementation.";
-    mathematics.append(mathematicsTitle, formula);
-    if (metric.formulaTemplate) {
-      const useFormula = document.createElement("button");
-      useFormula.type = "button";
-      useFormula.className = "secondary-button compact";
-      useFormula.textContent = "Open editable formula + preview";
-      useFormula.addEventListener("click", () => {
-        elements["output-dialog"].close();
-        void openFormulaLab(metric);
+    sourceTitle.textContent = "Sources";
+    const sourceList = document.createElement("ul");
+    sourceList.className = "metric-source-list";
+    const citations = (Array.isArray(metric.sources) && metric.sources.length
+      ? metric.sources
+      : [{ label: metric.citationLabel, url: metric.citationUrl }]).slice(0, 3);
+    citations.forEach((entry, index) => {
+      const item = document.createElement("li");
+      const citation = document.createElement("a");
+      citation.href = isNative ? `#citation-${metric.id}-${index + 1}` : entry.url;
+      if (!isNative) {
+        citation.target = "_blank";
+        citation.rel = "noreferrer";
+      }
+      citation.textContent = `${entry.label} ↗`;
+      citation.addEventListener("click", (event) => {
+        event.preventDefault();
+        runtime.openMetricCitation(metric.id, entry.url)
+          .catch((error) => toast(runtime.formatError(error), true));
       });
-      mathematics.append(useFormula);
-    } else {
-      const note = document.createElement("p");
-      note.textContent = "This definition uses a specialized multi-stage processor. Formula Lab is scalar and bounded, so this metric is documented here but is not presented as a misleading one-line executable template.";
-      mathematics.append(note);
-    }
+      item.append(citation);
+      sourceList.append(item);
+    });
+    source.append(sourceTitle, sourceList);
 
-    const stream = document.createElement("section");
-    stream.className = "metric-stream-preview";
-    const streamTitle = document.createElement("h4");
-    streamTitle.textContent = "Output created on save";
-    const streamName = document.createElement("code");
-    streamName.textContent = streamOutputName(metric, elements["stream-name"].value);
-    const streamMeta = document.createElement("p");
-    const transports = [
-      elements["lsl-toggle"].checked ? "LSL" : null,
-      elements["osc-toggle"].checked ? "OSC" : null,
-      elements["csv-toggle"].checked ? "CSV" : null,
-      elements["audio-toggle"].checked ? "audio data" : null,
-    ].filter(Boolean);
-    const normalizedMagnitude = metric.id === "acc_breathing_magnitude"
-      && app.libraryMetricDraft?.normalization !== "none";
-    streamMeta.textContent = `${metric.channels} channel${metric.channels === 1 ? "" : "s"} · ${normalizedMagnitude ? "0–1 normalized from g" : metric.unit} · ${transports.length ? transports.join(" + ") : "enable an Output destination"}`;
-    stream.append(streamTitle, streamName, streamMeta);
-
-    const breathingSettings = breathingOutputIds.has(metric.id)
-      ? createBreathingSelectionSettings(metric)
-      : null;
-    article.append(header);
-    article.append(createPreviewSelectionSettings(metric));
-    if (breathingSettings) article.append(breathingSettings);
-    article.append(createMetricPreviewPanel(metric), measurement, mathematics, consensus, source, stream);
+    article.append(header, createMetricPreviewPanel(metric), summary, source);
     elements["metric-detail"].replaceChildren(article);
     const alreadyAdded = app.outputs.has(metric.id);
     const support = runtime.outputSupport(metric.id, app.currentInputKind);
@@ -1849,180 +1819,6 @@
         : invalidBounds ? "Keep at least 0.10 between quantile bounds" : `Ready to add ${metric.label}`;
   }
 
-  function createPreviewSelectionSettings(metric) {
-    const section = document.createElement("section");
-    section.className = "metric-preview-settings";
-    const heading = document.createElement("header");
-    const title = document.createElement("h4");
-    title.textContent = "Try output settings live";
-    const badge = document.createElement("span");
-    badge.textContent = "RECORDED DATA";
-    heading.append(title, badge);
-    const controls = document.createElement("div");
-    controls.className = "inline-setting-grid";
-    const settings = app.libraryMetricDraft || metricOptionFor(metric.id, { forSelection: true });
-    controls.append(numberSetting(
-      "Display window",
-      "Seconds shown in the visualizer; this does not change published samples.",
-      settings.displayWindowSeconds,
-      1,
-      600,
-      1,
-      (value) => {
-        settings.displayWindowSeconds = clampNumber(value, 1, 600, 5);
-        refreshSelectedMetricPreview(metric);
-      },
-    ));
-    if (metric.normalizable) {
-      controls.append(selectSetting(
-        "Published scale",
-        "Normalization changes both published values and the visualizer. Watch the recorded trace update.",
-        settings.normalization,
-        [["none", "Original units"], ["slidingWindow", "0–1 sliding window"], ["session", "0–1 whole run"]],
-        (value) => {
-          settings.normalization = value;
-          renderMetricDetail();
-        },
-      ));
-      if (settings.normalization === "slidingWindow") {
-        controls.append(numberSetting(
-          "Normalization window",
-          "Seconds retained for the running minimum and maximum.",
-          settings.windowSeconds,
-          5,
-          3600,
-          5,
-          (value) => {
-            settings.windowSeconds = clampNumber(value, 5, 3600, 60);
-            refreshSelectedMetricPreview(metric);
-          },
-        ));
-      }
-    }
-    section.append(heading, controls);
-    return section;
-  }
-
-  function refreshSelectedMetricPreview(metric) {
-    window.requestAnimationFrame(() => {
-      if (app.selectedMetricId !== metric.id) return;
-      const current = elements["metric-detail"].querySelector(".metric-preview-panel");
-      current?.replaceWith(createMetricPreviewPanel(metric));
-      const meta = elements["metric-detail"].querySelector(".metric-stream-preview p");
-      if (meta) meta.textContent = `${metric.channels} channel${metric.channels === 1 ? "" : "s"} · ${previewUnit(metric)} · settings previewed above`;
-    });
-  }
-
-  function createBreathingSelectionSettings(metric) {
-    const section = document.createElement("section");
-    section.className = "breathing-selection-settings";
-    const header = document.createElement("header");
-    const title = document.createElement("h4");
-    title.textContent = "Configure before adding";
-    const badge = document.createElement("span");
-    badge.className = "experimental-badge";
-    badge.textContent = "Not validated";
-    header.append(title, badge);
-    const copy = document.createElement("p");
-    copy.textContent = metric.id === "breathing_phase"
-      ? "The classifier publishes only inhale (+1), pause/not ready (0), and exhale (−1)."
-      : "This retains the continuous selected-axis projection so breathing timing can be explored downstream.";
-
-    const axesTitle = document.createElement("h4");
-    axesTitle.textContent = "Axes included · X + Z recommended";
-    const axes = document.createElement("div");
-    axes.className = "axis-selector";
-    const draft = app.libraryMetricDraft.processing.breathing;
-    ["X", "Y", "Z"].forEach((label, index) => {
-      const choice = document.createElement("label");
-      choice.className = `axis-choice${index !== 1 ? " recommended" : ""}`;
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = Boolean(draft.axes[index]);
-      input.addEventListener("change", () => {
-        draft.axes[index] = input.checked;
-        updateBreathingSelectionStatus(section, metric);
-      });
-      const text = document.createElement("span");
-      text.textContent = index === 1 ? `${label} · rotational` : `${label} · recommended`;
-      choice.append(input, text);
-      axes.append(choice);
-    });
-
-    const controls = document.createElement("div");
-    controls.className = "inline-setting-grid";
-    controls.append(numberSetting(
-      "Smoothing window",
-      "Seconds of ACC smoothing; longer is steadier but adds lag.",
-      draft.smoothingWindowSeconds,
-      0.05,
-      5,
-      0.05,
-      (value) => draft.smoothingWindowSeconds = clampNumber(value, 0.05, 5, 0.75),
-    ));
-    if (metric.id === "breathing_phase") {
-      controls.append(
-        numberSetting(
-          "Sensitivity",
-          "0 is conservative; 1 reacts to smaller changes.",
-          draft.sensitivity,
-          0,
-          1,
-          0.05,
-          (value) => draft.sensitivity = clampNumber(value, 0, 1, 0.60),
-        ),
-        checkSetting(
-          "Invert inhale / exhale",
-          "Use when strap orientation reverses the inferred direction.",
-          draft.invertDirection,
-          (value) => draft.invertDirection = value,
-        ),
-      );
-    } else {
-      controls.append(checkSetting(
-        "Normalize output to 0–1",
-        "Uses a 20-second sliding range; disable to retain the projection in g.",
-        app.libraryMetricDraft.normalization !== "none",
-        (value) => {
-          app.libraryMetricDraft.normalization = value ? "slidingWindow" : "none";
-          app.libraryMetricDraft.windowSeconds = 20;
-          renderMetricDetail();
-        },
-      ));
-    }
-    const advanced = document.createElement("details");
-    advanced.className = "breathing-advanced-settings";
-    const advancedSummary = document.createElement("summary");
-    advancedSummary.textContent = "Advanced experiment parameters";
-    const advancedCopy = document.createElement("p");
-    advancedCopy.textContent = "These settings change calibration acceptance and adaptation. Record them with every experiment.";
-    const advancedControls = document.createElement("div");
-    advancedControls.className = "inline-setting-grid";
-    const updateNumber = (key, minimum, maximum, fallback) => (value) => {
-      draft[key] = clampNumber(value, minimum, maximum, fallback);
-      updateBreathingSelectionStatus(section, metric);
-    };
-    advancedControls.append(
-      numberSetting("Calibration window", "Quiet seconds used to learn the principal motion axis.", draft.calibrationWindowSeconds, 1, 60, 1, updateNumber("calibrationWindowSeconds", 1, 60, 12)),
-      numberSetting("Minimum axis range", "Minimum calibrated selected-axis travel in g.", draft.minimumAxisRangeG, 0.001, 0.25, 0.001, updateNumber("minimumAxisRangeG", 0.001, 0.25, 0.01)),
-      numberSetting("Stale timeout", "Notification gap in seconds that forces not-ready / pause output.", draft.staleTimeoutSeconds, 0.25, 30, 0.25, updateNumber("staleTimeoutSeconds", 0.25, 30, 3)),
-      checkSetting("Adaptive bounds", "Allow accepted recent projection ranges to update the 0–1 calibration.", draft.adaptiveBounds, (value) => {
-        draft.adaptiveBounds = value;
-        updateBreathingSelectionStatus(section, metric);
-      }),
-      numberSetting("Adaptive window", "Seconds retained for recent projection quantiles.", draft.adaptiveWindowSeconds, 5, 300, 1, updateNumber("adaptiveWindowSeconds", 5, 300, 20)),
-      numberSetting("Lower quantile", "Low robust bound; allowed range 0.00–0.40.", draft.lowerQuantile, 0, 0.40, 0.01, updateNumber("lowerQuantile", 0, 0.40, 0.05)),
-      numberSetting("Upper quantile", "High robust bound; allowed range 0.60–1.00.", draft.upperQuantile, 0.60, 1, 0.01, updateNumber("upperQuantile", 0.60, 1, 0.95)),
-    );
-    advanced.append(advancedSummary, advancedCopy, advancedControls);
-    const status = document.createElement("div");
-    status.className = "breathing-selection-status";
-    status.dataset.role = "breathing-status";
-    section.append(header, copy, axesTitle, axes, controls, advanced, status);
-    updateBreathingSelectionStatus(section, metric);
-    return section;
-  }
-
   function selectedAxisCount(axes) {
     return Array.isArray(axes) ? axes.filter(Boolean).length : 0;
   }
@@ -2030,30 +1826,6 @@
   function breathingDraftIsInvalid(breathing) {
     return selectedAxisCount(breathing.axes) < 2
       || breathing.upperQuantile - breathing.lowerQuantile < 0.10;
-  }
-
-  function updateBreathingSelectionStatus(section, metric) {
-    const count = selectedAxisCount(app.libraryMetricDraft.processing.breathing.axes);
-    const status = section.querySelector('[data-role="breathing-status"]');
-    const save = elements["save-metric-output"];
-    const alreadyAdded = app.outputs.has(metric.id);
-    const invalidAxes = count < 2;
-    const invalidBounds = app.libraryMetricDraft.processing.breathing.upperQuantile
-      - app.libraryMetricDraft.processing.breathing.lowerQuantile < 0.10;
-    const invalid = invalidAxes || invalidBounds;
-    status.classList.toggle("invalid", invalid);
-    status.textContent = invalidAxes
-      ? "Select at least two axes. The recommended setup is X + Z without the rotational Y axis."
-      : invalidBounds
-        ? "Keep at least 0.10 between the lower and upper calibration quantiles."
-        : `${count} axes selected · ${app.libraryMetricDraft.processing.breathing.calibrationWindowSeconds}-second quiet calibration restarts when these settings change.`;
-    save.disabled = alreadyAdded || invalid;
-    elements["dialog-output-status"].textContent = alreadyAdded
-      ? `${metric.label} is already in Output`
-      : invalidAxes
-        ? "Choose at least two axes"
-        : invalidBounds ? "Adjust the calibration quantiles" : `Ready to add ${metric.label}`;
-    refreshSelectedMetricPreview(metric);
   }
 
   async function openFormulaLab(metric = null, formulaId = null) {
@@ -3424,6 +3196,12 @@
         previewCount: previewIds.length,
         missingPreviewIds: app.catalog.map((metric) => metric.id).filter((id) => !previewIds.includes(id)),
         source: structuredClone(metricPreviews?.source || {}),
+        detailCoverage: app.catalog.map((metric) => ({
+          id: metric.id,
+          sentenceCount: (metric.explainer.match(/[.!?](?:\s|$)/g) || []).length,
+          sourceCount: metric.sources?.length || 0,
+          sourceUrls: (metric.sources || []).map((source) => source.url),
+        })),
       };
     }
     if (name === "raw-accelerometer-stacked") {

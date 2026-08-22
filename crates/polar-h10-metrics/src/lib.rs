@@ -19,8 +19,8 @@ use serde::Serialize;
 pub use breathing::{BreathingPhase, BreathingProcessor, BreathingSettings, BreathingSnapshot};
 pub use breathing_dynamics::{BreathingDynamicsSnapshot, FeatureSet};
 pub use catalog::{
-    METRIC_CATALOG, MetricDefinition, MetricFormulaDefinition, metric_definition,
-    metric_formula_definition,
+    METRIC_CATALOG, MetricCitation, MetricDefinition, MetricFormulaDefinition, metric_citations,
+    metric_definition, metric_formula_definition,
 };
 pub use coherence::CoherenceSnapshot;
 pub use ecg::EcgSnapshot;
@@ -346,6 +346,32 @@ mod tests {
             assert!(
                 !metric.citation_label.trim().is_empty(),
                 "{} lacks a citation",
+                metric.id
+            );
+            let citations = metric_citations(*metric);
+            assert!(
+                (2..=3).contains(&citations.len()),
+                "{} needs two or three relevant sources",
+                metric.id
+            );
+            assert!(
+                citations
+                    .iter()
+                    .all(|citation| citation.url.starts_with("https://")
+                        && !citation.label.trim().is_empty()),
+                "{} has an invalid source",
+                metric.id
+            );
+            let mut urls = citations
+                .iter()
+                .map(|citation| citation.url)
+                .collect::<Vec<_>>();
+            urls.sort_unstable();
+            urls.dedup();
+            assert_eq!(
+                urls.len(),
+                citations.len(),
+                "{} repeats a source",
                 metric.id
             );
         }

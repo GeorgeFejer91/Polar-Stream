@@ -21,6 +21,13 @@ pub struct MetricDefinition {
     pub stream_type: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricCitation {
+    pub label: &'static str,
+    pub url: &'static str,
+}
+
 /// Mathematical context kept alongside the scientific metric catalog. This is
 /// resolved at runtime because stable Rust cannot match string IDs in a const
 /// initializer.
@@ -60,20 +67,93 @@ const RESONANCE_URL: &str =
 const BREATH_ACC: &str = "Schipper et al. (2021)";
 const BREATH_ACC_URL: &str = "https://pubmed.ncbi.nlm.nih.gov/33739305/";
 const BREATH_COMPLEXITY: &str = "Bará et al. (2024)";
-const BREATH_COMPLEXITY_URL: &str =
-    "https://consensus.app/papers/details/de562a29bb8454eda201852b544fd9d7/?utm_source=unknown";
+const BREATH_COMPLEXITY_URL: &str = "https://doi.org/10.1016/j.bbe.2024.04.004";
 const STRESS_REVIEW: &str = "Immanuel et al. (2023)";
-const STRESS_URL: &str =
-    "https://consensus.app/papers/details/14838ea9a9045710b4a676dbb7d595aa/?utm_source=unknown";
+const STRESS_URL: &str = "https://pmc.ncbi.nlm.nih.gov/articles/PMC10614455/";
 const EXCITEOMETER_SOURCE: &str = "Excite-O-Meter source implementation";
 const EXCITEOMETER_SOURCE_URL: &str =
     "https://github.com/luisqtr/exciteometer/blob/main/docs/1_UserManual.md#scientific-disclaimer";
 const ECG_QUALITY: &str = "Smital et al. (2020)";
-const ECG_QUALITY_URL: &str =
-    "https://consensus.app/papers/details/ad2a724fefd55d25baee823438fc672e/?utm_source=unknown";
+const ECG_QUALITY_URL: &str = "https://pubmed.ncbi.nlm.nih.gov/31995473/";
 const LEGACY_FORMULAS: &str = "Polar Stream legacy formula inventory";
 const LEGACY_FORMULAS_URL: &str =
     "https://github.com/GeorgeFejer91/Polar-Stream/blob/main/docs/metric-evidence.md";
+
+const fn citation(label: &'static str, url: &'static str) -> MetricCitation {
+    MetricCitation { label, url }
+}
+
+const ECG_CITATIONS: &[MetricCitation] = &[
+    citation(ECG_QUALITY, ECG_QUALITY_URL),
+    citation(
+        "Satija, Ramkumar & Manikandan (2018)",
+        "https://pubmed.ncbi.nlm.nih.gov/29994590/",
+    ),
+    citation(
+        "Liu et al. (2022)",
+        "https://pubmed.ncbi.nlm.nih.gov/36359421/",
+    ),
+];
+const HRV_CITATIONS: &[MetricCitation] = &[
+    citation(
+        "ESC/NASPE Task Force (1996)",
+        "https://pubmed.ncbi.nlm.nih.gov/8737210/",
+    ),
+    citation(HRV_METHODS, HRV_METHODS_URL),
+    citation(HRV_REVIEW, HRV_URL),
+];
+const COHERENCE_CITATIONS: &[MetricCitation] = &[
+    citation(RESONANCE_REVIEW, RESONANCE_URL),
+    citation(
+        "Lehrer & Gevirtz (2014)",
+        "https://pubmed.ncbi.nlm.nih.gov/25101026/",
+    ),
+    citation(HRV_METHODS, HRV_METHODS_URL),
+];
+const BREATHING_CITATIONS: &[MetricCitation] = &[
+    citation(BREATH_ACC, BREATH_ACC_URL),
+    citation(
+        "Bates et al. (2021)",
+        "https://pubmed.ncbi.nlm.nih.gov/33937389/",
+    ),
+    citation(
+        "Aliverti (2024)",
+        "https://pubmed.ncbi.nlm.nih.gov/38392009/",
+    ),
+];
+const FORCE_CITATIONS: &[MetricCitation] = &[
+    citation(
+        "Vernier GDX-RB user manual",
+        "https://www.vernier.com/manuals/GDX-RB",
+    ),
+    citation(
+        "Vernier Go Direct examples",
+        "https://github.com/VernierST/godirect-examples",
+    ),
+    citation(BREATH_ACC, BREATH_ACC_URL),
+];
+const BREATHING_DYNAMICS_CITATIONS: &[MetricCitation] = &[
+    citation(
+        BREATH_COMPLEXITY,
+        "https://doi.org/10.1016/j.bbe.2024.04.004",
+    ),
+    citation(
+        "Angelini et al. (2007)",
+        "https://pubmed.ncbi.nlm.nih.gov/17950584/",
+    ),
+    citation(BREATH_ACC, BREATH_ACC_URL),
+];
+const EXCITATION_CITATIONS: &[MetricCitation] = &[
+    citation(
+        "Immanuel et al. (2023)",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC10614455/",
+    ),
+    citation(
+        "Quintero et al. (2021)",
+        "https://michagaebler.github.io/doc/Quintero2021_EoM.pdf",
+    ),
+    citation(HRV_METHODS, HRV_METHODS_URL),
+];
 
 macro_rules! metric {
     ($id:literal, $suffix:literal, $label:literal, $detail:literal, $unit:literal,
@@ -264,6 +344,35 @@ pub fn metric_formula_definition(id: &str) -> MetricFormulaDefinition {
         formula_template: formula_template_for(id),
         formula_source: formula_source_for(id),
     }
+}
+
+pub fn metric_citations(metric: MetricDefinition) -> Vec<MetricCitation> {
+    let family = match metric.category {
+        "ECG features" => ECG_CITATIONS,
+        "Heart rate" | "HRV & relaxation" => HRV_CITATIONS,
+        "Coherence" => COHERENCE_CITATIONS,
+        "Breathing" => BREATHING_CITATIONS,
+        "Breathing dynamics" => BREATHING_DYNAMICS_CITATIONS,
+        "Excitation (experimental)" => EXCITATION_CITATIONS,
+        "Raw signals" if metric.id == "raw_force" => FORCE_CITATIONS,
+        "Raw signals" if metric.id == "raw_acc" || metric.id == "acc_magnitude" => {
+            BREATHING_CITATIONS
+        }
+        "Raw signals" => ECG_CITATIONS,
+        _ => HRV_CITATIONS,
+    };
+    let mut citations = Vec::with_capacity(3);
+    citations.push(citation(metric.citation_label, metric.citation_url));
+    for candidate in family {
+        if citations.iter().any(|current| current.url == candidate.url) {
+            continue;
+        }
+        citations.push(*candidate);
+        if citations.len() == 3 {
+            break;
+        }
+    }
+    citations
 }
 
 pub const METRIC_CATALOG: &[MetricDefinition] = &[

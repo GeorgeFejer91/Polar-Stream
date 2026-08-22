@@ -68,7 +68,15 @@ test("every fixture-backed metric has a recorded preview and live-only metrics s
   for (const metric of catalog) {
     assert.ok(metric.formula && metric.formula.length > 8, `${metric.id} lacks a mathematical definition`);
     assert.ok(metric.explainer && metric.explainer.length > 20, `${metric.id} lacks scientific context`);
+    const sentenceCount = (metric.explainer.match(/[.!?](?:\s|$)/g) || []).length;
+    assert.ok(sentenceCount >= 2 && sentenceCount <= 3, `${metric.id} summary must contain two or three sentences`);
     assert.match(metric.citationUrl, /^https:\/\//, `${metric.id} lacks an HTTPS citation`);
+    assert.ok(metric.sources.length >= 2 && metric.sources.length <= 3, `${metric.id} needs two or three sources`);
+    assert.equal(new Set(metric.sources.map((source) => source.url)).size, metric.sources.length, `${metric.id} repeats a source`);
+    for (const source of metric.sources) {
+      assert.ok(source.label.length > 3, `${metric.id} has an unlabeled source`);
+      assert.match(source.url, /^https:\/\//, `${metric.id} source is not HTTPS`);
+    }
     const preview = previews.metrics[metric.id];
     if (liveOnlyMetrics.has(metric.id)) {
       assert.equal(preview, undefined, `${metric.id} must not use a fabricated H10 preview`);

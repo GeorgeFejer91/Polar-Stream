@@ -18,8 +18,8 @@ use std::time::Duration;
 use polar_h10_core::AccSample;
 use polar_h10_input::{InputEvent as PolarInputEvent, InputSessionPool as PolarInputSessionPool};
 use polar_h10_metrics::{
-    BreathingSettings, METRIC_CATALOG, MetricDefinition, MetricEngine, MetricSample,
-    MetricSelection, metric_formula_definition,
+    BreathingSettings, METRIC_CATALOG, MetricCitation, MetricDefinition, MetricEngine,
+    MetricSample, MetricSelection, metric_citations, metric_formula_definition,
 };
 use polar_h10_output::{
     CustomFormulaConfig, FormulaError, FormulaPublishBatch, FormulaValidation, validate_formula,
@@ -442,6 +442,7 @@ struct MetricDescriptor {
     formula: &'static str,
     formula_template: Option<&'static str>,
     formula_source: &'static str,
+    sources: Vec<MetricCitation>,
 }
 
 #[tauri::command]
@@ -462,6 +463,7 @@ fn get_bootstrap(state: State<'_, AppState>) -> Bootstrap {
                     formula: formula.formula,
                     formula_template: formula.formula_template,
                     formula_source: formula.formula_source,
+                    sources: metric_citations(metric),
                 }
             })
             .collect(),
@@ -1204,7 +1206,11 @@ async fn update_output_config(
 }
 
 #[tauri::command(async)]
-fn open_metric_citation(app: tauri::AppHandle, metric_id: String) -> CommandResult<()> {
+fn open_metric_citation(
+    app: tauri::AppHandle,
+    metric_id: String,
+    source_url: String,
+) -> CommandResult<()> {
     let metric = MetricDefinition::for_id(&metric_id).ok_or_else(|| {
         CommandError::new(
             "UNKNOWN_METRIC",
@@ -1212,7 +1218,14 @@ fn open_metric_citation(app: tauri::AppHandle, metric_id: String) -> CommandResu
             false,
         )
     })?;
-    if !metric.citation_url.starts_with("https://") {
+    let allowed_url = reviewed_metric_source(metric, &source_url).ok_or_else(|| {
+        CommandError::new(
+            "UNKNOWN_METRIC_SOURCE",
+            "That source is not in the selected metric's reviewed source list.",
+            false,
+        )
+    })?;
+    if !allowed_url.starts_with("https://") {
         return Err(CommandError::new(
             "UNSAFE_CITATION_URL",
             "The citation URL was not opened because it is not HTTPS.",
@@ -1220,7 +1233,7 @@ fn open_metric_citation(app: tauri::AppHandle, metric_id: String) -> CommandResu
         ));
     }
     app.opener()
-        .open_url(metric.citation_url, None::<&str>)
+        .open_url(allowed_url, None::<&str>)
         .map_err(|message| {
             CommandError::new(
                 "CITATION_OPEN_FAILED",
@@ -1228,6 +1241,13 @@ fn open_metric_citation(app: tauri::AppHandle, metric_id: String) -> CommandResu
                 true,
             )
         })
+}
+
+fn reviewed_metric_source(metric: MetricDefinition, requested_url: &str) -> Option<&'static str> {
+    metric_citations(metric)
+        .into_iter()
+        .find(|citation| citation.url == requested_url)
+        .map(|citation| citation.url)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1307,6 +1327,25 @@ mod tests {
     use super::*;
     #[cfg(feature = "rusty-lsl-backend")]
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn citation_opener_accepts_only_reviewed_sources_for_the_selected_metric() {
+        let metric = MetricDefinition::for_id("rmssd").expect("RMSSD must remain in the catalog");
+        let reviewed = metric_citations(metric);
+
+        assert_eq!(
+            reviewed_metric_source(metric, reviewed[0].url),
+            Some(reviewed[0].url)
+        );
+        assert_eq!(reviewed_metric_source(metric, "https://example.com"), None);
+
+        let other_metric = MetricDefinition::for_id("raw_force")
+            .expect("raw Go Direct force must remain in the catalog");
+        assert_eq!(
+            reviewed_metric_source(metric, metric_citations(other_metric)[0].url),
+            None
+        );
+    }
 
     #[test]
     fn source_outputs_are_filtered_to_the_connected_sensor_kind() {

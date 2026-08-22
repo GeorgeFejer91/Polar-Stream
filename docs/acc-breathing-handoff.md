@@ -230,10 +230,11 @@ used for study exclusion.
 
 ## Current configurable parameters
 
-The add-output workflow exposes the common controls first and keeps the rest in
-**Advanced experiment parameters**. The same parameters remain editable through
-**Adjust** after the module is added; saving restarts calibration for both
-breathing outputs.
+New outputs use the saved breathing configuration (or the documented defaults
+for a first run). All parameters are editable through **Adjust** after the module
+is added; saving restarts calibration for both breathing outputs. The metric
+picker deliberately keeps its selected-metric window to the output loop,
+scientific summary, and reviewed sources.
 
 | Parameter | Default | Accepted range | Effect and experimental note |
 | --- | ---: | ---: | --- |

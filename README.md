@@ -8,23 +8,19 @@ red ECG / blue accelerometer selector. ECG mode contains the H10's core ECG,
 heart-rate, HRV, coherence, Excite-O-Meter and experimental activation outputs;
 ACC mode contains raw motion plus the complete experimental breathing and
 breathing-dynamics catalog.
-Selecting a metric opens
-its scientific definition, interpretation limits, evidence level, cited source,
-and exact stream-name preview; an explicit **Save output** action then adds that
-single module to the enabled destinations.
+Selecting a metric opens one focused preview window containing only a looping
+SVG example of the output, a two- or three-sentence scientific summary, and two
+or three of the most relevant sources. An explicit **Save output** action then
+adds that single module to the enabled destinations. List rows stay static so
+only the selected metric animates.
 
-When the output library is open, every row contains a thumbnail derived from the
-canonical anonymized 60-second real Polar H10 ECG/ACC recording. Selecting one
-row opens a larger outcome preview. Both sizes run as seamless circular traces;
-Formula Lab uses the same continuously scrolling presentation. Display window, normalization, breathing
-axes, smoothing, sensitivity and calibration controls update that preview before
-the user saves the single output. The recording illustrates output form and
-setting effects—it is not a participant norm, validation result, or diagnostic
-example.
+The loop is derived from the canonical anonymized 60-second real Polar H10
+ECG/ACC recording. It illustrates output form—it is not a participant norm,
+validation result, or diagnostic example. Display, normalization, and breathing
+settings remain available through **Adjust** after the output is added.
 
-Every metric card includes a concise scientific summary, its most relevant
-citation, and a mathematical definition. Formula-compatible metrics can be
-opened directly in **Formula Lab**, which explains the signal variables, keeps
+Formula-compatible metrics can be explored separately in **Formula Lab**, which
+explains the signal variables, keeps
 time as the automatic x-axis, provides a calculator-style insert keyboard with
 hover help, and compares recorded input with formula output. Custom formulas
 are parsed into a bounded native scalar runtime and can publish their own LSL,
@@ -32,8 +28,9 @@ OSC, and CSV streams; specialized multi-stage metrics remain documented without
 pretending that a misleading one-line scalar template is equivalent.
 
 Every output module has a saved visualizer window and, where meaningful,
-normalization controls. Before an ACC breathing output is added, the user
-chooses two or three axes (X + Z recommended) and a smoothing window. The module
+normalization controls. ACC breathing outputs start with the saved defaults (X +
+Z axes and a 0.75-second smoothing window) and expose those controls through
+**Adjust** after they are added. The module
 exposes a signed chest-motion projection in g, its robustly normalized 0–1
 waveform, a three-state phase classifier, and explicit readiness/confidence
 companions. Sensitivity and direction inversion remain configurable. Every
