@@ -2768,6 +2768,7 @@
 
   function updateVisualLabels() {
     const definition = visualDefinitions[app.selectedVisual];
+    const breathingTrail = app.selectedVisual === "breathing_volume";
     const custom = Boolean(definition?.formulaId);
     const options = custom
       ? { normalization: "none", windowSeconds: 60, displayWindowSeconds: 5 }
@@ -2775,21 +2776,32 @@
     const normalized = options.normalization !== "none";
     elements["visual-unit"].textContent = app.selectedVisual === "breathing_phase" ? "" : normalized ? "0–1" : definition?.unit || "";
     elements["visual-window-label"].textContent = app.selectedVisual === "breathing_phase" ? "Live phase" : `${options.displayWindowSeconds} second window`;
-    elements["visual-scale-label"].textContent = normalized
-      ? options.normalization === "session" ? "0–1 whole run" : `0–1 / ${options.windowSeconds}s`
-      : "Original scale";
+    elements["visual-scale-label"].textContent = breathingTrail
+      ? "Relative 0–1 waveform"
+      : normalized
+        ? options.normalization === "session" ? "0–1 whole run" : `0–1 / ${options.windowSeconds}s`
+        : "Original scale";
     elements["adjust-visual"].disabled = !definition || custom;
     elements["chart-shell"].classList.toggle("phase-visual", app.selectedVisual === "breathing_phase");
+    elements["chart-shell"].classList.toggle("breathing-trail-visual", breathingTrail);
     elements["chart-shell"].classList.toggle("stacked-axes", Boolean(definition?.channels));
     elements["visual-current"].classList.toggle("stacked-value", Boolean(definition?.channels));
     elements["signal-canvas"].setAttribute(
       "aria-label",
-      definition?.channels
-        ? "Live raw accelerometer X, Y, and Z signals in three stacked plots"
-        : `Live ${definition?.label || "selected Polar H10"} signal`,
+      breathingTrail
+        ? "Preliminary one-dimensional ACC breathing waveform. The newest sample is a moving dot and recent samples form a leftward trail; rising follows the configured inhale direction."
+        : definition?.channels
+          ? "Live raw accelerometer X, Y, and Z signals in three stacked plots"
+          : `Live ${definition?.label || "selected Polar H10"} signal`,
     );
+    if (!breathingTrail) {
+      delete elements["signal-canvas"].dataset.visualMode;
+      delete elements["signal-canvas"].dataset.breathDirection;
+      delete elements["signal-canvas"].dataset.latestY01;
+      delete elements["signal-canvas"].dataset.trailPoints;
+    }
     const legendItems = definition?.channels || (definition ? [{
-      label: definition.label,
+      label: breathingTrail ? `${definition.label} · dot = latest` : definition.label,
       color: selectedSourceColor(definition.color),
     }] : []);
     elements["visual-legend"].replaceChildren(...legendItems.map((item) => {
@@ -2986,6 +2998,10 @@
       drawBreathingPhase(context, canvas, buffer);
       return;
     }
+    if (app.selectedVisual === "breathing_volume") {
+      drawBreathingTrail(context, canvas, buffer, definition, options);
+      return;
+    }
 
     const visibleCount = Math.max(10, Math.ceil(definition.rate * options.displayWindowSeconds));
     const valueCount = buffer.tailSize(visibleCount);
@@ -3039,6 +3055,113 @@
     context.lineJoin = "round";
     context.lineCap = "round";
     context.stroke();
+  }
+
+  function colorWithAlpha(color, alpha) {
+    const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(color);
+    if (!match) return color;
+    return `rgba(${Number.parseInt(match[1], 16)}, ${Number.parseInt(match[2], 16)}, ${Number.parseInt(match[3], 16)}, ${alpha})`;
+  }
+
+  function drawBreathingTrail(context, canvas, buffer, definition, options) {
+    const visibleCount = Math.max(10, Math.ceil(definition.rate * options.displayWindowSeconds));
+    const valueCount = buffer.tailSize(visibleCount);
+    const latest = Number(buffer.latest());
+    const hasData = valueCount > 1 && Number.isFinite(latest);
+    elements["chart-empty"].hidden = hasData;
+    elements["visual-current"].textContent = Number.isFinite(latest) ? formatValue(latest, 3) : "—";
+    elements["y-max"].textContent = "";
+    elements["y-min"].textContent = "";
+
+    const width = canvas.width;
+    const height = canvas.height;
+    context.clearRect(0, 0, width, height);
+    canvas.dataset.visualMode = "breathing-trail";
+    canvas.dataset.trailPoints = String(valueCount);
+    if (!hasData) {
+      delete canvas.dataset.breathDirection;
+      delete canvas.dataset.latestY01;
+      return;
+    }
+
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const padLeft = Math.max(Math.round(width * 0.06), Math.round(54 * pixelRatio));
+    const padRight = Math.max(Math.round(width * 0.04), Math.round(30 * pixelRatio));
+    const padY = Math.max(Math.round(height * 0.10), Math.round(24 * pixelRatio));
+    const drawWidth = width - padLeft - padRight;
+    const drawHeight = height - padY * 2;
+    const sourceColor = selectedSourceColor(definition.color);
+    const point = (index) => {
+      const value = Math.max(0, Math.min(1, Number(buffer.tailValue(index, valueCount)) || 0));
+      return {
+        x: padLeft + (index / (valueCount - 1)) * drawWidth,
+        y: padY + (1 - value) * drawHeight,
+        value,
+      };
+    };
+    const latestPoint = point(valueCount - 1);
+    const trendLookback = Math.min(5, valueCount - 1);
+    const trend = latestPoint.value - point(valueCount - 1 - trendLookback).value;
+    const direction = trend > 0.002 ? "inhale" : trend < -0.002 ? "exhale" : "pause";
+    canvas.dataset.breathDirection = direction;
+    canvas.dataset.latestY01 = latestPoint.value.toFixed(4);
+
+    context.save();
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.textBaseline = "middle";
+    context.font = `700 ${Math.round(9 * pixelRatio)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    context.fillStyle = "#168259";
+    context.fillText("INHALE ↑", Math.round(11 * pixelRatio), padY);
+    context.fillStyle = "#b86520";
+    context.fillText("EXHALE ↓", Math.round(11 * pixelRatio), height - padY);
+
+    context.beginPath();
+    context.moveTo(padLeft, padY + drawHeight / 2);
+    context.lineTo(width - padRight, padY + drawHeight / 2);
+    context.strokeStyle = "rgba(81, 103, 91, 0.22)";
+    context.lineWidth = Math.max(1, pixelRatio * 0.7);
+    context.setLineDash([4 * pixelRatio, 7 * pixelRatio]);
+    context.stroke();
+    context.setLineDash([]);
+
+    context.beginPath();
+    for (let index = 0; index < valueCount; index += 1) {
+      const current = point(index);
+      if (index === 0) context.moveTo(current.x, current.y); else context.lineTo(current.x, current.y);
+    }
+    const trailGradient = context.createLinearGradient(padLeft, 0, width - padRight, 0);
+    trailGradient.addColorStop(0, colorWithAlpha(sourceColor, 0.10));
+    trailGradient.addColorStop(0.32, colorWithAlpha(sourceColor, 0.40));
+    trailGradient.addColorStop(1, sourceColor);
+    context.strokeStyle = trailGradient;
+    context.lineWidth = Math.max(2, pixelRatio * 1.5);
+    context.stroke();
+
+    const glow = context.createRadialGradient(
+      latestPoint.x, latestPoint.y, 0,
+      latestPoint.x, latestPoint.y, 13 * pixelRatio,
+    );
+    glow.addColorStop(0, colorWithAlpha(sourceColor, 0.55));
+    glow.addColorStop(1, colorWithAlpha(sourceColor, 0));
+    context.beginPath();
+    context.arc(latestPoint.x, latestPoint.y, 13 * pixelRatio, 0, Math.PI * 2);
+    context.fillStyle = glow;
+    context.fill();
+    context.beginPath();
+    context.arc(latestPoint.x, latestPoint.y, 5.5 * pixelRatio, 0, Math.PI * 2);
+    context.fillStyle = "#fbfcfa";
+    context.fill();
+    context.strokeStyle = sourceColor;
+    context.lineWidth = Math.max(2, pixelRatio * 1.7);
+    context.stroke();
+
+    const descriptor = direction === "inhale" ? "INHALE ↑" : direction === "exhale" ? "EXHALE ↓" : "PAUSE";
+    context.textAlign = "right";
+    context.font = `800 ${Math.round(10 * pixelRatio)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    context.fillStyle = direction === "inhale" ? "#168259" : direction === "exhale" ? "#b86520" : "#3b78aa";
+    context.fillText(descriptor, width - Math.round(11 * pixelRatio), Math.round(14 * pixelRatio));
+    context.restore();
   }
 
   function drawStackedSignal(context, canvas, definition, options) {
@@ -3330,6 +3453,35 @@
         canvasLabel: elements["signal-canvas"].getAttribute("aria-label"),
       };
     }
+    if (name === "breathing-waveform-trail") {
+      app.outputs.add("breathing_volume");
+      app.metricOptions.breathing_volume = structuredClone(metricOptionFor("breathing_volume"));
+      renderOutputs();
+      app.selectedVisual = "breathing_volume";
+      elements["visual-source"].value = app.selectedVisual;
+      updateVisualLabels();
+      resizeCanvas();
+      const breathingBuffer = ensureBuffer("breathing_volume");
+      breathingBuffer.clear();
+      breathingBuffer.pushMany(Array.from({ length: 240 }, (_, index) => (
+        0.5 + 0.36 * Math.sin(index * Math.PI * 2 / 80)
+      )));
+      drawSignal();
+      await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+      resizeCanvas();
+      drawSignal();
+      return {
+        scenario: name,
+        selectedVisual: app.selectedVisual,
+        chartClass: elements["chart-shell"].className,
+        canvasLabel: elements["signal-canvas"].getAttribute("aria-label"),
+        visualMode: elements["signal-canvas"].dataset.visualMode,
+        direction: elements["signal-canvas"].dataset.breathDirection,
+        latestY01: Number(elements["signal-canvas"].dataset.latestY01),
+        trailPoints: Number(elements["signal-canvas"].dataset.trailPoints),
+        currentLabel: elements["visual-current"].textContent,
+      };
+    }
     const targets = {
       "breathing-phase-inhale": { phase: 1, label: "INHALE" },
       "breathing-phase-exhale": { phase: -1, label: "EXHALE" },
@@ -3377,6 +3529,7 @@
         "breathing-phase-exhale",
         "breathing-phase-pause",
         "breathing-phase-settings",
+        "breathing-waveform-trail",
         "raw-accelerometer-stacked",
         "multiple-colored-sources",
         "metric-library-previews",

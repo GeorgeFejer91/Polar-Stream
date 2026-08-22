@@ -1,5 +1,15 @@
 # Decision log
 
+## 2026-08-22 — Visualize the canonical 1D waveform as a dot and trail
+
+Specialize the existing `breathing_volume` visualizer instead of creating a
+second display-only respiration algorithm or output ID. Draw the newest causal
+0–1 sample as a moving dot and the selected display window as its leftward
+trail in the canonical UI shared by Tauri and Pages. Label upward movement as
+inhale and downward movement as exhale according to configured projection
+polarity, while retaining the mounting/inversion caveat and experimental
+respiratory-effort semantics.
+
 ## 2026-08-20 — Analyze reference agreement from raw recordings without tuning the product
 
 Reconstruct native H10 ACC notification batches and replay the current Rust

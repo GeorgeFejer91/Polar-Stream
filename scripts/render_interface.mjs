@@ -157,6 +157,21 @@ try {
   assert.equal(await page.locator("#visual-window-label").textContent(), "Live phase");
   await page.screenshot({ path: join(output, "breathing-phase-settings-saved.png"), fullPage: true });
 
+  const breathingTrail = await page.evaluate(() => window.PolarInterfaceRenderer.render("breathing-waveform-trail"));
+  assert.equal(breathingTrail.selectedVisual, "breathing_volume");
+  assert.match(breathingTrail.chartClass, /breathing-trail-visual/);
+  assert.match(breathingTrail.canvasLabel, /moving dot.*leftward trail/i);
+  assert.equal(breathingTrail.visualMode, "breathing-trail");
+  assert.equal(breathingTrail.direction, "inhale");
+  assert.ok(breathingTrail.trailPoints >= 90, `breathing trail is too short: ${breathingTrail.trailPoints}`);
+  assert.ok(breathingTrail.latestY01 >= 0 && breathingTrail.latestY01 <= 1);
+  assert.match(breathingTrail.currentLabel, /^0\.\d{3}$/);
+  const breathingCanvas = await inspectCanvas(page);
+  assert.ok(breathingCanvas.width > 500 && breathingCanvas.height > 150, "breathing dot and trail did not span the canvas");
+  const breathingScreenshot = join(output, "breathing-waveform-trail.png");
+  await page.screenshot({ path: breathingScreenshot, fullPage: true });
+  assert.ok((await stat(breathingScreenshot)).size > 20_000, "breathing trail screenshot was unexpectedly empty");
+
   const accelerometer = await page.evaluate(() => window.PolarInterfaceRenderer.render("raw-accelerometer-stacked"));
   assert.equal(accelerometer.selectedVisual, "raw_acc");
   assert.deepEqual(accelerometer.legendLabels, ["X", "Y", "Z"]);

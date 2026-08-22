@@ -132,6 +132,13 @@ breathing waveform** because it is not calibrated respiratory volume. The
 10-second causal baseline reduces gravity and slow-posture drift without future
 samples; it does not make the signal posture invariant.
 
+The live visualizer presents this output as a preliminary one-dimensional trace:
+the newest value is a moving dot and the preceding bounded display window forms
+its leftward trail. A rising dot is labeled inhale and a falling dot exhale
+according to the configured projection direction; belt placement can reverse
+that polarity, so direction inversion must be checked against observed breaths.
+The display introduces no additional filtering or respiratory estimate.
+
 ### 5. Adaptive bounds
 
 When adaptive bounds are enabled, the processor samples the projection at no

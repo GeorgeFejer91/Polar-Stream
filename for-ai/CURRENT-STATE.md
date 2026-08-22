@@ -4,6 +4,12 @@ Last verified: 2026-08-20
 
 ## Implemented
 
+- The existing `breathing_volume` compatibility stream now has a specialized
+  preliminary 1D visualizer in the canonical Tauri/Pages UI. Its newest 0–1
+  sample is a moving dot and its bounded recent history is a leftward trail;
+  rising/falling labels follow configured inhale/exhale polarity without
+  claiming lung volume. Deterministic desktop and responsive browser checks
+  cover the shared display path.
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
 - Windows uses a direct WinRT advertisement watcher for up to fifteen seconds,
   stopping early after the caller's exact H10 local-name target: one for the

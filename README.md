@@ -39,6 +39,9 @@ waveform, a three-state phase classifier, and explicit readiness/confidence
 companions. Sensitivity and direction inversion remain configurable. Every
 output is an unvalidated respiratory-effort surrogate—not lung volume or
 airflow—and should be compared with a synchronized respiratory reference. The
+normalized waveform visualizer draws the latest sample as a moving dot with a
+leftward time trail: configured inhale moves upward and exhale moves downward.
+Mounting can reverse that polarity, so users must verify or invert direction. The
 classifier circle expands or shrinks with phase alone, approaches
 its size limits asymptotically, and eases its velocity toward rest during pauses.
 
