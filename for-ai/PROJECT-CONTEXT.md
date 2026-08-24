@@ -17,6 +17,15 @@ Polar H10
      -> polar-h10-math (only enabled bounded custom formulas)
      -> polar-h10-output -> LSL / OSC / bounded native CSV
      -> bounded display queue -> JavaScript ring buffers -> Canvas 2D
+
+Vernier GDX-RB
+  -> vernier-gdx-input (complete compatible metadata-defined channel set)
+  -> thin Tauri coordinator
+     -> polar-h10-output -> exact sparse Double64 rawVernier LSL
+     -> polar-h10-metrics -> bounded derived 0-1 belt waveform
+        -> polar-h10-output -> vernierBreathing LSL
+     -> compatible channel-1 Force LSL / OSC / bounded native CSV
+     -> bounded display queue -> JavaScript force buffer -> Canvas 2D
 ```
 
 Native publication is the authoritative real-time path. The WebView is a
@@ -67,6 +76,11 @@ operational contract for that ordering.
 
 - One normalized base name produces stable per-output suffixes such as
   `participant_07_rawECG` and `participant_07_rawACC`.
+- A native GDX-RB automatically adds per-source `rawVernier` and
+  `vernierBreathing` suffixes. The raw outlet is a metadata-driven sparse
+  Double64 recording contract; the derived outlet is an explicitly labeled
+  Float32 0–1 relative belt-force waveform. Browser Go Direct remains
+  channel-1 force-only and has no native LSL capability.
 - LSL and OSC share the same canonical discoverable output name.
 - Official Rusty-backend qualification must enumerate broadly and apply exact
   client-side name/type/channel/rate/format/source-ID matching before opening.

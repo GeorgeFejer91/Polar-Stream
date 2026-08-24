@@ -21,10 +21,10 @@ use serde::Serialize;
 use tokio::sync::{Mutex, mpsc, watch};
 use vernier_gdx_core::{
     COMMAND_CHARACTERISTIC, Command, CommandCounter, DeviceModel, Frame, FrameAccumulator,
-    GET_AVAILABLE_SENSOR_MASK, Measurement, RESPONSE_CHARACTERISTIC, SensorInfo,
-    available_sensor_numbers, classify_device_model, decode_device_info_response, decode_frame,
-    decode_sensor_info_response, decode_sensor_mask_response, decode_status_response,
-    select_respiration_force_sensor,
+    GET_AVAILABLE_SENSOR_MASK, Measurement, RESPONSE_CHARACTERISTIC, SampleEncoding, SensorInfo,
+    SensorSamples, available_sensor_numbers, classify_device_model, decode_device_info_response,
+    decode_frame, decode_sensor_info_response, decode_sensor_mask_response, decode_status_response,
+    select_respiration_belt_sensors,
 };
 
 const BLE_TIMEOUT: Duration = Duration::from_secs(6);
@@ -77,21 +77,25 @@ pub enum InputEvent {
         sample_period_us: u32,
         main_firmware_version: String,
         battery_percent: u8,
+        sensors: Vec<SensorInfo>,
     },
     Samples {
-        sensor_number: u8,
+        encoding: SampleEncoding,
+        sensors: Vec<SensorSamples>,
         host_receive_timestamp_ns: u64,
         sample_period_us: u32,
         sequence: u64,
-        values: Vec<f32>,
         dropped_before: u64,
+        device_drop_reports_before: u64,
         decode_latency_ns: u64,
     },
     StreamHealth {
         notifications: u64,
         samples: u64,
+        sample_rows: u64,
         malformed_frames: u64,
         dropped_batches: u64,
+        device_drop_reports: u64,
         queue_high_water: usize,
         decode_latency_p50_ns: u64,
         decode_latency_p95_ns: u64,
@@ -390,27 +394,37 @@ async fn run_connected_session(
         write_command(peripheral, &command, &sensor_info).await?;
         let sensor_response =
             wait_for_response(&mut notifications, &mut accumulator, &sensor_info).await?;
-        match decode_sensor_info_response(&sensor_response) {
-            Ok(sensor) => sensors.push(sensor),
-            Err(error) => {
-                let _ = events.try_send(InputEvent::Error(format!(
-                    "Go Direct channel {sensor_number} metadata was ignored: {error}"
-                )));
-            }
+        let sensor = decode_sensor_info_response(&sensor_response).map_err(|error| {
+            format!("Go Direct channel {sensor_number} metadata could not be recorded: {error}")
+        })?;
+        if sensor.number != sensor_number {
+            return Err(format!(
+                "Go Direct channel {sensor_number} metadata identified itself as channel {}.",
+                sensor.number
+            ));
         }
+        sensors.push(sensor);
     }
-    let selected_sensor = select_respiration_force_sensor(&device, &sensors)
+    let selected_sensors = select_respiration_belt_sensors(&device, &sensors)
         .map_err(|error| format!("{}: {error}", recognized_device_message(&device)))?;
-    let effective_period_us = respiration_period(&selected_sensor, config.period_us)?;
+    let force_sensor = selected_sensors
+        .iter()
+        .find(|sensor| sensor.is_respiration_force())
+        .ok_or_else(|| "The GDX-RB Force (N) channel disappeared during setup.".to_string())?;
+    let effective_period_us = respiration_period(&selected_sensors, config.period_us)?;
+    let selected_mask = selected_sensors
+        .iter()
+        .fold(0_u32, |mask, sensor| mask | (1_u32 << sensor.number));
     control(
         events,
         "identified",
         format!(
-            "Identified {} · channel {} {} ({}) · {:.1} Hz",
+            "Identified {} · {} measurement channels including channel {} {} ({}) · {:.1} Hz base period",
             device.model.label(),
-            selected_sensor.number,
-            selected_sensor.description,
-            selected_sensor.unit,
+            selected_sensors.len(),
+            force_sensor.number,
+            force_sensor.description,
+            force_sensor.unit,
             1_000_000.0 / f64::from(effective_period_us)
         ),
     )
@@ -419,7 +433,7 @@ async fn run_connected_session(
         .map_err(|error| error.to_string())?;
     write_command(peripheral, &command, &set_period).await?;
     wait_for_response(&mut notifications, &mut accumulator, &set_period).await?;
-    let start = Command::start_measurements(&mut counter, 1_u32 << selected_sensor.number);
+    let start = Command::start_measurements(&mut counter, selected_mask);
     write_command(peripheral, &command, &start).await?;
     wait_for_response(&mut notifications, &mut accumulator, &start).await?;
 
@@ -427,9 +441,12 @@ async fn run_connected_session(
     let mut sequence = 0_u64;
     let mut notifications_seen = 0_u64;
     let mut samples_seen = 0_u64;
+    let mut sample_rows_seen = 0_u64;
     let mut malformed_frames = 0_u64;
     let mut dropped_batches = 0_u64;
     let mut pending_dropped = 0_u64;
+    let mut device_drop_reports = 0_u64;
+    let mut pending_device_drop_reports = 0_u64;
     let mut max_decode_latency_ns = 0_u64;
     let mut queue_high_water = 0_usize;
     let mut decode_latencies = Vec::with_capacity(512);
@@ -470,53 +487,95 @@ async fn run_connected_session(
                             continue;
                         }
                     };
-                    let Frame::Measurement(Measurement::Samples { sensors, .. }) = decoded else {
-                        continue;
-                    };
-                    for sensor_samples in sensors {
-                        if sensor_samples.sensor_number != selected_sensor.number || sensor_samples.values.is_empty() {
+                    let (encoding, sensors) = match decoded {
+                        Frame::Measurement(Measurement::Samples { encoding, sensors }) => {
+                            (encoding, sensors)
+                        }
+                        Frame::Measurement(Measurement::Dropped(_)) => {
+                            device_drop_reports = device_drop_reports.saturating_add(1);
+                            pending_device_drop_reports =
+                                pending_device_drop_reports.saturating_add(1);
                             continue;
                         }
-                        if !connected {
-                            control(events, "streaming", "First validated Go Direct sample received".into()).await?;
-                            control_connected(events, &device, &status, &selected_sensor, effective_period_us).await?;
-                            connected = true;
-                        }
-                        let decode_latency_ns = received_at.elapsed().as_nanos() as u64;
-                        max_decode_latency_ns = max_decode_latency_ns.max(decode_latency_ns);
-                        if decode_latencies.len() < 512 {
-                            decode_latencies.push(decode_latency_ns);
-                        }
-                        samples_seen += sensor_samples.values.len() as u64;
-                        let count = sensor_samples.values.len() as u64;
-                        let event = InputEvent::Samples {
-                            sensor_number: sensor_samples.sensor_number,
-                            host_receive_timestamp_ns,
-                            sample_period_us: effective_period_us,
-                            sequence,
-                            values: sensor_samples.values,
-                            dropped_before: pending_dropped,
-                            decode_latency_ns,
-                        };
-                        match events.try_send(event) {
-                            Ok(()) => pending_dropped = 0,
-                            Err(mpsc::error::TrySendError::Full(_)) => {
-                                dropped_batches += 1;
-                                pending_dropped += count;
-                            }
-                            Err(mpsc::error::TrySendError::Closed(_)) => return Ok(()),
-                        }
-                        queue_high_water = queue_high_water.max(EVENT_CAPACITY - events.capacity());
-                        sequence = sequence.saturating_add(count);
+                        _ => continue,
+                    };
+                    let valid = measurement_matches_schema(
+                        selected_mask,
+                        &selected_sensors,
+                        encoding,
+                        &sensors,
+                    );
+                    if !valid {
+                        malformed_frames = malformed_frames.saturating_add(1);
+                        let _ = events.try_send(InputEvent::Error(
+                            "Go Direct returned samples outside the negotiated all-channel schema."
+                                .into(),
+                        ));
+                        continue;
                     }
+                    let row_count = sensors
+                        .iter()
+                        .map(|samples| samples.values.len())
+                        .max()
+                        .unwrap_or(0) as u64;
+                    if !connected {
+                        control(events, "streaming", "First validated Go Direct sample received".into()).await?;
+                        control_connected(
+                            events,
+                            &device,
+                            &status,
+                            force_sensor,
+                            &selected_sensors,
+                            effective_period_us,
+                        )
+                        .await?;
+                        connected = true;
+                    }
+                    let decode_latency_ns = received_at.elapsed().as_nanos() as u64;
+                    max_decode_latency_ns = max_decode_latency_ns.max(decode_latency_ns);
+                    if decode_latencies.len() < 512 {
+                        decode_latencies.push(decode_latency_ns);
+                    }
+                    samples_seen = samples_seen.saturating_add(
+                        sensors
+                            .iter()
+                            .map(|samples| samples.values.len() as u64)
+                            .sum::<u64>(),
+                    );
+                    sample_rows_seen = sample_rows_seen.saturating_add(row_count);
+                    let event = InputEvent::Samples {
+                        encoding,
+                        sensors,
+                        host_receive_timestamp_ns,
+                        sample_period_us: effective_period_us,
+                        sequence,
+                        dropped_before: pending_dropped,
+                        device_drop_reports_before: pending_device_drop_reports,
+                        decode_latency_ns,
+                    };
+                    match events.try_send(event) {
+                        Ok(()) => {
+                            pending_dropped = 0;
+                            pending_device_drop_reports = 0;
+                        }
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            dropped_batches = dropped_batches.saturating_add(1);
+                            pending_dropped = pending_dropped.saturating_add(row_count);
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => return Ok(()),
+                    }
+                    queue_high_water = queue_high_water.max(EVENT_CAPACITY - events.capacity());
+                    sequence = sequence.saturating_add(row_count);
                 }
                 if Instant::now() >= next_health {
                     decode_latencies.sort_unstable();
                     let _ = events.try_send(InputEvent::StreamHealth {
                         notifications: notifications_seen,
                         samples: samples_seen,
+                        sample_rows: sample_rows_seen,
                         malformed_frames,
                         dropped_batches,
+                        device_drop_reports,
                         queue_high_water,
                         decode_latency_p50_ns: percentile(&decode_latencies, 50),
                         decode_latency_p95_ns: percentile(&decode_latencies, 95),
@@ -545,27 +604,73 @@ fn percentile(sorted: &[u64], percent: usize) -> u64 {
     sorted[index.min(sorted.len() - 1)]
 }
 
-fn respiration_period(sensor: &SensorInfo, requested_period_us: u32) -> Result<u32, String> {
+fn measurement_matches_schema(
+    selected_mask: u32,
+    schema: &[SensorInfo],
+    encoding: SampleEncoding,
+    samples: &[SensorSamples],
+) -> bool {
+    !samples.is_empty()
+        && samples.iter().enumerate().all(|(index, sample)| {
+            let Some(bit) = 1_u32.checked_shl(u32::from(sample.sensor_number)) else {
+                return false;
+            };
+            let expected_type = match encoding {
+                SampleEncoding::Float32 => vernier_gdx_core::NumericMeasurementType::Real,
+                SampleEncoding::Integer32 => vernier_gdx_core::NumericMeasurementType::Integer,
+            };
+            selected_mask & bit != 0
+                && !sample.values.is_empty()
+                && schema.iter().any(|sensor| {
+                    sensor.number == sample.sensor_number && sensor.numeric_type == expected_type
+                })
+                && samples[..index]
+                    .iter()
+                    .all(|prior| prior.sensor_number != sample.sensor_number)
+        })
+}
+
+fn respiration_period(sensors: &[SensorInfo], requested_period_us: u32) -> Result<u32, String> {
+    if sensors
+        .iter()
+        .all(|sensor| sensor_accepts_period(sensor, requested_period_us))
+    {
+        return Ok(requested_period_us);
+    }
+    let fallback = sensors
+        .iter()
+        .filter(|sensor| {
+            sensor.sampling_mode == vernier_gdx_core::SamplingMode::Periodic
+                && (1_000..=60_000_000).contains(&sensor.typical_period_us)
+        })
+        .map(|sensor| sensor.typical_period_us)
+        .max();
+    if let Some(fallback) = fallback
+        && sensors
+            .iter()
+            .all(|sensor| sensor_accepts_period(sensor, fallback))
+    {
+        return Ok(fallback);
+    }
+    Err(format!(
+        "The complete GDX-RB channel set does not accept the requested {requested_period_us} µs period or one common metadata fallback."
+    ))
+}
+
+fn sensor_accepts_period(sensor: &SensorInfo, requested_period_us: u32) -> bool {
+    if sensor.sampling_mode == vernier_gdx_core::SamplingMode::Aperiodic {
+        return true;
+    }
     let within_minimum =
         sensor.minimum_period_us == 0 || requested_period_us >= sensor.minimum_period_us;
     let within_maximum =
         sensor.maximum_period_us == 0 || u64::from(requested_period_us) <= sensor.maximum_period_us;
     let on_granularity = sensor.period_granularity_us == 0
         || requested_period_us.is_multiple_of(sensor.period_granularity_us);
-    if (1_000..=60_000_000).contains(&requested_period_us)
+    (1_000..=60_000_000).contains(&requested_period_us)
         && within_minimum
         && within_maximum
         && on_granularity
-    {
-        return Ok(requested_period_us);
-    }
-    let typical = sensor.typical_period_us;
-    if (1_000..=60_000_000).contains(&typical) {
-        return Ok(typical);
-    }
-    Err(format!(
-        "GDX-RB Force (N) does not accept the requested {requested_period_us} µs period and did not report a valid fallback."
-    ))
 }
 
 fn recognized_device_message(device: &vernier_gdx_core::DeviceInfo) -> String {
@@ -679,6 +784,7 @@ async fn control_connected(
     device: &vernier_gdx_core::DeviceInfo,
     status: &vernier_gdx_core::DeviceStatus,
     sensor: &SensorInfo,
+    sensors: &[SensorInfo],
     sample_period_us: u32,
 ) -> Result<(), String> {
     events
@@ -691,6 +797,7 @@ async fn control_connected(
             sample_period_us,
             main_firmware_version: status.main_firmware_version.clone(),
             battery_percent: status.battery_percent,
+            sensors: sensors.to_vec(),
         })
         .await
         .map_err(|_| "Go Direct event receiver closed.".to_string())
@@ -763,7 +870,7 @@ mod tests {
             mutual_exclusion_mask: 0,
         };
         assert_eq!(
-            respiration_period(&sensor, DEFAULT_PERIOD_US).unwrap(),
+            respiration_period(&[sensor], DEFAULT_PERIOD_US).unwrap(),
             100_000
         );
     }
@@ -787,9 +894,96 @@ mod tests {
             mutual_exclusion_mask: 0,
         };
         assert_eq!(
-            respiration_period(&sensor, DEFAULT_PERIOD_US).unwrap(),
+            respiration_period(&[sensor], DEFAULT_PERIOD_US).unwrap(),
             200_000
         );
+    }
+
+    #[test]
+    fn common_period_uses_periodic_bounds_and_preserves_aperiodic_updates() {
+        let force = SensorInfo {
+            number: 1,
+            sensor_id: 1,
+            numeric_type: vernier_gdx_core::NumericMeasurementType::Real,
+            sampling_mode: vernier_gdx_core::SamplingMode::Periodic,
+            description: "Force".into(),
+            unit: "N".into(),
+            uncertainty: 0.01,
+            minimum: 0.0,
+            maximum: 50.0,
+            minimum_period_us: 200_000,
+            maximum_period_us: 60_000_000,
+            typical_period_us: 200_000,
+            period_granularity_us: 1_000,
+            mutual_exclusion_mask: 0,
+        };
+        let rate = SensorInfo {
+            number: 2,
+            sampling_mode: vernier_gdx_core::SamplingMode::Aperiodic,
+            typical_period_us: 10_000_000,
+            ..force.clone()
+        };
+        assert_eq!(
+            respiration_period(&[force, rate], DEFAULT_PERIOD_US).unwrap(),
+            200_000
+        );
+    }
+
+    #[test]
+    fn measurement_frames_must_match_the_negotiated_number_and_numeric_type() {
+        let force = SensorInfo {
+            number: 1,
+            sensor_id: 1,
+            numeric_type: vernier_gdx_core::NumericMeasurementType::Real,
+            sampling_mode: vernier_gdx_core::SamplingMode::Periodic,
+            description: "Force".into(),
+            unit: "N".into(),
+            uncertainty: 0.01,
+            minimum: 0.0,
+            maximum: 50.0,
+            minimum_period_us: 100_000,
+            maximum_period_us: 60_000_000,
+            typical_period_us: 100_000,
+            period_granularity_us: 1_000,
+            mutual_exclusion_mask: 0,
+        };
+        let sample = SensorSamples {
+            sensor_number: 1,
+            values: vec![12.5],
+        };
+        assert!(measurement_matches_schema(
+            1 << 1,
+            std::slice::from_ref(&force),
+            SampleEncoding::Float32,
+            std::slice::from_ref(&sample),
+        ));
+        assert!(!measurement_matches_schema(
+            1 << 1,
+            std::slice::from_ref(&force),
+            SampleEncoding::Integer32,
+            std::slice::from_ref(&sample),
+        ));
+        assert!(!measurement_matches_schema(
+            1 << 1,
+            &[force],
+            SampleEncoding::Float32,
+            &[
+                sample.clone(),
+                SensorSamples {
+                    sensor_number: 1,
+                    values: vec![13.0],
+                },
+            ],
+        ));
+        assert!(!measurement_matches_schema(
+            1 << 1,
+            &[],
+            SampleEncoding::Float32,
+            &[SensorSamples {
+                sensor_number: 255,
+                values: vec![1.0],
+            }],
+        ));
     }
 
     #[test]

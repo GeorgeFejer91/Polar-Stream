@@ -108,6 +108,24 @@ impl SensorInfo {
             && matches!(self.unit.trim(), "N" | "n")
             && self.sampling_mode == SamplingMode::Periodic
     }
+
+    pub fn has_supported_measurement_shape(&self) -> bool {
+        matches!(
+            self.numeric_type,
+            NumericMeasurementType::Real | NumericMeasurementType::Integer
+        ) && matches!(
+            self.sampling_mode,
+            SamplingMode::Periodic | SamplingMode::Aperiodic
+        )
+    }
+
+    pub fn has_recording_identity(&self) -> bool {
+        self.sensor_id != 0
+            && !self.description.trim().is_empty()
+            && !self.unit.trim().is_empty()
+            && !self.description.contains('\0')
+            && !self.unit.contains('\0')
+    }
 }
 
 pub fn classify_device_model(
@@ -227,6 +245,51 @@ pub fn select_respiration_force_sensor(
         return Err(ProtocolError::RespirationForceChannelAmbiguous);
     }
     Ok(selected.clone())
+}
+
+/// Validates and returns every numeric measurement channel exposed by a
+/// GDX-RB. The complete available-sensor mask is a recording contract: an
+/// unsupported, duplicate, or mutually exclusive channel fails setup instead
+/// of being omitted silently.
+pub fn select_respiration_belt_sensors(
+    device: &DeviceInfo,
+    sensors: &[SensorInfo],
+) -> Result<Vec<SensorInfo>, ProtocolError> {
+    let force = select_respiration_force_sensor(device, sensors)?;
+    let mut selected = sensors.to_vec();
+    selected.sort_by_key(|sensor| sensor.number);
+
+    let mut selected_mask = 0_u32;
+    for sensor in &selected {
+        if sensor.number >= 32 {
+            return Err(ProtocolError::SensorNumberOutOfRange(sensor.number));
+        }
+        if !sensor.has_supported_measurement_shape() {
+            return Err(ProtocolError::UnsupportedSensorShape(sensor.number));
+        }
+        if !sensor.has_recording_identity() {
+            return Err(ProtocolError::InvalidRecordingMetadata(sensor.number));
+        }
+        let bit = 1_u32 << sensor.number;
+        if selected_mask & bit != 0 {
+            return Err(ProtocolError::DuplicateSensorNumber(sensor.number));
+        }
+        selected_mask |= bit;
+    }
+    for sensor in &selected {
+        let own_bit = 1_u32 << sensor.number;
+        let conflicts = sensor.mutual_exclusion_mask & selected_mask & !own_bit;
+        if conflicts != 0 {
+            return Err(ProtocolError::MutuallyExclusiveSensors {
+                sensor: sensor.number,
+                conflicts,
+            });
+        }
+    }
+    if !selected.iter().any(|sensor| sensor.number == force.number) {
+        return Err(ProtocolError::RespirationForceChannelMissing);
+    }
+    Ok(selected)
 }
 
 fn ensure_response(bytes: &[u8], command_id: u8, minimum: usize) -> Result<(), ProtocolError> {
@@ -373,7 +436,10 @@ pub enum SampleEncoding {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SensorSamples {
     pub sensor_number: u8,
-    pub values: Vec<f32>,
+    /// Float32 values and Int32 values are both losslessly widened to f64.
+    /// This lets a heterogeneous aggregate recording retain the exact device
+    /// number without constraining every channel to the narrower LSL format.
+    pub values: Vec<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -531,7 +597,7 @@ fn parse_values(
     bytes: &[u8],
     value_count: usize,
     encoding: SampleEncoding,
-) -> Result<Vec<f32>, ProtocolError> {
+) -> Result<Vec<f64>, ProtocolError> {
     let expected = value_count.checked_mul(4).ok_or(ProtocolError::Truncated)?;
     if bytes.len() < expected {
         return Err(ProtocolError::Truncated);
@@ -541,8 +607,8 @@ fn parse_values(
         .map(|chunk| {
             let raw: [u8; 4] = chunk.try_into().unwrap();
             match encoding {
-                SampleEncoding::Float32 => f32::from_le_bytes(raw),
-                SampleEncoding::Integer32 => i32::from_le_bytes(raw) as f32,
+                SampleEncoding::Float32 => f64::from(f32::from_le_bytes(raw)),
+                SampleEncoding::Integer32 => f64::from(i32::from_le_bytes(raw)),
             }
         })
         .collect())
@@ -594,6 +660,18 @@ pub enum ProtocolError {
     RespirationForceChannelMissing,
     #[error("the GDX-RB reported channel 1 more than once")]
     RespirationForceChannelAmbiguous,
+    #[error("Go Direct sensor {0} has an unsupported numeric type or sampling mode")]
+    UnsupportedSensorShape(u8),
+    #[error("Go Direct sensor {0} has no stable recording label, unit, or sensor ID")]
+    InvalidRecordingMetadata(u8),
+    #[error("Go Direct sensor number {0} is outside the 32-bit measurement mask")]
+    SensorNumberOutOfRange(u8),
+    #[error("Go Direct sensor number {0} was reported more than once")]
+    DuplicateSensorNumber(u8),
+    #[error(
+        "Go Direct sensor {sensor} excludes another requested sensor in mask 0x{conflicts:08x}"
+    )]
+    MutuallyExclusiveSensors { sensor: u8, conflicts: u32 },
 }
 
 #[cfg(test)]
@@ -823,5 +901,95 @@ mod tests {
             select_respiration_force_sensor(&belt, &[wrong]),
             Err(ProtocolError::RespirationForceChannelMissing)
         ));
+    }
+
+    #[test]
+    fn respiration_belt_selection_preserves_every_compatible_channel_in_number_order() {
+        let belt = DeviceInfo {
+            order_code: "GDX-RB".into(),
+            name: "GDX-RB TEST".into(),
+            description: "Go Direct Respiration Belt".into(),
+            model: DeviceModel::RespirationBelt,
+        };
+        let force =
+            decode_sensor_info_response(&respiration_sensor_response(1, "Force", "N")).unwrap();
+        let mut rate = respiration_sensor_response(2, "Respiration Rate", "breaths/min");
+        rate[13] = 1;
+        let rate = decode_sensor_info_response(&rate).unwrap();
+        let mut steps = respiration_sensor_response(3, "Steps", "count");
+        steps[12] = 1;
+        steps[13] = 1;
+        let steps = decode_sensor_info_response(&steps).unwrap();
+
+        let selected = select_respiration_belt_sensors(&belt, &[steps, force, rate]).unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|sensor| (sensor.number, sensor.description.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "Force"), (2, "Respiration Rate"), (3, "Steps")]
+        );
+    }
+
+    #[test]
+    fn respiration_belt_selection_rejects_silent_channel_omission() {
+        let belt = DeviceInfo {
+            order_code: "GDX-RB".into(),
+            name: "GDX-RB TEST".into(),
+            description: "Go Direct Respiration Belt".into(),
+            model: DeviceModel::RespirationBelt,
+        };
+        let force =
+            decode_sensor_info_response(&respiration_sensor_response(1, "Force", "N")).unwrap();
+        let mut unknown = respiration_sensor_response(2, "Respiration Rate", "breaths/min");
+        unknown[12] = 9;
+        let unknown = decode_sensor_info_response(&unknown).unwrap();
+        assert!(matches!(
+            select_respiration_belt_sensors(&belt, &[force.clone(), unknown]),
+            Err(ProtocolError::UnsupportedSensorShape(2))
+        ));
+
+        let mut unlabeled = respiration_sensor_response(2, "Respiration Rate", "");
+        unlabeled[13] = 1;
+        let unlabeled = decode_sensor_info_response(&unlabeled).unwrap();
+        assert!(matches!(
+            select_respiration_belt_sensors(&belt, &[force.clone(), unlabeled]),
+            Err(ProtocolError::InvalidRecordingMetadata(2))
+        ));
+
+        let mut out_of_range = force.clone();
+        out_of_range.number = 32;
+        assert!(matches!(
+            select_respiration_belt_sensors(&belt, &[force.clone(), out_of_range]),
+            Err(ProtocolError::SensorNumberOutOfRange(32))
+        ));
+
+        let mut exclusive = force.clone();
+        exclusive.mutual_exclusion_mask = 1 << 2;
+        let rate = decode_sensor_info_response(&respiration_sensor_response(
+            2,
+            "Respiration Rate",
+            "breaths/min",
+        ))
+        .unwrap();
+        assert!(matches!(
+            select_respiration_belt_sensors(&belt, &[exclusive, rate]),
+            Err(ProtocolError::MutuallyExclusiveSensors {
+                sensor: 1,
+                conflicts: 4
+            })
+        ));
+    }
+
+    #[test]
+    fn integer_measurements_are_losslessly_widened() {
+        let value = 2_000_000_001_i32;
+        let mut body = vec![0, 3, 1];
+        body.extend(value.to_le_bytes());
+        let decoded = decode_frame(&measurement_frame(0x09, &body)).unwrap();
+        let Frame::Measurement(Measurement::Samples { sensors, .. }) = decoded else {
+            panic!("expected samples");
+        };
+        assert_eq!(sensors[0].values, [f64::from(value)]);
     }
 }

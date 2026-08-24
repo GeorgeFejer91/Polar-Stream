@@ -12,6 +12,7 @@ mod ecg;
 mod excitation;
 mod hrv;
 mod reference_validation;
+mod vernier_breathing;
 
 use polar_h10_core::AccSample;
 use serde::Serialize;
@@ -29,6 +30,7 @@ pub use reference_validation::{
     AgreementError, RespirationReferenceReport, RespirationReferenceSettings, SignalAgreement,
     TimedReferenceSample, TimedRespirationSample, analyze_respiration_reference,
 };
+pub use vernier_breathing::VernierBreathingProcessor;
 
 use breathing_dynamics::BreathingDynamicsProcessor;
 use coherence::CoherenceProcessor;

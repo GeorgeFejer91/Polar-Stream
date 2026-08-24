@@ -19,7 +19,8 @@ use polar_h10_core::AccSample;
 use polar_h10_input::{InputEvent as PolarInputEvent, InputSessionPool as PolarInputSessionPool};
 use polar_h10_metrics::{
     BreathingSettings, METRIC_CATALOG, MetricCitation, MetricDefinition, MetricEngine,
-    MetricSample, MetricSelection, metric_citations, metric_formula_definition,
+    MetricSample, MetricSelection, VernierBreathingProcessor, metric_citations,
+    metric_formula_definition,
 };
 use polar_h10_output::{
     CustomFormulaConfig, FormulaError, FormulaPublishBatch, FormulaValidation, validate_formula,
@@ -28,6 +29,10 @@ use polar_h10_output::{MetricValue, OutputConfig, OutputHealth, OutputRouter};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State, ipc::Channel, path::BaseDirectory};
 use tauri_plugin_opener::OpenerExt;
+use vernier_gdx_core::{
+    SampleEncoding as GdxSampleEncoding, SensorInfo as GdxSensorInfo,
+    SensorSamples as GdxSensorSamples,
+};
 use vernier_gdx_input::{
     InputEvent as GdxInputEvent, InputSessionPool as GdxInputSessionPool, SessionConfig,
 };
@@ -229,8 +234,10 @@ enum AppEvent {
         source: SourceDescriptor,
         notifications: u64,
         samples: u64,
+        sample_rows: u64,
         malformed_frames: u64,
         dropped_batches: u64,
+        device_drop_reports: u64,
         queue_high_water: usize,
         decode_latency_p50_ns: u64,
         decode_latency_p95_ns: u64,
@@ -263,6 +270,7 @@ enum UnifiedInputEvent {
         sensor_name: Option<String>,
         sensor_unit: Option<String>,
         sample_period_us: Option<u32>,
+        vernier_sensors: Option<Vec<GdxSensorInfo>>,
     },
     Ecg {
         sensor_timestamp_ns: u64,
@@ -276,20 +284,23 @@ enum UnifiedInputEvent {
         beats_per_minute: u16,
         rr_intervals_ms: Vec<f32>,
     },
-    Force {
-        sensor_number: u8,
+    VernierSamples {
+        encoding: GdxSampleEncoding,
+        sensors: Vec<GdxSensorSamples>,
         host_receive_timestamp_ns: u64,
         sample_period_us: u32,
         sequence: u64,
-        values: Vec<f32>,
         dropped_before: u64,
+        device_drop_reports_before: u64,
         decode_latency_ns: u64,
     },
     StreamHealth {
         notifications: u64,
         samples: u64,
+        sample_rows: u64,
         malformed_frames: u64,
         dropped_batches: u64,
+        device_drop_reports: u64,
         queue_high_water: usize,
         decode_latency_p50_ns: u64,
         decode_latency_p95_ns: u64,
@@ -322,6 +333,7 @@ impl DeviceEventReceiver {
                     sensor_name: None,
                     sensor_unit: None,
                     sample_period_us: None,
+                    vernier_sensors: None,
                 },
                 PolarInputEvent::Ecg {
                     sensor_timestamp_ns,
@@ -366,6 +378,7 @@ impl DeviceEventReceiver {
                     sample_period_us,
                     main_firmware_version,
                     battery_percent,
+                    sensors,
                 } => UnifiedInputEvent::Connected {
                     device_name,
                     battery_percent: Some(battery_percent),
@@ -375,29 +388,34 @@ impl DeviceEventReceiver {
                     sensor_name: Some(sensor_name),
                     sensor_unit: Some(sensor_unit),
                     sample_period_us: Some(sample_period_us),
+                    vernier_sensors: Some(sensors),
                 },
                 GdxInputEvent::Samples {
-                    sensor_number,
+                    encoding,
+                    sensors,
                     host_receive_timestamp_ns,
                     sample_period_us,
                     sequence,
-                    values,
                     dropped_before,
+                    device_drop_reports_before,
                     decode_latency_ns,
-                } => UnifiedInputEvent::Force {
-                    sensor_number,
+                } => UnifiedInputEvent::VernierSamples {
+                    encoding,
+                    sensors,
                     host_receive_timestamp_ns,
                     sample_period_us,
                     sequence,
-                    values,
                     dropped_before,
+                    device_drop_reports_before,
                     decode_latency_ns,
                 },
                 GdxInputEvent::StreamHealth {
                     notifications,
                     samples,
+                    sample_rows,
                     malformed_frames,
                     dropped_batches,
+                    device_drop_reports,
                     queue_high_water,
                     decode_latency_p50_ns,
                     decode_latency_p95_ns,
@@ -406,8 +424,10 @@ impl DeviceEventReceiver {
                 } => UnifiedInputEvent::StreamHealth {
                     notifications,
                     samples,
+                    sample_rows,
                     malformed_frames,
                     dropped_batches,
+                    device_drop_reports,
                     queue_high_water,
                     decode_latency_p50_ns,
                     decode_latency_p95_ns,
@@ -694,6 +714,7 @@ async fn connect_device(
         let settings = *processing_settings.borrow_and_update();
         let mut metrics_engine = MetricEngine::with_selection(settings.metrics);
         metrics_engine.apply_breathing_settings(settings.breathing);
+        let mut vernier_breathing = VernierBreathingProcessor::default();
         while let Some(event) = input_events.recv().await {
             if processing_settings.has_changed().unwrap_or(false) {
                 let settings = *processing_settings.borrow_and_update();
@@ -718,7 +739,28 @@ async fn connect_device(
                     sensor_name,
                     sensor_unit,
                     sample_period_us,
+                    vernier_sensors,
                 } => {
+                    let vernier_channel_count = vernier_sensors.as_ref().map(Vec::len);
+                    if let (Some(model), Some(period), Some(sensors)) = (
+                        device_model.as_deref(),
+                        sample_period_us,
+                        vernier_sensors.as_deref(),
+                    ) {
+                        vernier_breathing = VernierBreathingProcessor::default();
+                        if let Err(message) =
+                            output.configure_vernier_streams(model, period, sensors)
+                        {
+                            let _ = forward_display_event(
+                                &ui_tx,
+                                AppEvent::Error {
+                                    source: task_source.clone(),
+                                    code: "LSL_TRANSPORT_WARNING",
+                                    message,
+                                },
+                            );
+                        }
+                    }
                     let save_preferences = preferences.clone();
                     let save_events = ui_tx.clone();
                     let save_source = task_source.clone();
@@ -758,10 +800,10 @@ async fn connect_device(
                                     "Raw ECG and accelerometer are streaming".into()
                                 }
                                 InputKind::VernierGoDirect => format!(
-                                    "Verified {} ({}) on channel {} is streaming at {:.1} Hz",
+                                    "Verified {} ({}) plus all {} device channels are streaming at a {:.1} Hz base period",
                                     sensor_name.as_deref().unwrap_or("Force"),
                                     sensor_unit.as_deref().unwrap_or("N"),
-                                    sensor_number.unwrap_or(1),
+                                    vernier_channel_count.unwrap_or(1),
                                     sample_period_us
                                         .filter(|period| *period > 0)
                                         .map(|period| 1_000_000.0 / period as f64)
@@ -862,40 +904,72 @@ async fn connect_device(
                             formulas,
                         )
                 }
-                UnifiedInputEvent::Force {
-                    sensor_number,
+                UnifiedInputEvent::VernierSamples {
+                    encoding,
+                    sensors,
                     host_receive_timestamp_ns,
                     sample_period_us,
                     sequence,
-                    values,
                     dropped_before,
+                    device_drop_reports_before,
                     decode_latency_ns,
                 } => {
-                    let output_open = forward_output_warning(
-                        &ui_tx,
-                        &task_source,
-                        output.publish_force(host_receive_timestamp_ns, &values, sample_period_us),
+                    output.publish_vernier_raw(
+                        host_receive_timestamp_ns,
+                        sample_period_us,
+                        sequence,
+                        dropped_before,
+                        device_drop_reports_before,
+                        decode_latency_ns,
+                        encoding,
+                        &sensors,
                     );
-                    output_open
-                        && forward_display_event(
+                    if let Some(force) = sensors.iter().find(|samples| samples.sensor_number == 1) {
+                        let values = force
+                            .values
+                            .iter()
+                            .map(|value| *value as f32)
+                            .collect::<Vec<_>>();
+                        let output_open = forward_output_warning(
                             &ui_tx,
-                            AppEvent::Force {
-                                source: task_source.clone(),
-                                sensor_number,
+                            &task_source,
+                            output.publish_force(
                                 host_receive_timestamp_ns,
+                                &values,
                                 sample_period_us,
-                                sequence,
-                                values,
-                                dropped_before,
-                                decode_latency_ns,
-                            },
-                        )
+                            ),
+                        );
+                        let waveform = vernier_breathing.push(&force.values, sample_period_us);
+                        output.publish_vernier_breathing(
+                            host_receive_timestamp_ns,
+                            &waveform,
+                            sample_period_us,
+                        );
+                        output_open
+                            && forward_display_event(
+                                &ui_tx,
+                                AppEvent::Force {
+                                    source: task_source.clone(),
+                                    sensor_number: force.sensor_number,
+                                    host_receive_timestamp_ns,
+                                    sample_period_us,
+                                    sequence,
+                                    values,
+                                    dropped_before,
+                                    decode_latency_ns,
+                                },
+                            )
+                    } else {
+                        true
+                    }
                 }
                 UnifiedInputEvent::StreamHealth {
                     notifications,
                     samples,
+                    sample_rows,
                     malformed_frames,
                     dropped_batches,
+                    device_drop_reports,
                     queue_high_water,
                     decode_latency_p50_ns,
                     decode_latency_p95_ns,
@@ -907,8 +981,10 @@ async fn connect_device(
                         source: task_source.clone(),
                         notifications,
                         samples,
+                        sample_rows,
                         malformed_frames,
                         dropped_batches,
+                        device_drop_reports,
                         queue_high_water,
                         decode_latency_p50_ns,
                         decode_latency_p95_ns,

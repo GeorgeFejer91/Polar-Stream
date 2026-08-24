@@ -115,10 +115,13 @@ Last verified: 2026-08-24
   Cancellation covers setup as well as streaming, terminal events cannot block
   teardown, physical disconnect is bounded, and finished owners are pruned
   before new scan/connect admission so failed links do not strand capacity.
-  Device and advertised-sensor metadata are parsed before streaming; the
-  product profile requires a confirmed GDX-RB and channel-1 periodic Force in
-  N. It requests 10 Hz when metadata permits and otherwise uses the plausible
-  reported typical period. The initialization status response also reports the
+  Device and every advertised-sensor metadata record are parsed before
+  streaming; the native product profile requires a confirmed GDX-RB and
+  channel-1 periodic Force in N, then enables the complete compatible numeric
+  periodic/aperiodic channel set. It rejects malformed, unsupported, duplicate,
+  or mutually exclusive schemas instead of silently omitting raw values. It
+  requests a common 10 Hz base period when metadata permits and otherwise uses
+  a common plausible reported fallback. The initialization status response also reports the
   main firmware major/minor and battery percentage in native and Chromium
   connection metadata. A bounded native verifier exercises sustained samples,
   continuity/rate/health thresholds, explicit disconnect, and reconnect while
@@ -137,11 +140,19 @@ Last verified: 2026-08-24
   retain that active measurement subscription and retry unexpected link drops
   with bounded exponential backoff. Deliberate disconnects never trigger a
   retry, and only an advertising sensor can reconnect.
-- Raw Go Direct force is a first-class N-valued output. Notification batches
-  publish before UI work; output timestamps backfill from one host receipt using
-  the configured period. Its LSL nominal rate is irregular (`0`) to avoid false
-  fixed-clock metadata. Per-source filtering prevents empty cross-device outlet
-  types.
+- Native Go Direct raw data is a first-class per-device aggregate LSL output.
+  `<base>_rawVernier` sorts the metadata-defined measurement channels by sensor
+  number, losslessly widens device Float32/Int32 values into Double64, represents
+  channels absent from a sparse native update as `NaN`, and appends sequence,
+  input-drop, device-drop, period, decode-latency, host-receipt, and encoding
+  diagnostics. `<base>_vernierBreathing` is a separate derived Float32 relative
+  belt-force waveform, causally normalized over a bounded 30-second history and
+  clamped to 0–1 with inhale increasing. Both are irregular-rate, explicitly
+  timestamped liblsl outlets created before the first measurement is published.
+  The existing channel-1 Force (N) LSL/OSC/CSV path remains compatible and raw
+  aggregate publication still precedes derived/UI work. A pinned official pylsl
+  1.18.2/liblsl 1.17.7 synthetic consumer gate verifies descriptors, metadata,
+  sparse/exact values, formats, bounds, and advancing timestamps.
 - Immediate raw LSL/OSC publication with canonical names.
 - Raw ECG and ACC LSL chunks preserve H10 sensor-time spacing through separate
   first-frame offsets into the local LSL clock. This prevents setup-buffered
@@ -299,11 +310,14 @@ Last verified: 2026-08-24
 
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.
-- Go Direct intentionally supports only a metadata-verified GDX-RB channel-1
-  periodic Force (N) profile and rejects generic sensors. One physical native
-  Windows stream/disconnect/reconnect qualification passed on 2026-08-24;
-  Chromium, mixed-source, under-load, cross-platform, long-run loss, and latency
-  percentile qualification remain open.
+- Native Go Direct intentionally supports the complete compatible numeric schema
+  of a metadata-verified GDX-RB, requires channel-1 periodic Force (N), and
+  rejects generic sensors. Chromium remains channel-1 force-only and cannot
+  publish native LSL. One physical native Windows force-only-mask
+  stream/disconnect/reconnect qualification passed on 2026-08-24; the revised
+  all-channel mask/two-outlet path, Chromium, mixed-source, under-load,
+  cross-platform, long-run loss, and latency-percentile qualifications remain
+  physically open.
 - Chromium can connect to Go Direct only in a secure context and only after a
   user-triggered device chooser for each device. A page cannot passively scan
   or silently enumerate all nearby sensors, and hidden-tab/screen-lock
@@ -312,6 +326,9 @@ Last verified: 2026-08-24
   Rusty LSL backend compiles and passes its existing single/two-H10 tests, but
   its fixed-port registry must be generalized before claiming runtime support
   for the new ordinary app's arbitrary mixed-source routers.
+- The dynamic Double64 aggregate Vernier outlet is packaged-liblsl-only. The
+  optional Rusty backend rejects an active Vernier schema explicitly instead of
+  silently omitting the raw or derived special outlet.
 - Windows CI validates the WinRT integration and the non-Windows `btleplug` path at compile and unit-test
   level only. Retain the system-managed link values and sample counts from a
   physical Windows run before making timing claims.

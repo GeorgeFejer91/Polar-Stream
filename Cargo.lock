@@ -2796,6 +2796,7 @@ dependencies = [
  "rusty-lsl",
  "serde",
  "tokio",
+ "vernier-gdx-core",
 ]
 
 [[package]]
@@ -2813,6 +2814,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "uuid",
+ "vernier-gdx-core",
  "vernier-gdx-input",
 ]
 

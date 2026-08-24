@@ -9,26 +9,44 @@ matching Chromium Web Bluetooth adapter. No Respyra source code or GPL Go Direct
 implementation is imported. The protocol shape was checked against Vernier's
 official [godirect-js](https://github.com/VernierST/godirect-js) and
 [godirect-py](https://github.com/VernierST/godirect-py) implementations plus
-the [Go Direct examples](https://github.com/VernierST/godirect-examples).
+the [Go Direct examples](https://github.com/VernierST/godirect-examples). The
+product-specific channel and signal semantics are checked against Vernier's
+[GDX-RB channel inventory](https://www.vernier.com/til/16315) and
+[respiration-belt manual](https://www.vernier.com/manuals/GDX-RB/).
 The two Rust crates are direct workspace dependencies compiled into the Tauri
 desktop binary. Native Vernier support requires no Python helper, browser shim,
 proprietary SDK, plugin, or separately installed protocol module.
 
 The implemented product profile is specifically the GDX-RB respiration belt.
-Native and browser paths parse device identity, enumerate the advertised sensor
-mask and metadata, require a confirmed GDX-RB model, and accept only channel 1
-when it is a periodic Force sensor reporting N. They request a 100,000 µs (10
-Hz) period when the metadata says it is valid, otherwise they use the sensor's
-plausible typical period. Both paths wait for the start acknowledgement and a
-valid force measurement before reporting the source as streaming.
+The native path parses device identity and every channel in the advertised
+sensor mask, requires a confirmed GDX-RB model plus periodic channel-1 Force in
+N, and enables the complete compatible numeric channel set. Setup fails instead
+of silently omitting a channel when metadata is malformed, unsupported,
+duplicated, mutually exclusive, or has no common periodic base interval. The
+native path requests a 100,000 µs (10 Hz) base period when all periodic channels
+accept it, otherwise it uses a common plausible metadata fallback. It reports
+connected only after the start acknowledgement and first valid measurement.
 
-Automated protocol, application, output, and emulated-browser tests pass. On
+Native LSL then creates two additional per-device outlets before forwarding
+that first measurement: `<base>_rawVernier` and
+`<base>_vernierBreathing`. The former is the authoritative metadata-driven raw
+recording stream; the latter is an explicitly derived, relative 0–1 belt-force
+waveform. The Chromium adapter remains the narrower channel-1 Force path and
+cannot publish native LSL. Its limitation is explicit rather than presenting a
+browser-local substitute as the all-channel stream.
+
+Automated protocol, application, output, and emulated-browser tests pass. A
+pinned official pylsl 1.18.2/liblsl 1.17.7 consumer gate exactly matches both
+new descriptors, channel metadata, Double64/Float32 formats, sparse values,
+exact widened Int32 data, bounded derived samples, and advancing timestamps. On
 2026-08-24, the native Windows/WinRT verifier also passed against a physical
 GDX-RB running main firmware 5.3: exact channel-1 periodic Force (N), 70 primary
 samples at 10.01 Hz with zero drop/malformed/nonfinite counts, explicit
 disconnect, and 20 reconnect samples at 10.05 Hz. This is single-device native
 evidence, not browser, mixed-source, cross-platform, long-run, respiratory-
-agreement, or end-to-end latency qualification.
+agreement, or end-to-end latency qualification. That physical evidence predates
+the all-channel outlet change and therefore does not by itself requalify the new
+multi-channel acquisition mask or the two live physical LSL outlets.
 
 The bounded native verifier exercises the shipped Rust input pool directly:
 
@@ -52,7 +70,7 @@ name or Bluetooth identifier.
 | Protocol | `crates/vernier-gdx-core` | `ui/vernier-web-bluetooth.js` |
 | BLE ownership | `crates/vernier-gdx-input` using `btleplug` | Web Bluetooth GATT objects owned by the tab |
 | Application routing | Tauri coordinator and per-source task | shared runtime event adapter |
-| Raw output | per-source LSL, OSC, and bounded CSV | local CSV, same-tab event, and `BroadcastChannel` |
+| Raw output | per-source aggregate raw LSL plus force-compatible LSL/OSC/CSV | channel-1 force in local CSV, same-tab event, and `BroadcastChannel`; no LSL |
 | Presentation | shared source descriptors, buffers, colors, and visualizers | same canonical UI |
 
 The Rust protocol crate is platform-neutral and has no BLE dependency. The
@@ -83,18 +101,24 @@ The startup order is:
 2. Subscribe to responses before sending commands.
 3. Send initialization, status, and device-information commands.
 4. Parse device metadata and require the GDX-RB model identifier/description.
-5. Read the available-sensor mask, enumerate its sensor metadata, and require
-   channel 1 to be periodic Force in N.
-6. Request 100,000 µs when valid for that sensor, otherwise use its plausible
-   typical period, then enable channel 1.
+5. Read the available-sensor mask, decode every advertised sensor's metadata,
+   require channel 1 to be periodic Force in N, and reject any unsupported,
+   duplicate, or mutually exclusive all-channel schema.
+6. Request 100,000 µs when every periodic sensor accepts it, otherwise select a
+   common plausible metadata period, then enable every compatible channel in
+   one measurement mask.
 7. Wait for the correlated start acknowledgement.
-8. Report connected only after decoding the first non-empty channel-1 batch.
+8. Report connected only after decoding the first non-empty schema-valid frame;
+   the ordered connection event installs both LSL outlets before that frame is
+   published.
 
 Normal and wide periodic float frames, single/aperiodic float frames, and their
 integer variants are decoded in Rust. Periodic frames are deinterleaved by
 selected sensor; the packet count is interpreted as samples per selected
 channel, matching the official JavaScript implementation rather than as total
-float count.
+float count. Device Float32 and Int32 values are widened losslessly to Rust
+`f64` for the aggregate LSL path; no normalization, carry-forward, interpolation,
+or unit conversion occurs in the raw stream.
 
 ## Parallel with the Polar H10 path
 
@@ -102,21 +126,40 @@ float count.
 | --- | --- | --- | --- |
 | Discovery identity | exact H10 name/service evidence | Go Direct service plus parsed GDX-RB device identity | device ID is prefixed with input kind before UI routing |
 | Setup | PMD settings/start responses | Go Direct command/counter responses | setup is bounded and fails closed |
-| First-frame gate | valid ECG and ACC | valid selected force batch | no premature `connected` state |
+| First-frame gate | valid ECG and ACC | valid frame inside complete negotiated schema | no premature `connected` state |
 | Batch semantics | H10 sensor timestamps and sample spacing | host receipt plus configured period | raw batches publish before derived/UI work |
 | Session ownership | one owner/manager per H10 | one independent task/peripheral/decoder per GDX | no shared hot-path device lock |
 | Backpressure | bounded event/UI queues | bounded event/UI queues | UI may drop display batches; acquisition cannot wait for the WebView |
 | Diagnostics | staged input and output health | malformed/drop/high-water/decode-latency counters | loss and latency remain observable |
-| Output identity | source-suffixed ECG/ACC/metrics | source-suffixed raw force | streams from different bodies/devices cannot collide |
+| Output identity | source-suffixed ECG/ACC/metrics | source-suffixed rawVernier and vernierBreathing, plus compatible rawForce | streams from different bodies/devices cannot collide |
 
 The key parallel is architectural, not a claim that the wire protocols are the
 same. Polar PMD carries device timestamps in measurement frames. Go Direct
 periodic force frames do not provide an equivalent absolute timestamp in the
 implemented measurement path. Polar Stream therefore records the host receipt
-time once per Go Direct notification and backfills samples at the negotiated
-period. The force LSL outlet advertises irregular rate (`0`) so metadata does
-not falsely promise a fixed clock while explicit timestamps preserve the known
-intra-batch spacing.
+time once per Go Direct notification and backfills periodic rows at the
+negotiated period. Both new outlets advertise irregular rate (`0`) so metadata
+does not falsely promise a fixed device clock while explicit timestamps preserve
+known intra-batch spacing.
+
+`<base>_rawVernier` uses a stable channel order sorted by Go Direct sensor
+number. Its first channels are the exact device measurements with labels, units,
+sensor IDs, numeric types, sampling modes, ranges, uncertainty, and period
+metadata copied into the LSL descriptor. Seven trailing diagnostics expose row
+sequence, input-queue rows dropped before the row, device drop reports, base
+period, decode latency, monotonic host-receipt time, and frame encoding. Because
+periodic and aperiodic channels update at different cadences, a device channel
+absent from a native update is `NaN`; it is never filled from an older value.
+The outlet uses Double64 so every device Float32 and Int32 value is represented
+exactly.
+
+`<base>_vernierBreathing` contains one Float32 channel labeled as derived. Force
+increases on inhalation for the GDX-RB, so the causal processor maps increasing
+force upward. It uses a bounded 30-second force history, min/max bounds while
+warming up and 5th/95th percentiles after 20 finite samples, clamps every value
+to 0–1, and holds the previous derived value for a non-finite input while the
+unaltered input remains visible in raw LSL. This is relative belt effort, not
+lung volume, airflow, or a clinical measurement.
 
 ## Multi-device and color routing
 
@@ -150,8 +193,8 @@ Direct transport directly and reconnects without waiting for a Polar scan.
 ## Latency and reliability choices
 
 - BLE notifications are consumed as delivered; no timer aggregation is added.
-- Go Direct notification batches remain batches through decoding and native
-  output, avoiding per-value channel overhead.
+- Go Direct notification frames remain frame-wide through decoding and native
+  raw routing; LSL rows are formed only at the final transport boundary.
 - Native setup selects the command characteristic's advertised write mode,
   preferring write without response and falling back to write with response
   only when supported. Streaming itself is notification-driven.
@@ -170,13 +213,13 @@ Direct transport directly and reconnects without waiting for a Polar scan.
   notification loop. Teardown uses non-blocking terminal events and a bounded
   peripheral disconnect; completed owners are pruned before later scan/connect
   admission so an unexpected link end cannot strand a stale slot.
-- Data enqueue uses non-blocking admission and increments an explicit dropped
-  batch counter instead of delaying the BLE notification task.
+- Data enqueue uses non-blocking admission and increments explicit dropped-batch
+  and dropped-row counters instead of delaying the BLE notification task.
 - The UI bridge has its own capacity-8 best-effort queue. A hidden or slow
   WebView can lose display updates without delaying LSL, OSC, or CSV.
-- Every five seconds the native input reports notification/sample counts,
-  malformed frames, dropped batches, queue high-water, and decode-latency
-  p50/p95/p99/max.
+- Every five seconds the native input reports notification/scalar/row counts,
+  malformed frames, dropped batches, device drop reports, queue high-water, and
+  decode-latency p50/p95/p99/max.
 - LSL, OSC, and CSV receive explicitly backfilled timestamps derived from the
   newest host receipt and the configured sample period.
 
@@ -197,10 +240,13 @@ must be initiated by a user gesture. The browser owns the chooser and grants
 only the device selected by the user. Passive background detection and silent
 multi-device enumeration are intentionally unavailable to page JavaScript.
 
-The browser adapter mirrors the native setup and decoding contract, including
+The browser adapter mirrors the original force setup and decoding contract, including
 20-byte command chunks, command/counter correlation, fragmented response
 reassembly, availability gating, configured sample period, and first-valid-
-measurement connection gating. Its deterministic Playwright fixture verifies
+measurement connection gating. It currently enables and exposes only channel 1
+Force (N); it does not enumerate the native all-channel schema into an LSL
+descriptor or generate the Vernier-derived 0–1 LSL stream. Its deterministic
+Playwright fixture verifies
 the service filter, complete startup sequence, fragmented normal-force packet,
 source color, live force display, and disconnect cleanup.
 
@@ -228,6 +274,10 @@ a native background service.
   acceptance with desktop/mobile responsive checks
 - physical Windows/WinRT GDX-RB native stream, disconnect, and reconnect
   qualification on 2026-08-24
+- bundled liblsl outlet/sample smoke test including Vernier Double64 raw and
+  Float32 derived pushes
+- pinned official pylsl consumer verification through
+  `scripts/verify_vernier_lsl.py`
 
 The physical result closes only the single-device native gate. The remaining
 software and emulated-browser results do not prove physical browser,
@@ -252,11 +302,13 @@ For each supported operating system and browser/native path:
 6. Do not publish a physical compatibility or latency percentile claim until
    the evidence artifact is retained and reviewed.
 
-The native verifier covers the single-GDX discovery, exact GDX-RB channel-1
-Force (N) contract, sustained primary stream, health thresholds, explicit
-disconnect, and reconnect portions of this gate. It does not replace the mixed
-multi-device, browser, under-load, independent-reference, or synchronized
-H10/GDX qualification runs.
+The native verifier covers the single-GDX discovery, complete ordered metadata
+schema plus exact GDX-RB channel-1 Force (N) contract, sustained primary stream,
+health thresholds, explicit disconnect, and reconnect portions of this gate.
+The retained physical run exercised the older force-only mask. A new physical
+run must demonstrate the all-channel mask and both LSL outlets before that part
+of the gate closes. It does not replace the mixed multi-device, browser,
+under-load, independent-reference, or synchronized H10/GDX qualification runs.
 
 For the synchronized portion, save isolated schema-2 native CSVs for H10 ACC
 and GDX-RB Force (N), then use the repository's
@@ -268,12 +320,15 @@ conditions, metrics, and interpretation limits.
 
 ## Current limitations
 
-- The product profile intentionally supports only a metadata-verified GDX-RB
-  channel-1 periodic Force (N) sensor. Generic Go Direct devices and an
-  arbitrary sensor picker remain future work and are rejected rather than
-  mislabeled as respiration belts.
+- The native product profile intentionally supports the complete compatible
+  numeric schema of a metadata-verified GDX-RB and requires channel-1 periodic
+  Force (N). Generic Go Direct devices and arbitrary sensor selection remain
+  future work and are rejected rather than mislabeled as respiration belts.
+- The Chromium path remains force-only and browser-local. It cannot create the
+  aggregate raw or derived native LSL outlets.
 - One physical GDX-RB/native Windows run passed; physical browser,
-  mixed-source, cross-platform, under-load, and long-run validation is pending.
+  revised all-channel native/LSL, mixed-source, cross-platform, under-load, and
+  long-run validation is pending.
 - Browser source discovery is chooser-based by Web Bluetooth design.
 - Go Direct absolute device-clock synchronization is not implemented; periodic
   samples use explicit host-receipt/backfilled timestamps.
@@ -282,3 +337,6 @@ conditions, metrics, and interpretation limits.
   fixed-port one-registry/many-outlet qualification must be generalized before
   claiming multi-source Rusty-LSL runtime support. Production/default liblsl
   does not have that experimental registry constraint.
+- The aggregate Double64 Vernier schema is supported only by the packaged
+  liblsl backend. Enabling the optional Rusty backend with an installed Vernier
+  schema fails explicitly instead of silently dropping either special outlet.

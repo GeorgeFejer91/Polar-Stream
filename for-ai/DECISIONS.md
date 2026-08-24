@@ -1,5 +1,33 @@
 # Decision log
 
+## 2026-08-24 — Make the complete Vernier schema raw and the waveform derived
+
+After confirming the GDX-RB and its required channel-1 Force (N) sensor, decode
+and enable every compatible numeric sensor in the device's advertised metadata
+mask. Reject malformed, unsupported, duplicate, or mutually exclusive schemas
+instead of selecting only convenient channels and silently losing recordable
+device output. Carry each native measurement frame through the input event as
+one frame-wide value set before compatibility, derived, or UI work.
+
+Create `<base>_rawVernier` automatically on the packaged liblsl path. Give it a
+fixed channel order by sensor number, metadata-derived labels/units, Double64
+storage that exactly represents device Float32 and Int32 values, `NaN` for a
+channel absent from a sparse periodic/aperiodic update, and trailing sequence,
+queue-loss, device-drop, period, decode-latency, host-receipt, and encoding
+diagnostics. Keep nominal rate irregular and map explicit host receipt plus
+configured periodic backfill into the local LSL clock because Go Direct exposes
+no absolute sample clock here. Retain the older channel-1 rawForce output as a
+compatibility surface, but make aggregate raw publication happen first.
+
+Create `<base>_vernierBreathing` as a separate explicitly derived Float32
+outlet. Map increasing GDX-RB force/inhalation upward using a causal bounded
+30-second force history, warm-up min/max then 5th/95th-percentile bounds, and a
+hard 0–1 clamp. Hold the last derived value on non-finite force while retaining
+the exact non-finite input in raw LSL. This waveform is relative belt effort,
+not lung volume, airflow, or a clinical signal. The browser remains force-only
+and cannot publish LSL; the optional Rusty backend rejects this dynamic
+Double64 schema instead of silently omitting it.
+
 ## 2026-08-24 — Honor physical Go Direct BLE write and response framing
 
 Select the command characteristic's advertised GATT write mode, preferring

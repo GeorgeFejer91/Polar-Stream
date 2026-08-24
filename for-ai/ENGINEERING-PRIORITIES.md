@@ -68,6 +68,14 @@ On the receive-to-raw-publish path:
 - treat sensor timestamps and channel mapping as evidence. Do not replace,
   synthesize, smooth, or reorder them silently.
 
+For native Go Direct, “original channel order” means the stable metadata order
+by sensor number because periodic and aperiodic frames may carry only a subset.
+Keep one fixed-width Double64 recording schema, write `NaN` for channels absent
+from an update, and never carry values forward. Device Float32/Int32 values must
+remain exact; timing, queue loss, device drop reports, and encoding stay visible
+as diagnostic channels. Publish that aggregate frame before the separately
+named 0–1 Vernier breathing transformation or compatibility/UI work.
+
 Expensive work such as sorting, spectral analysis, resampling, or complexity
 estimation belongs in bounded, opt-in processors with explicit cadence. A
 raw-only configuration must not maintain their windows.

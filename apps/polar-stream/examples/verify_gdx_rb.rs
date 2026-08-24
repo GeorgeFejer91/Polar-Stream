@@ -5,6 +5,7 @@
 //! samples, health telemetry, explicit cleanup, and a second connection.
 
 use std::{
+    collections::BTreeSet,
     env,
     process::Command,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -13,6 +14,7 @@ use std::{
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::mpsc;
+use vernier_gdx_core::{SensorInfo, SensorSamples};
 use vernier_gdx_input::{
     DEFAULT_PERIOD_US, DeviceSummary, InputEvent, InputSessionPool, SessionConfig,
 };
@@ -32,14 +34,40 @@ struct ConnectionEvidence {
     sample_period_us: u32,
     main_firmware_version: String,
     battery_percent: u8,
+    sensors: Vec<SensorEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SensorEvidence {
+    number: u8,
+    sensor_id: u32,
+    name: String,
+    unit: String,
+    numeric_type: String,
+    sampling_mode: String,
+}
+
+impl From<&SensorInfo> for SensorEvidence {
+    fn from(sensor: &SensorInfo) -> Self {
+        Self {
+            number: sensor.number,
+            sensor_id: sensor.sensor_id,
+            name: sensor.description.clone(),
+            unit: sensor.unit.clone(),
+            numeric_type: format!("{:?}", sensor.numeric_type),
+            sampling_mode: format!("{:?}", sensor.sampling_mode),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct HealthEvidence {
     notifications: u64,
     samples: u64,
+    sample_rows: u64,
     malformed_frames: u64,
     dropped_batches: u64,
+    device_drop_reports: u64,
     queue_high_water: usize,
     decode_latency_p50_ns: u64,
     decode_latency_p95_ns: u64,
@@ -51,6 +79,8 @@ struct HealthEvidence {
 struct StreamObservation {
     batches: u64,
     samples: u64,
+    scalar_values: u64,
+    observed_sensor_numbers: BTreeSet<u8>,
     first_host_receive_timestamp_ns: Option<u64>,
     last_host_receive_timestamp_ns: Option<u64>,
     first_reconstructed_sample_timestamp_ns: Option<u64>,
@@ -58,11 +88,12 @@ struct StreamObservation {
     sequence_missing: u64,
     sequence_reordered: u64,
     dropped_before: u64,
+    device_drop_reports_before: u64,
     nonfinite_values: u64,
     period_us: Option<u32>,
     period_changes: u64,
-    force_min_n: Option<f32>,
-    force_max_n: Option<f32>,
+    force_min_n: Option<f64>,
+    force_max_n: Option<f64>,
     previous_batch_samples: usize,
     host_gap_errors_ns: Vec<u64>,
     max_host_gap_ns: u64,
@@ -71,20 +102,27 @@ struct StreamObservation {
 impl StreamObservation {
     fn observe(
         &mut self,
-        sensor_number: u8,
+        sensors: &[SensorSamples],
         host_receive_timestamp_ns: u64,
         sample_period_us: u32,
         sequence: u64,
-        values: &[f32],
         dropped_before: u64,
+        device_drop_reports_before: u64,
     ) -> Result<(), String> {
-        if sensor_number != 1 {
-            return Err(format!(
-                "physical verifier received channel {sensor_number}, expected channel 1"
-            ));
+        let row_count = sensors
+            .iter()
+            .map(|sensor| sensor.values.len())
+            .max()
+            .unwrap_or(0);
+        if row_count == 0 {
+            return Err("physical verifier received an empty measurement frame".into());
         }
-        if values.is_empty() {
-            return Err("physical verifier received an empty Force batch".into());
+
+        for sensor in sensors {
+            self.observed_sensor_numbers.insert(sensor.sensor_number);
+            self.scalar_values = self
+                .scalar_values
+                .saturating_add(sensor.values.len() as u64);
         }
 
         if let Some(previous_period) = self.period_us {
@@ -106,8 +144,19 @@ impl StreamObservation {
                     .saturating_add(sequence.saturating_sub(expected));
             }
         }
-        self.sequence_next = Some(sequence.saturating_add(values.len() as u64));
+        self.sequence_next = Some(sequence.saturating_add(row_count as u64));
         self.dropped_before = self.dropped_before.saturating_add(dropped_before);
+        self.device_drop_reports_before = self
+            .device_drop_reports_before
+            .saturating_add(device_drop_reports_before);
+
+        self.batches = self.batches.saturating_add(1);
+        let Some(force) = sensors.iter().find(|sensor| sensor.sensor_number == 1) else {
+            return Ok(());
+        };
+        if force.values.is_empty() {
+            return Err("physical verifier received an empty Force batch".into());
+        }
 
         if let Some(previous) = self.last_host_receive_timestamp_ns {
             if host_receive_timestamp_ns <= previous {
@@ -122,19 +171,18 @@ impl StreamObservation {
                 .push(observed_gap.abs_diff(expected_gap));
         }
 
-        self.batches = self.batches.saturating_add(1);
-        self.samples = self.samples.saturating_add(values.len() as u64);
+        self.samples = self.samples.saturating_add(force.values.len() as u64);
         self.first_host_receive_timestamp_ns
             .get_or_insert(host_receive_timestamp_ns);
         self.last_host_receive_timestamp_ns = Some(host_receive_timestamp_ns);
-        self.previous_batch_samples = values.len();
-        let batch_backfill_ns = (values.len().saturating_sub(1) as u64)
+        self.previous_batch_samples = force.values.len();
+        let batch_backfill_ns = (force.values.len().saturating_sub(1) as u64)
             .saturating_mul(u64::from(sample_period_us))
             .saturating_mul(1_000);
         self.first_reconstructed_sample_timestamp_ns
             .get_or_insert(host_receive_timestamp_ns.saturating_sub(batch_backfill_ns));
 
-        for value in values {
+        for value in &force.values {
             if !value.is_finite() {
                 self.nonfinite_values = self.nonfinite_values.saturating_add(1);
                 continue;
@@ -154,7 +202,7 @@ impl StreamObservation {
         Some((self.samples - 1) as f64 / ((last - first) as f64 / 1_000_000_000.0))
     }
 
-    fn force_span_n(&self) -> Option<f32> {
+    fn force_span_n(&self) -> Option<f64> {
         self.force_min_n
             .zip(self.force_max_n)
             .map(|(minimum, maximum)| maximum - minimum)
@@ -166,6 +214,8 @@ impl StreamObservation {
         json!({
             "batches": self.batches,
             "samples": self.samples,
+            "scalar_values": self.scalar_values,
+            "observed_sensor_numbers": self.observed_sensor_numbers,
             "host_receipt_timestamps_advanced": self.first_host_receive_timestamp_ns
                 .zip(self.last_host_receive_timestamp_ns)
                 .is_some_and(|(first, last)| last > first),
@@ -173,6 +223,7 @@ impl StreamObservation {
             "sequence_missing_samples": self.sequence_missing,
             "sequence_reordered_samples": self.sequence_reordered,
             "dropped_before_samples": self.dropped_before,
+            "device_drop_reports_before": self.device_drop_reports_before,
             "nonfinite_values": self.nonfinite_values,
             "period_changes": self.period_changes,
             "force_min_n": self.force_min_n,
@@ -276,6 +327,7 @@ async fn capture(
                 sample_period_us,
                 main_firmware_version,
                 battery_percent,
+                sensors,
                 ..
             } => {
                 let metadata = ConnectionEvidence {
@@ -286,31 +338,34 @@ async fn capture(
                     sample_period_us,
                     main_firmware_version,
                     battery_percent,
+                    sensors: sensors.iter().map(SensorEvidence::from).collect(),
                 };
                 validate_connection(&metadata)?;
                 connection = Some(metadata);
             }
             InputEvent::Samples {
-                sensor_number,
+                sensors,
                 host_receive_timestamp_ns,
                 sample_period_us,
                 sequence,
-                values,
                 dropped_before,
+                device_drop_reports_before,
                 ..
             } => stream.observe(
-                sensor_number,
+                &sensors,
                 host_receive_timestamp_ns,
                 sample_period_us,
                 sequence,
-                &values,
                 dropped_before,
+                device_drop_reports_before,
             )?,
             InputEvent::StreamHealth {
                 notifications,
                 samples,
+                sample_rows,
                 malformed_frames,
                 dropped_batches,
+                device_drop_reports,
                 queue_high_water,
                 decode_latency_p50_ns,
                 decode_latency_p95_ns,
@@ -320,8 +375,10 @@ async fn capture(
                 health = Some(HealthEvidence {
                     notifications,
                     samples,
+                    sample_rows,
                     malformed_frames,
                     dropped_batches,
+                    device_drop_reports,
                     queue_high_water,
                     decode_latency_p50_ns,
                     decode_latency_p95_ns,
@@ -365,6 +422,19 @@ fn validate_connection(connection: &ConnectionEvidence) -> Result<(), String> {
     if connection.main_firmware_version.is_empty() {
         return Err("GDX-RB main firmware version was empty".into());
     }
+    if connection.sensors.is_empty()
+        || connection
+            .sensors
+            .windows(2)
+            .any(|pair| pair[0].number >= pair[1].number)
+        || !connection.sensors.iter().any(|sensor| {
+            sensor.number == 1
+                && sensor.name.eq_ignore_ascii_case("force")
+                && sensor.unit.eq_ignore_ascii_case("n")
+        })
+    {
+        return Err("GDX-RB did not expose a stable, ordered all-channel schema".into());
+    }
     if !(1_000..=60_000_000).contains(&connection.sample_period_us) {
         return Err("GDX-RB selected an invalid sample period".into());
     }
@@ -380,6 +450,7 @@ fn validate_stream(
         || stream.sequence_missing != 0
         || stream.sequence_reordered != 0
         || stream.dropped_before != 0
+        || stream.device_drop_reports_before != 0
         || stream.nonfinite_values != 0
         || stream.period_changes != 0
     {
@@ -404,6 +475,7 @@ fn validate_stream(
         let health = health.ok_or_else(|| "GDX-RB emitted no health snapshot".to_string())?;
         if health.malformed_frames != 0
             || health.dropped_batches != 0
+            || health.device_drop_reports != 0
             || health.queue_high_water > 32
             || health.decode_latency_p99_ns > u64::from(period_us) * 1_000
         {
@@ -522,7 +594,7 @@ async fn verify() -> Result<serde_json::Value, String> {
     pool.disconnect_all().await?;
 
     Ok(json!({
-        "schema": "polar.stream.gdx_rb_native_physical.v1",
+        "schema": "polar.stream.gdx_rb_native_physical.v2",
         "result": "pass",
         "generated_at_unix_ms": unix_time_ms(),
         "source_revision": git_revision(),
@@ -576,7 +648,7 @@ async fn main() {
             let code = failure_code(&error);
             println!(
                 "POLAR_GDX_VERIFY_FAILED {}",
-                json!({"schema": "polar.stream.gdx_rb_native_physical.v1", "result": "fail", "code": code})
+                json!({"schema": "polar.stream.gdx_rb_native_physical.v2", "result": "fail", "code": code})
             );
             eprintln!("GDX-RB physical verification failed ({code}).");
             std::process::exit(1);
@@ -619,24 +691,68 @@ mod tests {
     fn observation_accepts_contiguous_periodic_force() {
         let mut stream = StreamObservation::default();
         stream
-            .observe(1, 100_000_000, 100_000, 0, &[1.0], 0)
+            .observe(
+                &[SensorSamples {
+                    sensor_number: 1,
+                    values: vec![1.0],
+                }],
+                100_000_000,
+                100_000,
+                0,
+                0,
+                0,
+            )
             .unwrap();
         stream
-            .observe(1, 200_000_000, 100_000, 1, &[1.2], 0)
+            .observe(
+                &[SensorSamples {
+                    sensor_number: 1,
+                    values: vec![1.2],
+                }],
+                200_000_000,
+                100_000,
+                1,
+                0,
+                0,
+            )
             .unwrap();
         assert_eq!(stream.sequence_missing, 0);
         assert_eq!(stream.observed_rate_hz(), Some(10.0));
-        assert_eq!(stream.force_span_n(), Some(0.200_000_05));
+        assert!(
+            stream
+                .force_span_n()
+                .is_some_and(|span| (span - 0.2).abs() < f64::EPSILON * 2.0)
+        );
     }
 
     #[test]
     fn observation_surfaces_loss_reorder_and_nonfinite_values() {
         let mut stream = StreamObservation::default();
         stream
-            .observe(1, 100_000_000, 100_000, 0, &[1.0], 0)
+            .observe(
+                &[SensorSamples {
+                    sensor_number: 1,
+                    values: vec![1.0],
+                }],
+                100_000_000,
+                100_000,
+                0,
+                0,
+                0,
+            )
             .unwrap();
         stream
-            .observe(1, 300_000_000, 100_000, 2, &[f32::NAN], 1)
+            .observe(
+                &[SensorSamples {
+                    sensor_number: 1,
+                    values: vec![f64::NAN],
+                }],
+                300_000_000,
+                100_000,
+                2,
+                1,
+                0,
+            )
             .unwrap();
         assert_eq!(stream.sequence_missing, 1);
         assert_eq!(stream.dropped_before, 1);

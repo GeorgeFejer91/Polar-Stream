@@ -8,6 +8,14 @@ output crate against Rusty LSL:
 cargo run -p polar-stream --no-default-features --features rusty-lsl-backend
 ```
 
+This backend does not implement the GDX-RB's metadata-driven dynamic Double64
+`rawVernier` outlet or its paired `vernierBreathing` outlet. If LSL is enabled
+when a native Vernier schema is installed, configuration emits an explicit
+failure and neither special outlet is advertised. A separately selected legacy
+`rawForce` compatibility outlet may still publish channel 1, but it is not
+presented as the complete Vernier recording. Use the packaged/default liblsl
+backend for the Vernier two-stream contract.
+
 The dependency is commit-pinned to Rusty LSL
 `8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. This is the reviewed merge that
 preserves one-channel initialization, admits three-channel initialization, and

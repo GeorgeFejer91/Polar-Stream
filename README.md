@@ -1,7 +1,7 @@
 # Polar Stream
 
 Polar Stream is a compact, low-latency desktop bridge for simultaneous Polar
-H10 ECG/accelerometer and Vernier Go Direct force inputs. Its interface has
+H10 ECG/accelerometer and Vernier Go Direct respiration-belt inputs. Its interface has
 three focused areas: sensor input, stream
 output, and live visualization. The output library starts with a prominent
 red ECG / blue accelerometer selector. ECG mode contains the H10's core ECG,
@@ -64,6 +64,15 @@ has not yet received a physical browser run. Web Bluetooth
 requires HTTPS (or localhost), an explicit user chooser, and browser/OS support.
 Unsupported phones and browsers keep the input visible with a compatibility
 explanation.
+
+The installed desktop app uses the wider native Vernier path. A verified
+GDX-RB connection automatically creates `<base>_rawVernier`, a Double64,
+irregular-rate LSL stream containing every metadata-exposed device channel plus
+timing/loss diagnostics, and `<base>_vernierBreathing`, a separately identified
+derived 0–1 relative belt-force waveform. Missing slow/aperiodic raw values are
+`NaN`, never carried forward; the compatible channel-1 rawForce output remains
+available. Browser Web Bluetooth remains channel-1 Force only and cannot create
+native LSL outlets.
 
 Compatibility is capability-based rather than tied to a browser-name allowlist.
 The adapter checks the secure context and `navigator.bluetooth.requestDevice`,
@@ -214,9 +223,11 @@ Acquisition and publication stay native in Rust:
 - `apps/polar-stream`: thin Tauri coordinator and shared three-panel UI.
 
 Derived processors are demand-driven by the selected output set. Raw batches are
-published immediately in Rust; Go Direct notification batches retain their
-configured intra-batch sample spacing, no timer-based batching is added, and a bounded
-display-only queue prevents a slow WebView from delaying LSL or OSC.
+published immediately in Rust; Go Direct frames retain every negotiated device
+channel and their configured intra-batch sample spacing, no timer-based batching
+is added, and a bounded display-only queue prevents a slow WebView from delaying
+LSL or OSC. The separate Vernier 0–1 waveform is calculated only after the exact
+aggregate raw frame has been handed to LSL.
 Native preferences are stored by one schema-versioned Rust service, and the
 frontend reaches the seven-command IPC surface only through a small runtime
 adapter with stable error objects.

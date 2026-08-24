@@ -55,6 +55,19 @@ items into the dated history instead of silently deleting them.
 3. Keep repository context agent-ready.
    - Root `AGENTS.md` routes agents to `for-ai/`.
    - Context validation passes in local work and CI when adopted.
+4. Keep native Vernier recording raw-first and immediately discoverable.
+   - On a verified GDX-RB connection, enable every compatible metadata-exposed
+     numeric channel and create one stable per-device `rawVernier` LSL outlet
+     before the first measurement is published.
+   - Preserve Float32/Int32 device values exactly in Double64, use `NaN` for
+     sparse absent channels, publish labels/units/metadata, and expose timestamps,
+     sequence, queue loss, device drop reports, latency, period, and encoding.
+   - Publish a separate explicitly derived `vernierBreathing` Float32 waveform
+     bounded to 0–1, with increasing force/inhalation moving upward. Never let
+     this transformation delay or alter the raw recording stream.
+   - Keep the force-only browser transport and lack of browser LSL explicit.
+     Retain official liblsl-consumer coverage and physically requalify the
+     revised all-channel mask/two-outlet path before broadening hardware claims.
 
 ## Next
 
@@ -84,8 +97,9 @@ items into the dated history instead of silently deleting them.
   schema are implemented; physical paired recordings and held-out acceptance
   evidence remain pending.
 - Retain the passing 2026-08-24 single-device native GDX-RB gate, then qualify
-  browser streaming, mixed multi-device load, cross-platform/under-load runs,
-  and a synchronized H10-ACC/GDX-RB reference recording before making broader
+  the revised all-channel acquisition plus raw/derived LSL outlets, browser
+  streaming, mixed multi-device load, cross-platform/under-load runs, and a
+  synchronized H10-ACC/GDX-RB reference recording before making broader
   compatibility, respiratory-agreement, or latency-percentile claims.
 
 ## Later

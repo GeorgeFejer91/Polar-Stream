@@ -1109,8 +1109,8 @@
         markTelemetryDirty();
         break;
       case "streamHealth":
-        if (event.droppedBatches || event.malformedFrames) {
-          addActivity(`${source?.label || "Source"}: ${event.droppedBatches || 0} dropped batches · ${event.malformedFrames || 0} malformed frames`);
+        if (event.droppedBatches || event.malformedFrames || event.deviceDropReports) {
+          addActivity(`${source?.label || "Source"}: ${event.droppedBatches || 0} dropped batches · ${event.deviceDropReports || 0} device drop reports · ${event.malformedFrames || 0} malformed frames`);
         }
         break;
       case "error":

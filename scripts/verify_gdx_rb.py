@@ -43,7 +43,7 @@ def build_evidence(
 ) -> dict[str, Any]:
     passed = returncode == 0 and "completion" in parsed
     evidence: dict[str, Any] = {
-        "schema": "polar.stream.gdx_rb_native_runner.v1",
+        "schema": "polar.stream.gdx_rb_native_runner.v2",
         "result": "pass" if passed else "fail",
         "generated_at_utc": generated_at,
         "command": "cargo run -p polar-stream --example verify_gdx_rb",
@@ -58,7 +58,7 @@ def build_evidence(
         evidence["failure"] = parsed.get(
             "failure",
             {
-                "schema": "polar.stream.gdx_rb_native_physical.v1",
+                "schema": "polar.stream.gdx_rb_native_physical.v2",
                 "result": "fail",
                 "code": "RUNNER_OR_BUILD_FAILED",
             },
@@ -127,7 +127,7 @@ def main() -> int:
         )
         parsed = parse_markers(partial)
         parsed["failure"] = {
-            "schema": "polar.stream.gdx_rb_native_physical.v1",
+            "schema": "polar.stream.gdx_rb_native_physical.v2",
             "result": "fail",
             "code": "RUNNER_TIMEOUT",
         }

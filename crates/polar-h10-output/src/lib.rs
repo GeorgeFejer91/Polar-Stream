@@ -35,6 +35,14 @@ pub use polar_h10_math::{FormulaError, FormulaRuntimeState, FormulaValidation, v
 #[cfg(feature = "rusty-lsl-backend")]
 use rusty_lsl::RustyLslPublisher as LslPublisher;
 use serde::Serialize;
+use vernier_gdx_core::{SampleEncoding, SensorInfo, SensorSamples};
+
+#[cfg(feature = "liblsl-backend")]
+const VERNIER_RAW_OUTLET_KEY: &str = "__vernier_raw";
+const VERNIER_BREATHING_OUTLET_KEY: &str = "__vernier_breathing";
+pub const VERNIER_RAW_STREAM_SUFFIX: &str = "rawVernier";
+pub const VERNIER_BREATHING_STREAM_SUFFIX: &str = "vernierBreathing";
+pub const VERNIER_RAW_DIAGNOSTIC_CHANNELS: usize = 7;
 
 #[derive(Default)]
 struct SensorClockMap {
@@ -58,6 +66,160 @@ impl SensorClockMap {
 pub struct MetricValue<'a> {
     pub id: &'a str,
     pub value: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VernierStreamSchema {
+    model_code: String,
+    sample_period_us: u32,
+    channels: Vec<SensorInfo>,
+}
+
+impl VernierStreamSchema {
+    pub fn new(
+        model_code: impl Into<String>,
+        sample_period_us: u32,
+        sensors: &[SensorInfo],
+    ) -> Result<Self, String> {
+        if !(1_000..=60_000_000).contains(&sample_period_us) {
+            return Err("Vernier stream period must be between 1 ms and 60 s.".into());
+        }
+        if sensors.is_empty() || sensors.len() > 32 {
+            return Err("Vernier stream schema must contain 1-32 measurement channels.".into());
+        }
+        let mut channels = sensors.to_vec();
+        channels.sort_by_key(|sensor| sensor.number);
+        if channels
+            .windows(2)
+            .any(|pair| pair[0].number == pair[1].number)
+        {
+            return Err("Vernier stream sensor numbers must be unique.".into());
+        }
+        if channels.iter().any(|sensor| {
+            sensor.number >= 32
+                || !sensor.has_supported_measurement_shape()
+                || !sensor.has_recording_identity()
+                || sensor.description.is_empty()
+                || sensor.unit.is_empty()
+                || sensor.description.contains('\0')
+                || sensor.unit.contains('\0')
+        }) {
+            return Err("Vernier stream labels and units must be nonempty valid text.".into());
+        }
+        if !channels.iter().any(SensorInfo::is_respiration_force) {
+            return Err("Vernier stream schema requires periodic Force (N).".into());
+        }
+        let model_code = model_code.into();
+        if model_code.is_empty() || model_code.contains('\0') {
+            return Err("Vernier stream model code must be valid text.".into());
+        }
+        Ok(Self {
+            model_code,
+            sample_period_us,
+            channels,
+        })
+    }
+
+    pub fn model_code(&self) -> &str {
+        &self.model_code
+    }
+
+    pub const fn sample_period_us(&self) -> u32 {
+        self.sample_period_us
+    }
+
+    pub fn channels(&self) -> &[SensorInfo] {
+        &self.channels
+    }
+
+    pub fn force_sensor_number(&self) -> Option<u8> {
+        self.channels
+            .iter()
+            .find(|sensor| sensor.is_respiration_force())
+            .map(|sensor| sensor.number)
+    }
+
+    pub fn raw_channel_count(&self) -> usize {
+        self.channels.len() + VERNIER_RAW_DIAGNOSTIC_CHANNELS
+    }
+}
+
+pub fn vernier_raw_stream_name(base_name: &str) -> String {
+    format!("{base_name}_{VERNIER_RAW_STREAM_SUFFIX}")
+}
+
+pub fn vernier_breathing_stream_name(base_name: &str) -> String {
+    format!("{base_name}_{VERNIER_BREATHING_STREAM_SUFFIX}")
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(any(feature = "liblsl-backend", test))]
+fn encode_vernier_raw_rows(
+    target: &mut Vec<f64>,
+    schema: &VernierStreamSchema,
+    host_receive_timestamp_ns: u64,
+    sample_period_us: u32,
+    sequence: u64,
+    dropped_before: u64,
+    device_drop_reports_before: u64,
+    decode_latency_ns: u64,
+    encoding: SampleEncoding,
+    sensors: &[SensorSamples],
+) -> usize {
+    target.clear();
+    if sensors.is_empty()
+        || sensors.iter().any(|samples| {
+            !schema
+                .channels
+                .iter()
+                .any(|channel| channel.number == samples.sensor_number)
+        })
+        || sensors.iter().enumerate().any(|(index, samples)| {
+            sensors[..index]
+                .iter()
+                .any(|prior| prior.sensor_number == samples.sensor_number)
+        })
+    {
+        return 0;
+    }
+    let row_count = sensors
+        .iter()
+        .map(|samples| samples.values.len())
+        .max()
+        .unwrap_or(0);
+    if row_count == 0 {
+        return 0;
+    }
+    target.reserve(row_count.saturating_mul(schema.raw_channel_count()));
+    let encoding_code = match encoding {
+        SampleEncoding::Float32 => 0.0,
+        SampleEncoding::Integer32 => 1.0,
+    };
+    for row in 0..row_count {
+        for channel in &schema.channels {
+            let value = sensors
+                .iter()
+                .find(|samples| samples.sensor_number == channel.number)
+                .and_then(|samples| samples.values.get(row))
+                .copied()
+                .unwrap_or(f64::NAN);
+            target.push(value);
+        }
+        target.extend([
+            sequence.saturating_add(row as u64) as f64,
+            if row == 0 { dropped_before as f64 } else { 0.0 },
+            if row == 0 {
+                device_drop_reports_before as f64
+            } else {
+                0.0
+            },
+            f64::from(sample_period_us),
+            decode_latency_ns as f64,
+            host_receive_timestamp_ns as f64,
+            encoding_code,
+        ]);
+    }
+    row_count
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -239,6 +401,7 @@ struct RouterInner {
     normalizers: HashMap<String, Normalizer>,
     selected: HashSet<String>,
     formulas: HashMap<String, FormulaRuntime>,
+    vernier_schema: Option<VernierStreamSchema>,
 }
 
 struct FormulaRuntime {
@@ -280,6 +443,7 @@ impl OutputRouter {
                 normalizers: HashMap::new(),
                 selected: OutputConfig::default().outputs.into_iter().collect(),
                 formulas: HashMap::new(),
+                vernier_schema: None,
             }),
         }
     }
@@ -350,6 +514,13 @@ impl OutputRouter {
         };
 
         let mut inner = self.inner.lock().map_err(|_| "Output router lock failed")?;
+        #[cfg(feature = "rusty-lsl-backend")]
+        if config.lsl_enabled && inner.vernier_schema.is_some() {
+            return Err(
+                "Aggregate Vernier LSL requires the packaged liblsl backend; the optional Rusty backend does not support this dynamic Double64 schema."
+                    .into(),
+            );
+        }
         if !config.csv_enabled {
             inner.csv = None;
         } else if inner.csv.is_none() {
@@ -427,6 +598,37 @@ impl OutputRouter {
                 runtime.message = None;
             }
         }
+    }
+
+    /// Installs the metadata-verified per-device Go Direct schema and creates
+    /// its aggregate raw plus derived breathing outlets before sample delivery.
+    pub fn configure_vernier_streams(
+        &self,
+        model_code: &str,
+        sample_period_us: u32,
+        sensors: &[SensorInfo],
+    ) -> Result<VernierStreamSchema, String> {
+        let schema = VernierStreamSchema::new(model_code, sample_period_us, sensors)?;
+        let mut inner = self.inner.lock().map_err(|_| "Output router lock failed")?;
+        #[cfg(feature = "rusty-lsl-backend")]
+        if inner.config.lsl_enabled {
+            return Err(
+                "Aggregate Vernier LSL requires the packaged liblsl backend; the optional Rusty backend does not support this dynamic Double64 schema."
+                    .into(),
+            );
+        }
+        if inner.vernier_schema.as_ref() != Some(&schema) {
+            inner.vernier_schema = Some(schema.clone());
+            inner.rebuild_lsl();
+        }
+        #[cfg(feature = "liblsl-backend")]
+        if inner.config.lsl_enabled && !inner.lsl.status().starts_with("Publishing ") {
+            return Err(format!(
+                "The Vernier raw and derived LSL outlets could not be installed atomically: {}",
+                inner.lsl.status()
+            ));
+        }
+        Ok(schema)
     }
 
     pub fn formula_health(&self) -> Vec<FormulaHealth> {
@@ -571,6 +773,85 @@ impl OutputRouter {
             inner.csv = None;
         }
         error
+    }
+
+    /// Publishes the complete decoded Go Direct frame before conversion,
+    /// normalization, CSV, OSC, or display work.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_vernier_raw(
+        &self,
+        host_receive_timestamp_ns: u64,
+        sample_period_us: u32,
+        sequence: u64,
+        dropped_before: u64,
+        device_drop_reports_before: u64,
+        decode_latency_ns: u64,
+        encoding: SampleEncoding,
+        sensors: &[SensorSamples],
+    ) {
+        #[cfg_attr(feature = "rusty-lsl-backend", allow(unused_mut))]
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        if !inner.config.lsl_enabled {
+            return;
+        }
+        if inner.vernier_schema.is_none() {
+            return;
+        }
+        #[cfg(feature = "liblsl-backend")]
+        {
+            let RouterInner {
+                lsl,
+                vernier_schema,
+                ..
+            } = &mut *inner;
+            let schema = vernier_schema
+                .as_ref()
+                .expect("Vernier schema presence was checked above");
+            lsl.push_vernier_raw(
+                schema,
+                host_receive_timestamp_ns,
+                sample_period_us,
+                sequence,
+                dropped_before,
+                device_drop_reports_before,
+                decode_latency_ns,
+                encoding,
+                sensors,
+            );
+        }
+        #[cfg(feature = "rusty-lsl-backend")]
+        let _ = (
+            host_receive_timestamp_ns,
+            sample_period_us,
+            sequence,
+            dropped_before,
+            device_drop_reports_before,
+            decode_latency_ns,
+            encoding,
+            sensors,
+        );
+    }
+
+    /// Publishes the explicitly derived force normalization after raw output.
+    pub fn publish_vernier_breathing(
+        &self,
+        host_receive_timestamp_ns: u64,
+        values_01: &[f32],
+        sample_period_us: u32,
+    ) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        if inner.config.lsl_enabled && inner.vernier_schema.is_some() {
+            inner.lsl.push_scalar_series_period_at(
+                VERNIER_BREATHING_OUTLET_KEY,
+                values_01.iter().copied(),
+                host_receive_timestamp_ns,
+                sample_period_us,
+            );
+        }
     }
 
     pub fn publish_accelerometer(
@@ -789,6 +1070,11 @@ impl RouterInner {
             self.lsl
                 .add_custom_outlet(&self.config.stream_name, formula);
         }
+        #[cfg(feature = "liblsl-backend")]
+        if let Some(schema) = &self.vernier_schema {
+            self.lsl
+                .add_vernier_outlets(&self.config.stream_name, schema);
+        }
     }
 
     fn health(&self) -> OutputHealth {
@@ -946,6 +1232,31 @@ fn min_max(value: f32, minimum: f32, maximum: f32) -> f32 {
 mod normalization_tests {
     use super::*;
 
+    fn vernier_sensor(
+        number: u8,
+        description: &str,
+        unit: &str,
+        numeric_type: vernier_gdx_core::NumericMeasurementType,
+        sampling_mode: vernier_gdx_core::SamplingMode,
+    ) -> SensorInfo {
+        SensorInfo {
+            number,
+            sensor_id: u32::from(number),
+            numeric_type,
+            sampling_mode,
+            description: description.into(),
+            unit: unit.into(),
+            uncertainty: 0.01,
+            minimum: 0.0,
+            maximum: 100.0,
+            minimum_period_us: 50_000,
+            maximum_period_us: 60_000_000,
+            typical_period_us: 100_000,
+            period_granularity_us: 1_000,
+            mutual_exclusion_mask: 0,
+        }
+    }
+
     #[test]
     fn session_normalization_tracks_measurement_extrema() {
         let mut normalizer = Normalizer::new(MetricOutputOptions {
@@ -965,6 +1276,103 @@ mod normalization_tests {
         assert_eq!(clock.map_newest(10_000_000_000, 100.0), 100.0);
         assert_eq!(clock.map_newest(10_500_000_000, 100.01), 100.5);
         assert_eq!(clock.map_newest(11_000_000_000, 100.02), 101.0);
+    }
+
+    #[test]
+    fn aggregate_vernier_rows_preserve_schema_order_sparse_updates_and_diagnostics() {
+        let schema = VernierStreamSchema::new(
+            "GDX-RB",
+            100_000,
+            &[
+                vernier_sensor(
+                    3,
+                    "Steps",
+                    "count",
+                    vernier_gdx_core::NumericMeasurementType::Integer,
+                    vernier_gdx_core::SamplingMode::Aperiodic,
+                ),
+                vernier_sensor(
+                    1,
+                    "Force",
+                    "N",
+                    vernier_gdx_core::NumericMeasurementType::Real,
+                    vernier_gdx_core::SamplingMode::Periodic,
+                ),
+                vernier_sensor(
+                    2,
+                    "Respiration Rate",
+                    "breaths/min",
+                    vernier_gdx_core::NumericMeasurementType::Real,
+                    vernier_gdx_core::SamplingMode::Aperiodic,
+                ),
+                vernier_sensor(
+                    4,
+                    "Step Rate",
+                    "steps/min",
+                    vernier_gdx_core::NumericMeasurementType::Real,
+                    vernier_gdx_core::SamplingMode::Aperiodic,
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            schema
+                .channels()
+                .iter()
+                .map(|sensor| sensor.number)
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(schema.raw_channel_count(), 11);
+
+        let mut rows = Vec::new();
+        let count = encode_vernier_raw_rows(
+            &mut rows,
+            &schema,
+            9_000_000,
+            100_000,
+            42,
+            3,
+            1,
+            700,
+            SampleEncoding::Float32,
+            &[
+                SensorSamples {
+                    sensor_number: 1,
+                    values: vec![10.25, 10.5],
+                },
+                SensorSamples {
+                    sensor_number: 2,
+                    values: vec![18.0, 18.5],
+                },
+            ],
+        );
+        assert_eq!(count, 2);
+        assert_eq!(&rows[..2], &[10.25, 18.0]);
+        assert!(rows[2].is_nan());
+        assert!(rows[3].is_nan());
+        assert_eq!(
+            &rows[4..11],
+            &[42.0, 3.0, 1.0, 100_000.0, 700.0, 9_000_000.0, 0.0]
+        );
+        assert_eq!(&rows[11..13], &[10.5, 18.5]);
+        assert!(rows[13].is_nan());
+        assert!(rows[14].is_nan());
+        assert_eq!(rows[15], 43.0);
+        assert_eq!(rows[16], 0.0);
+        assert_eq!(rows[17], 0.0);
+    }
+
+    #[test]
+    fn vernier_stream_names_are_stable_and_distinguish_raw_from_derived() {
+        assert_eq!(
+            vernier_raw_stream_name("participant_source-2"),
+            "participant_source-2_rawVernier"
+        );
+        assert_eq!(
+            vernier_breathing_stream_name("participant_source-2"),
+            "participant_source-2_vernierBreathing"
+        );
     }
 
     #[tokio::test]
