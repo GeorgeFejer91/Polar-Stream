@@ -83,6 +83,13 @@ items into the dated history instead of silently deleting them.
    - Retain the exact four-inlet official pylsl gate for ECG, ACC, rawVernier,
      and vernierBreathing with an overlapping local-LSL-clock interval. A
      physical paired H10/GDX run remains required before hardware qualification.
+   - Keep search results as classified, non-widget candidates. Promote only a
+     successful connection into a device widget with source-owned controls and
+     color identity; keep Vernier's reconnect control inside that widget and on
+     by default for a new preference state.
+   - Keep device raw measurements automatic, non-removable outputs that enable
+     native LSL on physical connection. Keep processed metrics/formulas opt-in,
+     and derive Visualization availability from automatic or selected outputs.
 
 ## Next
 

@@ -1,5 +1,28 @@
 # Decision log
 
+## 2026-08-24 — Separate discovery rows, connected widgets, and output-derived visuals
+
+Model Input as two different lifecycles. Search produces temporary supported-
+device rows classified by the typed Polar or Go Direct identification boundary;
+names alone do not define the device role. Connect is explicit, and only a
+successful connection promotes a candidate into a source widget. The widget
+owns telemetry, disconnect, selection, and a live-session color picker. Apply
+that color to the selected source's raw and processed Output cards and
+Visualization surfaces. Put protocol-specific controls only in matching
+widgets: Keep connected / awake exists only for native Vernier and defaults on
+when no prior choice exists.
+
+Treat measured device signals as mandatory raw ingredients. Polar raw ECG/ACC
+and Vernier rawVernier remain automatic and non-removable; the previously
+required automatic Vernier 0–1 breathing outlet remains paired with its raw
+protocol. A successful native physical connection enables LSL and reapplies the
+source-filtered configuration so raw outlets become discoverable without a
+second setup step. Metrics and formulas remain processed, explicitly addable
+outputs. Visualization choices are derived from automatic and selected outputs,
+never from discovery rows. Do not auto-scan a remembered device at application
+startup; user search owns initial discovery, while Vernier reconnect remains an
+unexpected-drop policy for an already established session.
+
 ## 2026-08-24 — Discover the missing protocol without stopping the live one
 
 Treat Polar and Go Direct discovery, acquisition, and output ownership as two

@@ -97,6 +97,16 @@ operational contract for that ordering.
   Polar or Go Direct acquisition and publication continue during that scan, and
   the default liblsl path can expose Polar ECG/ACC plus Vernier raw/breathing
   outlets simultaneously on one local LSL clock.
+- Input has two distinct UI states: classified discovery rows and connected
+  source widgets. Only a successful connection creates a widget. Device-profile
+  attributes come from the typed Polar/Go Direct identification boundary, not a
+  renderer name guess. Widgets own source telemetry, disconnect, session color,
+  and applicable controls; keep-connected is Vernier-only and defaults on for a
+  new preference state.
+- Raw source outputs are automatic and non-removable. A native physical
+  connection automatically enables LSL and applies the source-owned raw output
+  configuration. Processed metrics/formulas remain explicit additions, and
+  Visualization choices are rebuilt only from automatic or selected outputs.
 - LSL and OSC share the same canonical discoverable output name.
 - Official Rusty-backend qualification must enumerate broadly and apply exact
   client-side name/type/channel/rate/format/source-ID matching before opening.

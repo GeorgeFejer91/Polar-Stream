@@ -6,7 +6,7 @@
     streamName: null,
     lastDevice: null,
     outputConfig: null,
-    keepVernierAwake: false,
+    keepVernierAwake: true,
   });
 
   function load() {
@@ -23,7 +23,7 @@
         && Array.isArray(stored.outputConfig.outputs)
         ? structuredClone(stored.outputConfig)
         : null;
-      const keepVernierAwake = stored?.keepVernierAwake === true;
+      const keepVernierAwake = stored?.keepVernierAwake !== false;
       return { streamName, lastDevice, outputConfig, keepVernierAwake };
     } catch (_error) {
       return { ...defaults };

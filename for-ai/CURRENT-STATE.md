@@ -94,7 +94,7 @@ Last verified: 2026-08-24
   Go Direct sources. Each source owns an independent input session, decoder,
   event receiver, metric engine, and output router; shared maps and mutexes are
   lifecycle-only. Stable source slots add unique stream-name suffixes and map
-  to a fixed eight-color palette propagated through source chips, raw/output
+  to a fixed eight-color palette propagated through connected widgets, raw/output
   cards, and visualizers. UI circular buffers are per source, so selecting a
   device cannot mix samples from another device.
   Saved output configuration is transport-free: formula validation uses a
@@ -102,9 +102,8 @@ Last verified: 2026-08-24
   LSL/OSC/CSV endpoints, preventing empty legacy unsuffixed streams.
   Polar and Go Direct advertisement scans run concurrently so one sensor family
   cannot add its complete scan window ahead of the other; connection remains a
-  user selection or an exact saved-device reconnect. Automatic startup scans
-  use the saved device's transport only, so a remembered GDX-RB does not wait
-  for the Polar scan window before reconnecting.
+  user selection. A saved-device-only scan is reserved for an unexpected active
+  Vernier link drop; application startup waits for explicit Search.
   Once either family is active, the native scan action targets only the missing
   family and leaves the connected input session/output router live. With one
   Polar and one Vernier source active, source selection remains display-only;
@@ -143,7 +142,8 @@ Last verified: 2026-08-24
   powered-down non-advertising belt cannot be awakened over BLE. These path
   dependencies are compiled into the desktop binary; Vernier support requires
   no Python process, browser shim, proprietary SDK, or separately installed
-  runtime module. A default-off **Keep Vernier connected / awake** control can
+  runtime module. A default-on **Keep connected / awake** control inside the
+  connected Vernier widget can
   retain that active measurement subscription and retry unexpected link drops
   with bounded exponential backoff. Deliberate disconnects never trigger a
   retry, and only an advertising sensor can reconnect.
@@ -214,6 +214,22 @@ Last verified: 2026-08-24
   opt-in compatibility module. With mixed sources, source selection swaps the
   complete preset, and deterministic/browser checks reject cross-family cards,
   visualizations, and formulas.
+- Input discovery now renders supported candidates as non-widget rows with an
+  explicit Connect action. Only a successful connection creates a persistent
+  source widget. Each widget owns telemetry, source selection, disconnect, and
+  a color picker; the chosen live-session color outlines that source's widget,
+  raw/processed output cards, and visualization surfaces. The native Vernier
+  widget alone exposes Keep connected / awake, default-on for a new preference
+  state while preserving a previously saved off choice.
+- Polar raw ECG/ACC outputs are always activated and cannot be removed; Vernier
+  rawVernier plus vernierBreathing remain automatic protocol outputs. A native
+  physical connection enables LSL and reapplies source-filtered output config
+  automatically. Processed catalog metrics and formulas remain add/remove
+  outputs, and only automatic or selected outputs appear in Visualization.
+- Native startup no longer performs saved-device Bluetooth discovery. Search is
+  user-triggered, avoiding a startup scan that obscures the device-list model;
+  default-on Vernier reconnect remains limited to an unexpected drop from an
+  already connected session.
 - The shared destination controls use a compact adaptive grid: four 44px
   LSL/OSC/CSV/audio toggle targets form a 2-by-2 block when the Output panel is
   wide enough and collapse to one column without horizontal overflow when it

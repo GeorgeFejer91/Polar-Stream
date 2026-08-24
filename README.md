@@ -89,6 +89,23 @@ ECG/ACC and Vernier raw/breathing outlets can be recorded on the same LSL
 clock. Selecting a source changes only the visible controls and chart; it never
 stops or switches the other source's acquisition or publication.
 
+Input discovery is deliberately separate from connection state. **Search
+devices** lists supported candidates as classified rows—Polar H10 for ECG or a
+metadata-verified GDX-RB for breathing—and **Connect** promotes a row to a
+persistent device widget only after the link succeeds. Connected widgets own
+their metadata, disconnect action, and color picker; the Vernier widget also
+owns its keep-connected/reconnect switch, which defaults on for a new
+preference state. Its chosen color marks that source's Input widget, raw and
+processed Output cards, and Visualization frame.
+
+Raw device measurements are non-removable automatic outputs. A native physical
+connection also enables LSL automatically so the corresponding source-suffixed
+raw outlets become discoverable without an extra setup step. Metrics and custom
+formulas are processed outputs: they join Output only when added (or restored
+from saved output preferences), and only active outputs contribute choices to
+Visualization. The browser keeps the same structure but cannot publish native
+LSL.
+
 Compatibility is capability-based rather than tied to a browser-name allowlist.
 The adapter checks the secure context and `navigator.bluetooth.requestDevice`,
 then reports Permissions Policy rejection from the chooser. It opens the chooser

@@ -133,7 +133,7 @@ or unit conversion occurs in the raw stream.
 | Diagnostics | staged input and output health | malformed/drop/high-water/decode-latency counters | loss and latency remain observable |
 | Output identity | source-suffixed ECG/ACC/metrics | source-suffixed rawVernier and vernierBreathing, plus compatible rawForce | streams from different bodies/devices cannot collide |
 | Discovery while active | remains acquired while Go Direct scans | remains acquired while Polar scans | scan only the missing protocol family; never pause the live source |
-| UI protocol | ECG/ACC defaults, metrics, and Formula Lab | automatic rawVernier/vernierBreathing, force/breathing visuals, optional rawForce | no modules before connection; selected source switches the complete profile |
+| UI protocol | automatic raw ECG/ACC, opt-in processed metrics, and Formula Lab | automatic rawVernier/vernierBreathing, force/breathing visuals, optional rawForce | search rows become widgets only after connection; selected source switches the complete profile |
 
 The key parallel is architectural, not a claim that the wire protocols are the
 same. Polar PMD carries device timestamps in measurement frames. Go Direct
@@ -189,13 +189,23 @@ device, so a website cannot silently enumerate all nearby GDX sensors. Native
 desktop discovery can return multiple Polar and Vernier candidates in one
 application scan. The two advertisement scans run concurrently to avoid adding
 their full scan windows together; connection/setup remains serialized per
-selected device. On startup, an exact saved GDX-RB preference scans the Go
-Direct transport directly and reconnects without waiting for a Polar scan.
-After either family connects, the scan action targets only the missing family,
+selected device. Startup waits for an explicit Search action. After an
+unexpected drop from an established default-on Vernier session, its exact saved
+preference scans the Go Direct transport directly and reconnects without
+waiting for a Polar scan.
+After either family connects, the search action targets only the missing family,
 so the first input session and its output router continue publishing throughout
 discovery and connection. With both families active, the UI source selector is
 display-only: the two native receivers, processors, and source-suffixed output
 routers continue independently.
+
+Discovery results remain simple classified rows with an explicit Connect
+action. A successful source alone becomes a connected-device widget. That
+widget owns its disconnect action, telemetry, and a session color picker whose
+color marks the selected source's Output and Visualization surfaces. The native
+Vernier widget additionally owns its keep-connected/reconnect toggle. A new
+preference state defaults that toggle on, while an explicit saved off choice is
+respected.
 
 ## Latency and reliability choices
 
@@ -209,7 +219,8 @@ routers continue independently.
   until explicit disconnect. Vernier's public protocol implementations expose
   no keep-awake or remote-wake command; a sleeping, non-advertising belt still
   requires its physical button.
-- The default-off **Keep Vernier connected / awake** option leaves that
+- The default-on **Keep connected / awake** option inside the connected Vernier
+  widget leaves that
   measurement subscription active and, after an unexpected link loss, performs
   saved-device Go Direct-only discovery with exponential retry delays bounded
   from 1.5 to 30 seconds. A deliberate Disconnect cancels retry. This is a
@@ -229,6 +240,10 @@ routers continue independently.
   decode-latency p50/p95/p99/max.
 - LSL, OSC, and CSV receive explicitly backfilled timestamps derived from the
   newest host receipt and the configured sample period.
+- A successful native physical-device connection turns LSL on and applies the
+  source-owned output configuration automatically. Raw streams are therefore
+  discoverable without a second enable step; the user may still switch LSL off
+  afterward. Browser connections never take this native action.
 
 The preferred 100,000 microsecond period is 10 samples/s. It is requested when
 the sensor metadata declares it valid; otherwise the reported plausible typical

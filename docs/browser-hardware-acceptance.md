@@ -37,8 +37,9 @@ acquisition path.
 
 1. Wear and moisten the H10. Start a phone screen recording that shows the Chrome
    address bar and exact public URL.
-2. Confirm LSL and OSC are absent. Press **Choose Polar H10** and select the
-   physical strap in Android's chooser.
+2. Confirm LSL and OSC are absent. Press **Search devices**, then press
+   **Connect** on the Polar H10 row and select the physical strap in Android's
+   chooser. Search itself must not open the chooser.
 3. Confirm connected state, ECG and ACC activity within five seconds, finite HR
    and RR values, and an increasing sample counter. Battery is optional.
 4. Enable **Save local CSV** and keep Chrome visible in the foreground for at

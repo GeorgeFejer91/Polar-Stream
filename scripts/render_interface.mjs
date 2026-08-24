@@ -131,6 +131,8 @@ try {
     outputState: document.querySelector("#output-state").textContent,
     visualChoices: [...document.querySelector("#visual-source").options].map((option) => option.value),
     outputCards: document.querySelector("#output-chips").children.length,
+    connectedDeviceWidgets: document.querySelectorAll("#connected-device-list .connected-device-widget").length,
+    connectedDeviceToggles: document.querySelectorAll("#connected-device-list .device-widget-toggle").length,
   }));
   assert.deepEqual(emptyState, {
     profile: "none",
@@ -141,6 +143,8 @@ try {
     outputState: "Waiting",
     visualChoices: [],
     outputCards: 0,
+    connectedDeviceWidgets: 0,
+    connectedDeviceToggles: 0,
   }, "outputs or visualizations were instantiated before a device connected");
   const emptyScreenshot = join(output, "empty-device-protocols.png");
   await page.screenshot({ path: emptyScreenshot, fullPage: true });
@@ -219,6 +223,12 @@ try {
   const multipleSources = await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
   assert.deepEqual(multipleSources.sourceOptions, ["source-1", "source-2"]);
   assert.deepEqual(multipleSources.chipColors, ["#00c2ff", "#ffb000"]);
+  assert.deepEqual(multipleSources.connectedWidgets, [
+    { sourceId: "source-1", profile: "polar", color: "#00c2ff", hasKeepConnected: false, keepConnected: null },
+    { sourceId: "source-2", profile: "vernier", color: "#ffb000", hasKeepConnected: true, keepConnected: true },
+  ]);
+  assert.equal(multipleSources.colorPickerCount, 2);
+  assert.ok(multipleSources.availableDeviceCount >= 1, "available devices disappeared after sources connected");
   assert.equal(multipleSources.selectedSource, "source-2");
   assert.equal(multipleSources.chartColor, "#ffb000");
   assert.ok(multipleSources.outputColors.every((color) => color === "#ffb000"));
@@ -234,7 +244,7 @@ try {
   assert.equal(multipleSources.protocolCardCount, 2);
   assert.match(multipleSources.streamName, /_source-2_rawForce$/);
   assert.deepEqual(multipleSources.scanAction, {
-    label: "Polar + Vernier live",
+    label: "Devices live",
     disabled: true,
     caption: "Both protocols publish concurrently",
   });
@@ -245,8 +255,22 @@ try {
   assert.ok(!multipleSources.polarSwitch.visualOptions.includes("vernier_breathing"));
   assert.ok(multipleSources.polarSwitch.outputLabels.includes("Raw ECG"));
   assert.ok(multipleSources.polarSwitch.outputLabels.includes("Raw accelerometer"));
+  assert.equal(multipleSources.polarSwitch.automaticRawCount, 2);
   assert.ok(!multipleSources.polarSwitch.outputLabels.includes("Raw Go Direct force"));
   assert.deepEqual(multipleSources.polarSwitch.rawCardVisibility, { ecg: true, acc: true, force: false, breathing: false });
+  await page.getByLabel("Color for GDX-RB A").fill("#b392f0");
+  const recolored = await page.evaluate(() => ({
+    widget: document.querySelector('[data-source-id="source-2"]').style.getPropertyValue("--source-color"),
+    chart: document.querySelector("#chart-shell").style.getPropertyValue("--source-color"),
+    outputs: [...document.querySelector("#output-chips").children].map((card) => card.style.getPropertyValue("--source-color")),
+    outputPanelMarked: document.querySelector("#output-workspace").classList.contains("source-panel-marked"),
+    visualPanelMarked: document.querySelector("#visual-workspace").classList.contains("source-panel-marked"),
+  }));
+  assert.equal(recolored.widget, "#b392f0");
+  assert.equal(recolored.chart, "#b392f0");
+  assert.ok(recolored.outputs.every((color) => color === "#b392f0"));
+  assert.equal(recolored.outputPanelMarked, true);
+  assert.equal(recolored.visualPanelMarked, true);
   await page.screenshot({ path: join(output, "multiple-colored-sources.png"), fullPage: true });
 
   const library = await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));

@@ -45,52 +45,63 @@
           <span class="section-number">01</span>
           <div>
             <p class="eyebrow">Input</p>
-            <h1 id="input-heading">Polar H10 + Vernier</h1>
+            <h1 id="input-heading">Devices</h1>
           </div>
           <span class="section-state" id="input-state">Idle</span>
         </header>
 
-        <div class="connection-card" id="connection-card">
-          <div class="sensor-glyph" aria-hidden="true">
-            <svg viewBox="0 0 48 48"><path d="M8 24c4-8 9-12 16-12s12 4 16 12c-4 8-9 12-16 12S12 32 8 24Z"/><path d="M15 24h5l2-6 4 12 2-6h5"/></svg>
+        <div class="input-search-block">
+          <div class="scan-row">
+            <button class="primary-button" id="scan-button">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.2 12.2 4.1 4.1"/></svg>
+              <span>Search devices</span>
+            </button>
+            <span class="scan-caption" id="scan-caption">Find supported Bluetooth sensors</span>
           </div>
-          <div class="connection-copy">
+          <div class="mini-heading device-list-heading">
+            <strong>Available devices</strong>
+            <span id="device-result-count">Search to refresh</span>
+          </div>
+          <div class="device-list" id="device-list" aria-live="polite">
+            <div class="empty-state compact" id="device-empty">
+              <span class="empty-orbit" aria-hidden="true"></span>
+              <p>Search for a Polar ECG sensor or Vernier breathing belt.</p>
+              <small>Supported devices are identified from their advertised protocol and model attributes.</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="connected-devices-block">
+          <div class="mini-heading">
+            <strong>Connected devices</strong>
+            <span id="connected-device-count">0 live</span>
+          </div>
+          <div class="connected-device-list" id="connected-device-list" aria-live="polite">
+            <div class="connected-empty-state">
+              <strong>No connected devices</strong>
+              <small>A device becomes a configurable widget only after its connection succeeds.</small>
+            </div>
+          </div>
+        </div>
+
+        <div hidden aria-hidden="true">
+          <div class="connection-card" id="connection-card">
             <strong id="device-name">No sensor connected</strong>
-            <span id="connection-detail">Scan for nearby Polar H10 and Vernier Go Direct sensors.</span>
+            <span id="connection-detail">Search for nearby supported sensors.</span>
+            <button id="disconnect-button" type="button">Disconnect</button>
           </div>
-          <button class="text-button danger" id="disconnect-button" hidden>Disconnect</button>
-        </div>
-        <div class="active-source-strip" id="active-source-strip" aria-live="polite"></div>
-
-        <div class="connection-meta" id="connection-meta" hidden>
-          <span><small>BATTERY</small><strong id="battery-value">—</strong></span>
-          <span><small id="connection-metric-1-label">ECG</small><strong id="connection-metric-1-value">130 Hz</strong></span>
-          <span><small id="connection-metric-2-label">ACC</small><strong id="connection-metric-2-value">200 Hz</strong></span>
-        </div>
-
-        <div class="scan-row">
-          <button class="primary-button" id="scan-button">
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M6.5 6.5 10 3l3.5 3.5M6.5 13.5 10 17l3.5-3.5"/></svg>
-            <span>Scan for sensors</span>
-          </button>
-          <span class="scan-caption" id="scan-caption">Bluetooth Low Energy</span>
-        </div>
-
-        <label class="keep-awake-control" id="keep-awake-control">
-          <span class="keep-awake-copy">
-            <strong>Keep Vernier connected / awake</strong>
-            <small id="keep-awake-status">Maintains the live 10 Hz measurement and reconnects after an unexpected drop.</small>
-          </span>
-          <input class="switch-input" id="keep-vernier-awake" type="checkbox" />
-          <span class="switch" aria-hidden="true"></span>
-        </label>
-
-        <div class="device-list" id="device-list" aria-live="polite">
-          <div class="empty-state" id="device-empty">
-            <span class="empty-orbit" aria-hidden="true"></span>
-            <p>Your H10 or Go Direct sensor will appear here.</p>
-            <small>Wear and wet the H10 strap, or wake the Go Direct sensor, before scanning.</small>
+          <div id="active-source-strip"></div>
+          <div id="connection-meta">
+            <span id="battery-value">—</span>
+            <span id="connection-metric-1-label">ECG</span>
+            <span id="connection-metric-1-value">130 Hz</span>
+            <span id="connection-metric-2-label">ACC</span>
+            <span id="connection-metric-2-value">200 Hz</span>
           </div>
+          <label id="keep-awake-control">
+            <span id="keep-awake-status">Keeps a connected Vernier session active.</span>
+            <input id="keep-vernier-awake" type="checkbox" />
+          </label>
         </div>
 
         <div class="activity-block">
@@ -168,7 +179,7 @@
         </div>
 
         <div class="destination-block">
-          <div class="mini-heading"><strong>Make available through</strong><span>Optional</span></div>
+          <div class="mini-heading"><strong>Output transports</strong><span id="destination-mode-label">LSL automatic</span></div>
           <div class="destination-row browser-local-destination" id="browser-local-destination" hidden>
             <span class="protocol-mark browser-mark">WEB</span>
             <span class="browser-destination-copy">
@@ -180,7 +191,7 @@
           <div class="destination-options">
             <label class="destination-row" id="lsl-destination-row">
               <span class="protocol-mark lsl-mark">LSL</span>
-              <span><strong>Lab Streaming Layer</strong><small id="lsl-detail">Local network · time synchronized</small></span>
+              <span><strong>Lab Streaming Layer</strong><small id="lsl-detail">Enabled automatically for connected native raw streams</small></span>
               <input id="lsl-toggle" class="switch-input" type="checkbox" />
               <span class="switch" aria-hidden="true"></span>
             </label>
@@ -228,11 +239,11 @@
         </div>
 
         <div class="outputs-block">
-          <div class="mini-heading"><strong id="included-output-heading">Included H10 outputs</strong><span id="included-count">2 active</span></div>
+          <div class="mini-heading"><strong id="included-output-heading">Raw + processed outputs</strong><span id="included-count">2 active</span></div>
           <div class="output-cards" id="output-chips"></div>
           <button class="add-output-button" id="open-output-dialog">
             <span aria-hidden="true">＋</span>
-            Add output
+            Add processed output
           </button>
         </div>
         </div>
@@ -348,7 +359,7 @@
               <small>Causal 30-second normalization, bounded 0–1, with increasing belt force moving upward.</small>
             </article>
           </div>
-          <p id="vernier-protocol-note">Both named streams are created automatically when native LSL is enabled. The optional raw-force compatibility output remains below.</p>
+          <p id="vernier-protocol-note">Both named streams and their LSL outlets are created automatically after connection. The optional raw-force compatibility output remains below.</p>
         </section>
         <div class="metric-library-tools">
           <label class="metric-search">

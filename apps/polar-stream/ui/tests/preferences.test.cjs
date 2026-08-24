@@ -19,9 +19,9 @@ function loadPreferences(initial = null) {
   return window.PolarPreferences;
 }
 
-test("Vernier keep-connected policy is opt-in", () => {
+test("Vernier keep-connected policy defaults on", () => {
   const preferences = loadPreferences();
-  assert.equal(preferences.load().keepVernierAwake, false);
+  assert.equal(preferences.load().keepVernierAwake, true);
 });
 
 test("saving Vernier keep-connected policy preserves other preferences", () => {
@@ -31,11 +31,11 @@ test("saving Vernier keep-connected policy preserves other preferences", () => {
     outputConfig: { outputs: ["raw_force"] },
   });
 
-  preferences.saveKeepVernierAwake(true);
+  preferences.saveKeepVernierAwake(false);
   assert.deepEqual(JSON.parse(JSON.stringify(preferences.load())), {
     streamName: "participant_07",
     lastDevice: { id: "vernier:opaque-device", name: "GDX-RB" },
     outputConfig: { outputs: ["raw_force"] },
-    keepVernierAwake: true,
+    keepVernierAwake: false,
   });
 });
