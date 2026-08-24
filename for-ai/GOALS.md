@@ -90,6 +90,16 @@ items into the dated history instead of silently deleting them.
    - Keep device raw measurements automatic, non-removable outputs that enable
      native LSL on physical connection. Keep processed metrics/formulas opt-in,
      and derive Visualization availability from automatic or selected outputs.
+6. Ship a self-contained native XDF recording workflow.
+   - Keep the official pinned LabRecorder and its Qt/liblsl runtime inside every
+     desktop package; users must not need a separate recorder download.
+   - Keep **Open Lab Recorder** in the shared Output UI. Native activation must
+     ensure raw LSL is enabled, then open the separate recorder where the user
+     selects any discoverable streams. Pages must fail closed with the installed-
+     app release link.
+   - Preserve one fixed no-argument native launcher boundary, the packaged
+     remote-control-disabled profile, upstream notices, and exact-package launch
+     gates. Never move XDF recording onto the acquisition/display hot path.
 
 ## Next
 
@@ -133,6 +143,11 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-24: added the pinned official LabRecorder as a self-contained native
+  package resource with an **Open Lab Recorder** UI action. The separate process
+  discovers user-selected LSL outlets and records XDF; the launcher accepts no
+  frontend path or arguments, uses a remote-control-disabled profile, and adds
+  exact-package startup gates for Windows, macOS, and Linux package classes.
 - 2026-08-24: repaired native Go Direct interoperability by selecting the
   command characteristic's advertised write mode and accepting the bounded
   response-header family observed from the belt. A Windows/WinRT physical

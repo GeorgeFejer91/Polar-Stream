@@ -78,6 +78,8 @@ apps/polar-stream/resources/lsl.dll
 apps/polar-stream/resources/msvcp*.dll
 apps/polar-stream/resources/vcruntime*.dll
 apps/polar-stream/resources/concrt*.dll
+apps/polar-stream/resources/lab-recorder/
+apps/polar-stream/resources/.lab-recorder-*/
 
 ## Local captures and third-party reference files
 session/

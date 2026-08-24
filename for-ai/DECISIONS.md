@@ -1,5 +1,24 @@
 # Decision log
 
+## 2026-08-24 — Bundle LabRecorder as an isolated downstream application
+
+Ship the pinned official LabRecorder inside every native Polar Stream package
+with its own Qt/liblsl runtime. Polar Stream remains the LSL stream producer;
+the recorder stays a separate process and ordinary downstream consumer where
+the user refreshes discovery, selects any desired stream set, and controls the
+XDF path and recording lifecycle. Opening it may ensure automatic raw LSL is
+enabled, but it must not share acquisition locks, publication queues, or display
+delivery and must not stop the live source when its own window closes.
+
+Expose one fixed `open_lab_recorder` native command with no renderer-supplied
+executable, path, arguments, configuration, or shell text. Admit the capability
+only when the exact platform resource and packaged profile exist. Disable the
+unused unauthenticated remote-control socket in that profile, retain upstream
+license/notices, pin release archives/source commits, and launch-test the
+recorder from every exact installer payload. Pages retains the shared button
+for interface parity but fails closed to the installed-app release because a
+browser cannot start this resource or discover native LSL.
+
 ## 2026-08-24 — Separate discovery rows, connected widgets, and output-derived visuals
 
 Model Input as two different lifecycles. Search produces temporary supported-

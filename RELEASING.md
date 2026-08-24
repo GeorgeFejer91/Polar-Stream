@@ -3,6 +3,11 @@
 The release workflow builds on native GitHub-hosted x64 and ARM64 runners. It
 does not cross-compile GUI packages. liblsl 1.17.7 is downloaded from its
 upstream release and accepted only when its pinned SHA-256 checksum matches.
+The official LabRecorder 1.17.0 is pinned to upstream release v1.17.1. Published
+x64/universal archives are checksum-verified; native ARM64 jobs build its exact
+source and liblsl commits. The staged recorder includes its Qt/liblsl runtime
+and the Polar Stream profile that disables remote control. Its reviewed Qt
+notice and checksum-pinned LGPL/GPL license texts are required bundle files.
 
 ## Publish a version
 
@@ -13,8 +18,9 @@ upstream release and accepted only when its pinned SHA-256 checksum matches.
 
 Each read-only matrix job builds its native installers with the exact Tauri CLI
 in `package-lock.json`, creates a real LSL outlet using the bundled runtime, and
-smoke-tests the staged package itself (AppImage and DEB on Linux, MSI payload on
-Windows, DMG on macOS). It then uploads workflow artifacts without a repository
+smoke-tests Polar Stream plus LabRecorder from the staged package itself
+(AppImage and DEB on Linux, MSI payload on Windows, DMG on macOS). It then
+uploads workflow artifacts without a repository
 write token. Only the final publisher job has `contents: write`; it downloads
 the complete package set, verifies all nine required installer classes,
 generates `SHA256SUMS.txt`, creates or updates a draft release, verifies the

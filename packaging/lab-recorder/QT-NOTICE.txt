@@ -1,0 +1,23 @@
+Qt runtime notice
+=================
+
+The bundled LabRecorder application dynamically links to unmodified Qt 6
+shared libraries and plugins. Qt is Copyright (C) The Qt Company Ltd. and
+other contributors. These Qt components are offered under the GNU Lesser
+General Public License version 3 and/or the GNU General Public License version
+3 open-source options.
+
+Copies of both licenses are packaged beside this notice as
+QT-LICENSE-LGPL-3.0.txt and QT-LICENSE-GPL-3.0.txt. The shared-library layout
+allows a user to replace the Qt libraries with interface-compatible modified
+versions. Polar Stream does not restrict reverse engineering for debugging
+such modifications.
+
+Qt source and license information:
+https://download.qt.io/archive/qt/
+https://code.qt.io/cgit/qt/
+https://doc.qt.io/qt-6/licensing.html
+
+Qt includes third-party components under their own compatible licenses. Qt's
+versioned source archives and software bills of materials identify those
+components and their corresponding source repositories and license terms.

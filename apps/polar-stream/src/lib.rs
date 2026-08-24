@@ -2,6 +2,7 @@
 //! network output are independent crates below `crates/`.
 
 mod error;
+mod lab_recorder;
 mod preferences;
 
 use std::{
@@ -38,6 +39,9 @@ use vernier_gdx_input::{
 };
 
 use error::{CommandError, CommandResult};
+use lab_recorder::{
+    LabRecorderCapability, LabRecorderInstallation, LabRecorderLaunch, unavailable_error,
+};
 use preferences::{PreferencesSnapshot, PreferencesStore, SavedDevice};
 
 #[cfg(feature = "rusty-lsl-backend")]
@@ -78,6 +82,7 @@ struct AppState {
     active_sources: Arc<tokio::sync::Mutex<HashMap<String, SourceDescriptor>>>,
     input_configuration: tokio::sync::Mutex<()>,
     bundled_lsl: Option<PathBuf>,
+    lab_recorder: Option<LabRecorderInstallation>,
     recording_directory: PathBuf,
     preferences: Arc<PreferencesStore>,
     output_configuration: tokio::sync::Mutex<()>,
@@ -87,6 +92,7 @@ struct AppState {
 impl AppState {
     fn new(
         bundled_lsl: Option<PathBuf>,
+        lab_recorder: Option<LabRecorderInstallation>,
         preferences_path: PathBuf,
         recording_directory: PathBuf,
     ) -> Self {
@@ -102,6 +108,7 @@ impl AppState {
             active_sources: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             input_configuration: tokio::sync::Mutex::new(()),
             bundled_lsl,
+            lab_recorder,
             recording_directory,
             preferences,
             output_configuration: tokio::sync::Mutex::new(()),
@@ -452,6 +459,7 @@ struct Bootstrap {
     has_saved_preferences: bool,
     platform: &'static str,
     metric_catalog: Vec<MetricDescriptor>,
+    lab_recorder: LabRecorderCapability,
 }
 
 #[derive(Serialize)]
@@ -487,6 +495,7 @@ fn get_bootstrap(state: State<'_, AppState>) -> Bootstrap {
                 }
             })
             .collect(),
+        lab_recorder: LabRecorderInstallation::capability(state.lab_recorder.as_ref()),
     }
 }
 
@@ -1380,6 +1389,15 @@ fn reviewed_metric_source(metric: MetricDefinition, requested_url: &str) -> Opti
         .map(|citation| citation.url)
 }
 
+#[tauri::command]
+fn open_lab_recorder(state: State<'_, AppState>) -> CommandResult<LabRecorderLaunch> {
+    state
+        .lab_recorder
+        .as_ref()
+        .ok_or_else(unavailable_error)?
+        .open()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1395,6 +1413,11 @@ pub fn run() {
                 .resolve(lsl_resource_path(), BaseDirectory::Resource)
                 .ok()
                 .filter(|path| path.is_file());
+            let lab_recorder = app
+                .path()
+                .resource_dir()
+                .ok()
+                .and_then(|path| LabRecorderInstallation::locate(&path));
             let preferences_path = app.path().app_config_dir()?.join("preferences.json");
             let recording_directory = app
                 .path()
@@ -1413,6 +1436,7 @@ pub fn run() {
                 });
             app.manage(AppState::new(
                 bundled_lsl,
+                lab_recorder,
                 preferences_path,
                 recording_directory,
             ));
@@ -1427,6 +1451,7 @@ pub fn run() {
             update_output_config,
             validate_custom_formula,
             open_metric_citation,
+            open_lab_recorder,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Polar Stream");

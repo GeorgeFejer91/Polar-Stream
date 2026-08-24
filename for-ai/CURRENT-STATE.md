@@ -4,6 +4,15 @@ Last verified: 2026-08-24
 
 ## Implemented
 
+- Native desktop packages stage the official LabRecorder 1.17.0 from pinned,
+  checksum-verified upstream release/source revisions together with its own
+  Qt/liblsl runtime. The shared Output UI exposes **Open Lab Recorder**; native
+  activation ensures automatic raw LSL and launches the separate process with
+  a fixed remote-control-disabled profile, while Pages fails closed with the
+  installed-app link. Users choose any discoverable LSL streams in LabRecorder
+  and record them to XDF. The launcher accepts no renderer-supplied executable,
+  path, arguments, or configuration and does not enter acquisition queues. The
+  bundle also carries the Qt runtime notice and checksum-pinned LGPL/GPL texts.
 - The existing `breathing_volume` compatibility stream now has a specialized
   preliminary 1D visualizer in the canonical Tauri/Pages UI. Its newest 0–1
   sample is a moving dot and its bounded recent history is a leftward trail;
@@ -369,6 +378,12 @@ Last verified: 2026-08-24
   level only. Retain the system-managed link values and sample counts from a
   physical Windows run before making timing claims.
 - liblsl availability and packaging differ by platform; follow `RELEASING.md`.
+- The bundled LabRecorder preparation and exact-package smoke gates cover all
+  release classes. On 2026-08-24 the Windows x64 NSIS install passed the real
+  WebView button -> native IPC -> installed LabRecorder process chain, and the
+  administratively extracted MSI launched both packaged processes. Linux,
+  macOS universal, and native ARM64 package evidence is produced by the next
+  tagged release matrix rather than inferred locally.
 - Both public ACC-derived respiration outputs are unvalidated and require
   comparison with a reference respiratory sensor before interpretation.
 - Windows and macOS public packages are currently unsigned/ad-hoc unless release

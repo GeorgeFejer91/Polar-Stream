@@ -432,6 +432,8 @@ try {
   assert.equal(await desktop.locator("#audio-destination-row").isVisible(), true, "audio-data toggle is missing");
   assert.equal(await desktop.locator("#lsl-destination-row").isVisible(), true, "shared LSL control is missing in browser mode");
   assert.equal(await desktop.locator("#osc-destination-row").isVisible(), true, "shared OSC control is missing in browser mode");
+  assert.equal(await desktop.locator("#open-lab-recorder").isVisible(), true, "shared LabRecorder launcher is missing in browser mode");
+  assert.match(await desktop.locator("#lab-recorder-detail").textContent(), /select any discoverable LSL streams/i);
   const destinationLayout = await desktop.locator(".destination-options").evaluate((group) => {
     const rows = [...group.querySelectorAll(".destination-row")].map((row) => {
       const bounds = row.getBoundingClientRect();
@@ -462,6 +464,19 @@ try {
   await desktop.locator("#osc-destination-row").click();
   assert.equal(await desktop.locator("#osc-toggle").isChecked(), false, "browser OSC must fail closed");
   assert.match(await desktop.locator("#native-output-browser-error").textContent(), /OSC output.*installed Polar Stream app/i);
+  await desktop.locator("#open-lab-recorder").click();
+  assert.equal(await desktop.locator("#native-output-browser-error").isVisible(), true, "browser LabRecorder refusal did not surface an inline error");
+  assert.match(await desktop.locator("#native-output-browser-error").textContent(), /bundled LabRecorder.*installed Polar Stream app/i);
+  const labRecorderRejection = await desktop.evaluate(async () => {
+    try {
+      await window.PolarRuntimeApi.openLabRecorder();
+      return null;
+    } catch (error) {
+      return { code: error.code, message: error.message };
+    }
+  });
+  assert.equal(labRecorderRejection.code, "LAB_RECORDER_REQUIRES_APP");
+  assert.match(labRecorderRejection.message, /installed Polar Stream app/i);
   const nativeOutputRejection = await desktop.evaluate(async () => {
     try {
       await window.PolarRuntimeApi.updateOutputConfig({
@@ -905,6 +920,8 @@ try {
   await connectMock(phone);
   assert.equal(await phone.locator("#lsl-destination-row").isVisible(), true, "phone browser UI hid the shared LSL control after connection");
   assert.equal(await phone.locator("#osc-destination-row").isVisible(), true, "phone browser UI hid the shared OSC control after connection");
+  const labRecorderButtonBox = await phone.locator("#open-lab-recorder").boundingBox();
+  assert.ok(labRecorderButtonBox.height >= 44, `phone LabRecorder button is too short: ${labRecorderButtonBox.height}`);
   await phone.locator("#lsl-destination-row").click();
   assert.equal(await phone.locator("#lsl-toggle").isChecked(), false, "phone browser LSL must fail closed");
   assert.equal(await phone.locator("#native-output-browser-error").isVisible(), true, "phone browser LSL refusal is not visible");

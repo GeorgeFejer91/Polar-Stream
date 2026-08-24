@@ -74,9 +74,26 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils xvfb
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils xvfb qt6-base-dev libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0
+      - name: Install CMake for the ARM64 LabRecorder source build
+        if: runner.os == 'Linux' && matrix.arch == 'aarch64'
+        run: python -m pip install --disable-pip-version-check cmake==3.31.8
+      - name: Install Qt for the Windows ARM64 LabRecorder source build
+        if: runner.os == 'Windows' && matrix.arch == 'aarch64'
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check aqtinstall==3.3.0 cmake==3.31.8
+          $qtInstall = Join-Path $env:RUNNER_TEMP "lab-recorder-qt"
+          python -m aqt install-qt windows_arm64 desktop 6.8.3 win64_msvc2022_arm64 --autodesktop --outputdir $qtInstall
+          $qtRoot = Join-Path $qtInstall "6.8.3/msvc2022_arm64"
+          if (-not (Test-Path -LiteralPath (Join-Path $qtRoot "lib/cmake/Qt6/Qt6Config.cmake") -PathType Leaf)) {
+            throw "Qt 6.8.3 ARM64 was not installed at $qtRoot"
+          }
+          "POLAR_STREAM_QT_ROOT=$qtRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Prepare pinned liblsl runtime
         run: python scripts/prepare_lsl.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+      - name: Prepare pinned bundled LabRecorder
+        run: python scripts/prepare_lab_recorder.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
       - name: Bundle the Microsoft C++ runtime used by liblsl
         if: runner.os == 'Windows'
         shell: pwsh
@@ -127,15 +144,33 @@ jobs:
           appimage=$(find release-assets -iname '*.AppImage' -print -quit)
           deb=$(find release-assets -iname '*.deb' -print -quit)
           test -n "$appimage" && test -n "$deb"
+          appimage=$(realpath "$appimage")
+          deb=$(realpath "$deb")
           chmod +x "$appimage"
           set +e
           APPIMAGE_EXTRACT_AND_RUN=1 timeout 12s xvfb-run -a "$appimage" > appimage-smoke.log 2>&1
           appimage_status=$?
           set -e
           if [ "$appimage_status" -ne 124 ]; then cat appimage-smoke.log; exit 1; fi
-          dpkg-deb --info "$deb" >/dev/null
+          appimage_extract=$(mktemp -d)
           deb_root=$(mktemp -d)
-          trap 'rm -rf "$deb_root"' EXIT
+          cleanup() {
+            rm -rf "$appimage_extract" "$deb_root"
+          }
+          trap cleanup EXIT
+          (
+            cd "$appimage_extract"
+            "$appimage" --appimage-extract >/dev/null
+          )
+          appimage_recorder=$(find "$appimage_extract/squashfs-root" -type f -path '*/lab-recorder/LabRecorder' -print -quit)
+          test -n "$appimage_recorder"
+          appimage_recorder_root=$(dirname "$appimage_recorder")
+          set +e
+          env LD_LIBRARY_PATH="$appimage_recorder_root/lib" QT_PLUGIN_PATH="$appimage_recorder_root/plugins" QT_QPA_PLATFORM_PLUGIN_PATH="$appimage_recorder_root/plugins/platforms" timeout 12s xvfb-run -a "$appimage_recorder" -c "$appimage_recorder_root/PolarStream-LabRecorder.cfg" > appimage-recorder-smoke.log 2>&1
+          appimage_recorder_status=$?
+          set -e
+          if [ "$appimage_recorder_status" -ne 124 ]; then cat appimage-recorder-smoke.log; exit 1; fi
+          dpkg-deb --info "$deb" >/dev/null
           dpkg-deb --extract "$deb" "$deb_root"
           deb_binary=$(find "$deb_root" -type f -path '*/bin/polar-stream' -print -quit)
           test -n "$deb_binary"
@@ -144,6 +179,14 @@ jobs:
           deb_status=$?
           set -e
           if [ "$deb_status" -ne 124 ]; then cat deb-smoke.log; exit 1; fi
+          deb_recorder=$(find "$deb_root" -type f -path '*/lab-recorder/LabRecorder' -print -quit)
+          test -n "$deb_recorder"
+          deb_recorder_root=$(dirname "$deb_recorder")
+          set +e
+          env LD_LIBRARY_PATH="$deb_recorder_root/lib" QT_PLUGIN_PATH="$deb_recorder_root/plugins" QT_QPA_PLATFORM_PLUGIN_PATH="$deb_recorder_root/plugins/platforms" timeout 12s xvfb-run -a "$deb_recorder" -c "$deb_recorder_root/PolarStream-LabRecorder.cfg" > deb-recorder-smoke.log 2>&1
+          deb_recorder_status=$?
+          set -e
+          if [ "$deb_recorder_status" -ne 124 ]; then cat deb-recorder-smoke.log; exit 1; fi
       - name: Smoke-test exact macOS DMG
         if: runner.os == 'macOS'
         shell: bash
@@ -161,6 +204,16 @@ jobs:
           pid=$!
           sleep 8
           kill -0 "$pid" || { cat smoke.log; exit 1; }
+          recorder_app=$(find "$mount_point" -type d -path '*/Resources/lab-recorder/LabRecorder.app' -print -quit)
+          test -n "$recorder_app"
+          codesign --verify --deep --strict "$recorder_app"
+          recorder_root=$(dirname "$recorder_app")
+          "$recorder_app/Contents/MacOS/LabRecorder" -c "$recorder_root/PolarStream-LabRecorder.cfg" > recorder-smoke.log 2>&1 &
+          recorder_pid=$!
+          sleep 6
+          kill -0 "$recorder_pid" || { cat recorder-smoke.log; exit 1; }
+          kill "$recorder_pid"
+          wait "$recorder_pid" || true
           kill "$pid"
           wait "$pid" || true
       - name: Smoke-test exact Windows MSI payload
@@ -178,6 +231,18 @@ jobs:
           Start-Sleep -Seconds 8
           if ($process.HasExited) { throw "Packaged Polar Stream exited with code $($process.ExitCode)" }
           Stop-Process -Id $process.Id
+          $recorder = Get-ChildItem $extract -Recurse -File -Filter LabRecorder.exe | Select-Object -First 1
+          if (-not $recorder) { throw "The MSI did not contain the bundled LabRecorder.exe" }
+          $recorderConfig = Join-Path $recorder.Directory.FullName "PolarStream-LabRecorder.cfg"
+          if (-not (Test-Path -LiteralPath $recorderConfig -PathType Leaf)) { throw "The MSI did not contain the safe LabRecorder config" }
+          $startInfo = [Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = $recorder.FullName
+          $startInfo.ArgumentList.Add("-c")
+          $startInfo.ArgumentList.Add($recorderConfig)
+          $recorderProcess = [Diagnostics.Process]::Start($startInfo)
+          Start-Sleep -Seconds 6
+          if ($recorderProcess.HasExited) { throw "Bundled LabRecorder exited with code $($recorderProcess.ExitCode)" }
+          Stop-Process -Id $recorderProcess.Id
           $header = [IO.File]::ReadAllBytes($nsis)[0..1]
           if ($header[0] -ne 0x4d -or $header[1] -ne 0x5a) { throw "The NSIS package is not a Windows executable" }
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

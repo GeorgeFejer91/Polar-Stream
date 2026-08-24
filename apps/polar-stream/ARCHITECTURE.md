@@ -154,6 +154,25 @@ channel above is intentionally browser-scoped and must never be presented as an
 LSL outlet. A native LabRecorder requirement continues to use the installed
 Tauri application's liblsl outlets.
 
+## Bundled LabRecorder boundary
+
+Native desktop packages carry the official LabRecorder 1.17.0 as a separate
+resource application. The coordinator exposes one fixed `open_lab_recorder`
+command with no renderer-supplied path, executable, arguments, or configuration.
+At startup it admits the launcher only when the exact platform resource and the
+packaged `PolarStream-LabRecorder.cfg` both exist. Windows/Linux execute the
+resource directly; macOS opens the nested application bundle. Linux adds only
+the bundle-owned library and Qt-plugin directories to the child environment.
+
+The packaged configuration disables LabRecorder's unused unauthenticated
+remote-control socket. LabRecorder remains an ordinary downstream LSL consumer:
+it does not share application state, locks, queues, or threads with acquisition
+and publication. Dropping display frames cannot affect the recorder, while
+stopping Polar Stream still stops its source outlets. Release preparation pins
+the upstream archive/source and verifies the exact executable architecture,
+runtime files, config, license, and packaged-process startup. See
+`docs/bundled-lab-recorder.md`.
+
 ## Native LSL backend boundary
 
 The installed application selects exactly one compile-time LSL backend.

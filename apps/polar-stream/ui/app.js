@@ -353,7 +353,7 @@
     "scan-button", "scan-caption", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "device-result-count", "connected-device-list", "connected-device-count", "activity-list", "output-state", "raw-ecg-value",
     "output-empty-state", "output-workspace", "visual-empty-state", "visual-workspace", "device-profile-card", "device-profile-mark", "device-profile-title", "device-profile-description", "raw-ecg-card", "raw-acc-card", "raw-force-card", "vernier-breathing-card",
     "raw-acc-x", "raw-acc-y", "raw-acc-z", "raw-force-value", "vernier-breathing-value", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
-    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "destination-mode-label", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "device-protocol-block", "device-protocol-cards", "included-output-heading", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source",
+    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "destination-mode-label", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "lab-recorder-launch", "lab-recorder-detail", "open-lab-recorder", "device-protocol-block", "device-protocol-cards", "included-output-heading", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
     "chart-empty", "chart-empty-title", "chart-empty-detail", "y-max", "y-min", "footer-status", "footer-device-role", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "metric-back-button", "dialog-output-status", "save-metric-output", "toast-region",
@@ -756,6 +756,7 @@
       config: { streamName: "Polar-H10", lslEnabled: false, oscEnabled: false, csvEnabled: false, audioEnabled: false, outputs: ["raw_ecg", "raw_acc"], metricOptions: {}, customFormulas: [] },
       platform: "browser preview",
       metricCatalog: fallbackCatalog,
+      labRecorder: { available: false, version: "1.17.0" },
     };
     try {
       bootstrap = await runtime.getBootstrap(bootstrap);
@@ -813,6 +814,12 @@
     elements["audio-toggle"].checked = false;
     elements["desktop-app-download"].href = "https://github.com/GeorgeFejer91/Polar-Stream/releases/latest";
     elements["destination-mode-label"].textContent = runtime.isBrowser ? "Native app for LSL" : "LSL automatic";
+    const labRecorder = bootstrap.labRecorder || { available: false, version: "1.17.0" };
+    elements["lab-recorder-detail"].textContent = runtime.isBrowser
+      ? "Installed-app tool · select any discoverable LSL streams and record one XDF file."
+      : labRecorder.available
+        ? `LabRecorder ${labRecorder.version} included · choose any discoverable LSL streams.`
+        : "Bundled recorder unavailable in this build · reinstall the latest native package.";
     if (runtime.isBrowser) {
       elements["lsl-toggle"].checked = false;
       elements["osc-toggle"].checked = false;
@@ -858,6 +865,27 @@
     });
     elements["lsl-toggle"].addEventListener("change", () => handleNativeDestinationToggle("LSL"));
     elements["osc-toggle"].addEventListener("change", () => handleNativeDestinationToggle("OSC"));
+    elements["open-lab-recorder"].addEventListener("click", async () => {
+      const button = elements["open-lab-recorder"];
+      button.disabled = true;
+      try {
+        if (!runtime.isBrowser) await ensureAutomaticRawLsl();
+        const result = await runtime.openLabRecorder();
+        elements["native-output-browser-error"].hidden = true;
+        elements["lab-recorder-detail"].textContent = `LabRecorder ${result.version} opened · choose streams, then Start.`;
+        addActivity("Bundled LabRecorder opened for LSL stream selection");
+        toast(result.message || "LabRecorder opened");
+      } catch (error) {
+        if (runtime.isBrowser) {
+          elements["native-output-browser-error-text"].textContent = "The bundled LabRecorder is supported only by the installed Polar Stream app.";
+          elements["native-output-browser-error"].hidden = false;
+          addActivity("LabRecorder requires the installed app");
+        }
+        toast(runtime.formatError(error), true);
+      } finally {
+        button.disabled = false;
+      }
+    });
     elements["csv-toggle"].addEventListener("change", async () => {
       if (runtime.isBrowser && browserSession) {
         try {

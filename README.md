@@ -106,6 +106,14 @@ from saved output preferences), and only active outputs contribute choices to
 Visualization. The browser keeps the same structure but cannot publish native
 LSL.
 
+Native packages also include the official LabRecorder. After Polar Stream has
+created the LSL outlets, **Open Lab Recorder** starts its separate GUI without a
+second download. The user can then select any Polar Stream or other discoverable
+LSL streams and record them together as XDF. The Pages button remains visible
+for interface parity but directs the user to the installed app because a web
+page cannot launch LabRecorder or discover native LSL. See the
+[bundled LabRecorder guide](docs/bundled-lab-recorder.md).
+
 Compatibility is capability-based rather than tied to a browser-name allowlist.
 The adapter checks the secure context and `navigator.bluetooth.requestDevice`,
 then reports Permissions Policy rejection from the chooser. It opens the chooser
@@ -207,9 +215,10 @@ the complete package set:
 | Linux | x64 | `.AppImage`, `.deb` |
 | Linux | ARM64 | `.AppImage`, `.deb` |
 
-The packages include a checksum-pinned liblsl runtime. No separate LSL install
-is required. Windows packages include the Microsoft runtime needed by liblsl,
-and the Windows installer carries WebView2's offline installer.
+The packages include a checksum-pinned liblsl runtime and a self-contained,
+pinned official LabRecorder. No separate LSL, Qt, or LabRecorder install is
+required. Windows packages include the Microsoft runtime needed by liblsl, and
+the Windows installer carries WebView2's offline installer.
 
 Source developers may instead compile the experimental, default-off Rusty LSL
 backend. It is pinned to one reviewed upstream commit and is not enabled in any
@@ -261,7 +270,7 @@ is added, and a bounded display-only queue prevents a slow WebView from delaying
 LSL or OSC. The separate Vernier 0–1 waveform is calculated only after the exact
 aggregate raw frame has been handed to LSL.
 Native preferences are stored by one schema-versioned Rust service, and the
-frontend reaches the seven-command IPC surface only through a small runtime
+frontend reaches the eight-command IPC surface only through a small runtime
 adapter with stable error objects.
 
 See [the architecture notes](apps/polar-stream/ARCHITECTURE.md) for the data path

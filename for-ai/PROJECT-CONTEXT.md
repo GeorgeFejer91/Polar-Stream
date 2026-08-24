@@ -26,6 +26,10 @@ Vernier GDX-RB
         -> polar-h10-output -> vernierBreathing LSL
      -> compatible channel-1 Force LSL / OSC / bounded native CSV
      -> bounded display queue -> JavaScript force buffer -> Canvas 2D
+
+Bundled LabRecorder (separate process)
+  <- discovers any native LSL outlets selected by the user
+  -> records the selected stream set to XDF
 ```
 
 Native publication is the authoritative real-time path. The WebView is a
@@ -72,6 +76,9 @@ operational contract for that ordering.
 - Dynamically loaded liblsl and native UDP OSC output. A mutually exclusive,
   exact-revision Rusty LSL backend exists only as a default-off source feature;
   packages continue to use liblsl.
+- Native packages include the pinned official LabRecorder and its own Qt/liblsl
+  runtime as an independently launched resource application. Polar Stream does
+  not embed recording in its acquisition or publication path.
 - Playwright for deterministic interface scenarios.
 - Development-only Python/NeuroKit cleaning and metric derivation from the
   checked-in real preview fixture; no Python runtime or generated-signal
@@ -108,6 +115,11 @@ operational contract for that ordering.
   configuration. Processed metrics/formulas remain explicit additions, and
   Visualization choices are rebuilt only from automatic or selected outputs.
 - LSL and OSC share the same canonical discoverable output name.
+- The native LabRecorder launcher accepts no frontend-supplied executable,
+  path, arguments, or configuration. It resolves only the complete fixed
+  platform resource, enables raw LSL before launch when needed, and passes the
+  packaged profile with remote control disabled. Stream selection, XDF naming,
+  and recording remain user-controlled in the separate LabRecorder window.
 - Official Rusty-backend qualification must enumerate broadly and apply exact
   client-side name/type/channel/rate/format/source-ID matching before opening.
   Predicate-filter conformance is intentionally unsupported.
@@ -151,4 +163,5 @@ operational contract for that ordering.
   `/home/George/Documents/GitHub/_quarantine/PolarH10-mesmerism-fork`.
 - The repository is public as of the current state snapshot.
 - Tagged releases use GitHub Actions to build platform packages and remain draft
-  until the package matrix and launch checks are complete.
+  until the package matrix and launch checks are complete. Those checks include
+  starting the pinned bundled LabRecorder from every exact installer payload.

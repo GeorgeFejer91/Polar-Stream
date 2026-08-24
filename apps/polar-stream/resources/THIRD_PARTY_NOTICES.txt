@@ -24,6 +24,17 @@ liblsl includes pugixml (MIT), Boost (Boost Software License), Loguru (public
 domain), and Catch2 (Boost Software License). See the upstream repository for
 the complete notices.
 
+Polar Stream also bundles the official LabRecorder 1.17.0 application from
+release v1.17.1 at https://github.com/labstreaminglayer/App-LabRecorder.
+
+Copyright (c) 2012 Christian Kothe
+
+LabRecorder is distributed under the MIT License printed above. Its packaged
+directory also retains the upstream LICENSE and README. LabRecorder includes
+its own liblsl and dynamically linked Qt runtime so it remains an independently
+launched XDF recorder. The bundle identifies Qt, preserves replacement of its
+shared libraries, and includes the LGPL-3.0 and GPL-3.0 license texts.
+
 Metric selection preview paths were generated during development with
 NeuroKit2 0.2.13 (MIT): https://github.com/neuropsychology/NeuroKit
 

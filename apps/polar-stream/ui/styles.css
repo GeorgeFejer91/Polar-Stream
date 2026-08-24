@@ -281,6 +281,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .osc-mark { background: var(--blue-pale); color: var(--blue); }
 .csv-mark { background: #eee8d6; color: #75601d; }
 .audio-mark { background: #eee5f6; color: #6b4386; }
+.xdf-mark { background: #e0eef2; color: #2b6574; }
 .destination-row > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
 .destination-row strong { font-size: 9px; line-height: 1.15; }
 .destination-row strong em { margin-left: 4px; color: #8a5a28; font: 800 7px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
@@ -289,6 +290,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .destination-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border: 1px solid #d7a69d; border-radius: 7px; background: #fff5f2; color: #803d35; font-size: 9px; line-height: 1.4; }
 .destination-error[hidden] { display: none; }
 .destination-error a { flex: 0 0 auto; color: #7a3028; font-weight: 800; text-underline-offset: 2px; }
+.lab-recorder-launch { cursor: default; border-color: #9fc6cf; background: #f2f9fa; }
+.lab-recorder-launch:hover { border-color: #83b4c0; }
+.lab-recorder-launch small { white-space: normal; }
+.lab-recorder-launch .recorder-button { white-space: nowrap; }
 .browser-local-destination { align-items: start; cursor: default; border-color: #a9c7dc; background: #f2f8fc; }
 .browser-local-destination:hover { border-color: #a9c7dc; }
 .browser-mark { color: #176a96; background: #dceef8; }
@@ -562,6 +567,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
   .browser-recorder-actions { align-items: stretch; flex-direction: column; padding-left: 10px; }
   .browser-recorder-controls { margin-top: 0; }
   .recorder-button { min-height: 40px; }
+  .lab-recorder-launch { grid-template-columns: 27px minmax(0, 1fr); }
+  .lab-recorder-launch .recorder-button { grid-column: 1 / -1; width: 100%; min-height: 44px; }
   .raw-card { min-height: 112px; }
 }
 

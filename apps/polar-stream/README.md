@@ -5,7 +5,8 @@ working areas:
 
 1. **Input** — scan, connect, connection state, and battery.
 2. **Output** — raw ECG/ACC readings, stream base name, LSL/OSC/CSV/experimental
-   audio switches, and an extensible output list.
+   audio switches, an extensible output list, and the bundled LabRecorder
+   launcher.
 3. **Visualization** — one live canvas whose source is selected from the active
    outputs.
 
@@ -155,6 +156,12 @@ characters in the user-entered base are collapsed to underscores.
 - **Audio data:** shared Web Audio emits an experimental stereo Manchester/CRC32
   link. In Tauri it is fed by the display channel and is therefore not an
   authoritative replacement for LSL, OSC, or native CSV.
+- **LabRecorder/XDF:** native packages carry the official LabRecorder 1.17.0
+  and its runtime. **Open Lab Recorder** launches that separate GUI with a fixed
+  packaged configuration, where users select any discoverable LSL streams for
+  one XDF recording. The launcher accepts no frontend path or arguments and
+  disables the unused unauthenticated remote-control socket by default. Pages
+  keeps the button visible but fails closed with an installed-app link.
 
 The fixed OSC destination is deliberate: changing it is an integration concern,
 not a lever needed in the primary UI. It can later be injected through app

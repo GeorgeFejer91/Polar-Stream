@@ -12,6 +12,7 @@
     "validate:browser-demo": "python3 scripts/build_browser_demo.py && node scripts/validate_browser_demo.mjs",
     "verify:live-pages": "python3 scripts/verify_live_browser_demo.py",
     "test:browser-acceptance": "python3 -m unittest discover -s scripts -p 'test_analyze_browser_recording.py'",
+    "test:lab-recorder-packaging": "python3 -m unittest discover -s scripts -p 'test_prepare_lab_recorder.py'",
     "analyze:browser-recording": "python3 scripts/analyze_browser_recording.py",
     "generate:catalog": "cargo run --quiet -p polar-h10-metrics --example export_catalog -- apps/polar-stream/ui/metric-catalog.js",
     "check:catalog": "cargo run --quiet -p polar-h10-metrics --example export_catalog -- /tmp/polar-stream-metric-catalog.js && cmp apps/polar-stream/ui/metric-catalog.js /tmp/polar-stream-metric-catalog.js",

@@ -332,6 +332,14 @@
       }
       window.open(parsed.href, "_blank", "noopener,noreferrer");
     },
+    async openLabRecorder() {
+      if (isNative) return invoke("open_lab_recorder");
+      throw new RuntimeError(
+        "LAB_RECORDER_REQUIRES_APP",
+        "The bundled LabRecorder is available only in the installed Polar Stream app.",
+        false,
+      );
+    },
     async validateCustomFormula(formula) {
       if (isNative) return invoke("validate_custom_formula", { formula });
       if (!formula?.name?.trim() || !formula?.unit?.trim() || !formula?.expression?.trim()) {

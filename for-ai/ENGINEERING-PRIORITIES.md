@@ -141,6 +141,11 @@ copies, synchronization, serialization, or higher render cadence.
   crates must compile independently of desktop-only Tauri glue where practical.
 - Packaging is part of correctness: bundled liblsl, runtime dependencies,
   permissions, signing state, checksums, and exact-package smoke tests matter.
+- Treat bundled LabRecorder as a fixed downstream application boundary. Pin and
+  validate its upstream artifact/source and complete runtime, accept no
+  renderer-supplied launch path or arguments, keep its unused remote-control
+  socket disabled, and smoke-test it from every exact package. It must consume
+  published LSL outlets without sharing acquisition locks, queues, or threads.
 - Unsupported hardware or platform claims must be explicit; never infer
   physical BLE validation from a host-only unit or interface test.
 - Treat the hosted browser demo as another presentation target: it must remain
