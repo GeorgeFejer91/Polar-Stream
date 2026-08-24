@@ -418,6 +418,31 @@
     return deviceProfileForSource(app.activeSources.get(app.selectedSourceId));
   }
 
+  function syncScanAction() {
+    if (app.scanning || app.connecting) return;
+    if (runtime.isBrowser) {
+      elements["scan-button"].disabled = false;
+      elements["scan-button"].querySelector("span").textContent = "Choose Polar H10";
+      return;
+    }
+    const sources = [...app.activeSources.values()];
+    const polarActive = sources.some((source) => source.inputKind === "polarH10");
+    const vernierActive = sources.some((source) => source.inputKind === "vernierGoDirect");
+    elements["scan-button"].disabled = polarActive && vernierActive;
+    elements["scan-button"].querySelector("span").textContent = polarActive && vernierActive
+      ? "Polar + Vernier live"
+      : polarActive
+        ? "Add Vernier"
+        : vernierActive
+          ? "Add Polar H10"
+          : "Scan for sensors";
+    elements["scan-caption"].textContent = polarActive && vernierActive
+      ? "Both protocols publish concurrently"
+      : polarActive || vernierActive
+        ? "The connected source keeps streaming during discovery"
+        : "Bluetooth Low Energy";
+  }
+
   function runtimeInputKindForSource(source) {
     if (!source) return null;
     if (source.inputKind === "vernierGoDirect") {
@@ -789,6 +814,7 @@
     }
 
     syncDeviceProfileUi();
+    syncScanAction();
     renderMetricFilters();
     renderOutputs();
     installInteractions();
@@ -1106,7 +1132,9 @@
       const discovered = await runtime.scanDevices(
         automatic ? app.preferences.lastDevice?.id || null : null,
       );
-      const devices = [...runtime.getInputModules(), ...discovered]
+      const activeDeviceIds = new Set([...app.activeSources.values()].map((source) => source.deviceId).filter(Boolean));
+      const retainedDevices = app.devices.filter((device) => activeDeviceIds.has(device.id));
+      const devices = [...runtime.getInputModules(), ...retainedDevices, ...discovered]
         .filter((device, index, all) => all.findIndex((candidate) => candidate.id === device.id) === index);
       app.devices = devices;
       renderDevices(devices);
@@ -1132,7 +1160,7 @@
       elements["input-state"].textContent = polarCount ? `${polarCount} found` : "Mock ready";
       setTopStatus(
         app.connected
-          ? "Input connected · choose another to switch"
+          ? "Input connected · choose another sensor to add it"
           : polarCount
             ? "Choose a Polar H10, Vernier GDX-RB, or mock input"
             : "Recorded Polar H10 preview is available",
@@ -1150,9 +1178,8 @@
       if (keepAwakeRetry) scheduleVernierReconnect(app.preferences.lastDevice);
     } finally {
       app.scanning = false;
-      elements["scan-button"].disabled = false;
       elements["scan-button"].classList.remove("scanning");
-      elements["scan-button"].querySelector("span").textContent = runtime.isBrowser ? "Choose Polar H10" : "Scan again";
+      syncScanAction();
     }
   }
 
@@ -1282,8 +1309,7 @@
       if (generation !== app.connectionGeneration) return;
       app.connecting = false;
       app.pendingDevice = null;
-      elements["scan-button"].disabled = false;
-      elements["scan-button"].querySelector("span").textContent = runtime.isBrowser ? "Choose Polar H10" : "Scan again";
+      syncScanAction();
       if ((isWebBluetooth || isWebVernier) && error?.code === "BLUETOOTH_CHOOSER_CANCELLED") {
         setTopStatus("Browser inputs ready");
         elements["input-state"].textContent = "Browser ready";
@@ -1593,8 +1619,7 @@
     });
     app.connecting = false;
     app.pendingDevice = null;
-    elements["scan-button"].disabled = false;
-    elements["scan-button"].querySelector("span").textContent = runtime.isBrowser ? "Choose Polar H10" : "Scan again";
+    syncScanAction();
     const selectedKind = app.activeSources.get(app.selectedSourceId)?.inputKind;
     if (app.connected) {
       const connectedDevice = device || app.devices.find((candidate) => candidate.name === event.deviceName);
@@ -3652,6 +3677,11 @@
         formulaLabHidden: elements["open-formula-lab"].hidden,
         protocolCardCount: elements["device-protocol-cards"].children.length,
         streamName: streamOutputName(app.catalog.find((metric) => metric.id === "raw_force")),
+        scanAction: {
+          label: elements["scan-button"].querySelector("span").textContent,
+          disabled: elements["scan-button"].disabled,
+          caption: elements["scan-caption"].textContent,
+        },
         polarSwitch,
       };
     }

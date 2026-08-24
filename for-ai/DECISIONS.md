@@ -1,5 +1,23 @@
 # Decision log
 
+## 2026-08-24 — Discover the missing protocol without stopping the live one
+
+Treat Polar and Go Direct discovery, acquisition, and output ownership as two
+independent protocol families. When neither is connected, scan both families
+concurrently. When one is connected, scan only the missing family because the
+active family's session pool cannot be rescanned without interrupting its live
+session. Do not disconnect, replace, or reconfigure the first source to admit
+the second. Once both are active, disable redundant discovery and keep both
+source-specific routers publishing; UI source selection changes presentation
+only.
+
+Retain a synthetic packaged-liblsl acceptance gate that opens four exact pinned
+official pylsl inlets—Polar ECG and ACC plus Vernier raw and derived breathing—
+and requires advancing timestamps with a shared overlapping interval. This
+proves concurrent router/outlet behavior without claiming that a physical
+H10/GDX dual-BLE run, synchronization accuracy, or respiratory agreement has
+been qualified.
+
 ## 2026-08-24 — Make the interface device-first, then output-first
 
 Represent no connected source as a real `none` profile: Output and Visualization

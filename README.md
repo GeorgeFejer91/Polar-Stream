@@ -81,6 +81,14 @@ ECG/ACC and Formula Lab controls are not shown for that source. Browser Web
 Bluetooth remains channel-1 Force only and cannot create
 native LSL outlets.
 
+In the installed app, connecting one sensor changes the discovery action to
+**Add Vernier** or **Add Polar H10**. The connected source keeps acquiring and
+publishing while only the missing protocol family is scanned. Once both are
+connected, their source-specific output routers remain live together: Polar
+ECG/ACC and Vernier raw/breathing outlets can be recorded on the same LSL
+clock. Selecting a source changes only the visible controls and chart; it never
+stops or switches the other source's acquisition or publication.
+
 Compatibility is capability-based rather than tied to a browser-name allowlist.
 The adapter checks the secure context and `navigator.bluetooth.requestDevice`,
 then reports Permissions Policy rejection from the chooser. It opens the chooser

@@ -233,6 +233,11 @@ try {
   assert.equal(multipleSources.formulaLabHidden, true);
   assert.equal(multipleSources.protocolCardCount, 2);
   assert.match(multipleSources.streamName, /_source-2_rawForce$/);
+  assert.deepEqual(multipleSources.scanAction, {
+    label: "Polar + Vernier live",
+    disabled: true,
+    caption: "Both protocols publish concurrently",
+  });
   assert.equal(multipleSources.polarSwitch.deviceProfile, "polar");
   assert.ok(multipleSources.polarSwitch.visualOptions.includes("raw_ecg"));
   assert.ok(multipleSources.polarSwitch.visualOptions.includes("raw_acc"));

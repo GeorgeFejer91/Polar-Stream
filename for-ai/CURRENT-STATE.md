@@ -105,6 +105,13 @@ Last verified: 2026-08-24
   user selection or an exact saved-device reconnect. Automatic startup scans
   use the saved device's transport only, so a remembered GDX-RB does not wait
   for the Polar scan window before reconnecting.
+  Once either family is active, the native scan action targets only the missing
+  family and leaves the connected input session/output router live. With one
+  Polar and one Vernier source active, source selection remains display-only;
+  both routers continue publishing concurrently. A pinned official pylsl
+  1.18.2/liblsl 1.17.7 synthetic gate resolves exact ECG, ACC, rawVernier, and
+  vernierBreathing inlets, receives advancing rows from all four, and requires
+  at least 1.5 seconds of overlapping LSL time.
 - Independent MIT `vernier-gdx-core` and `vernier-gdx-input` crates implement
   Go Direct command framing, decrementing counters/checksums, 20-byte writes
   without a GATT response when the characteristic advertises that mode (with a

@@ -132,6 +132,7 @@ or unit conversion occurs in the raw stream.
 | Backpressure | bounded event/UI queues | bounded event/UI queues | UI may drop display batches; acquisition cannot wait for the WebView |
 | Diagnostics | staged input and output health | malformed/drop/high-water/decode-latency counters | loss and latency remain observable |
 | Output identity | source-suffixed ECG/ACC/metrics | source-suffixed rawVernier and vernierBreathing, plus compatible rawForce | streams from different bodies/devices cannot collide |
+| Discovery while active | remains acquired while Go Direct scans | remains acquired while Polar scans | scan only the missing protocol family; never pause the live source |
 | UI protocol | ECG/ACC defaults, metrics, and Formula Lab | automatic rawVernier/vernierBreathing, force/breathing visuals, optional rawForce | no modules before connection; selected source switches the complete profile |
 
 The key parallel is architectural, not a claim that the wire protocols are the
@@ -190,6 +191,11 @@ application scan. The two advertisement scans run concurrently to avoid adding
 their full scan windows together; connection/setup remains serialized per
 selected device. On startup, an exact saved GDX-RB preference scans the Go
 Direct transport directly and reconnects without waiting for a Polar scan.
+After either family connects, the scan action targets only the missing family,
+so the first input session and its output router continue publishing throughout
+discovery and connection. With both families active, the UI source selector is
+display-only: the two native receivers, processors, and source-suffixed output
+routers continue independently.
 
 ## Latency and reliability choices
 
@@ -279,11 +285,15 @@ a native background service.
   Float32 derived pushes
 - pinned official pylsl consumer verification through
   `scripts/verify_vernier_lsl.py`
+- pinned official pylsl mixed-device verification through
+  `scripts/verify_mixed_lsl.py`: four exact inlets receive advancing ECG, ACC,
+  rawVernier, and vernierBreathing rows over an overlapping LSL interval
 
-The physical result closes only the single-device native gate. The remaining
-software and emulated-browser results do not prove physical browser,
-mixed-source, cross-platform, under-load, respiratory-agreement, or latency
-compatibility.
+The physical result closes only the single-device native gate. The synthetic
+mixed-device gate proves concurrent native outlet ownership and delivery, not a
+physical dual-BLE run. The remaining software and emulated-browser results do
+not prove physical browser, mixed-source, cross-platform, under-load,
+respiratory-agreement, or latency compatibility.
 
 ## Required physical gate
 

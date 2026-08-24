@@ -535,10 +535,22 @@ async fn scan_devices(
     preferred_device_id: Option<String>,
 ) -> CommandResult<Vec<DeviceSummary>> {
     let _configuration = state.input_configuration.lock().await;
-    if !state.active_sources.lock().await.is_empty() {
+    let active_kinds = state
+        .active_sources
+        .lock()
+        .await
+        .values()
+        .map(|source| source.input_kind)
+        .collect::<Vec<_>>();
+    let preferred_kind = preferred_device_id
+        .as_deref()
+        .and_then(|device_id| parse_device_id(device_id).ok())
+        .map(|(kind, _)| kind);
+    let (scan_polar_enabled, scan_vernier_enabled) = input_scan_plan(&active_kinds, preferred_kind);
+    if !scan_polar_enabled && !scan_vernier_enabled {
         return Err(CommandError::new(
-            "SCAN_WHILE_STREAMING",
-            "Disconnect active sources before refreshing Bluetooth discovery.",
+            "ALL_SENSOR_PROTOCOLS_ACTIVE",
+            "A Polar H10 and Vernier Go Direct source are already active. Both protocol families continue streaming concurrently.",
             true,
         ));
     }
@@ -581,15 +593,21 @@ async fn scan_devices(
                 .collect::<Vec<_>>()
         })
     };
-    let preferred_kind = preferred_device_id
-        .as_deref()
-        .and_then(|device_id| parse_device_id(device_id).ok())
-        .map(|(kind, _)| kind);
-    let (polar, vernier) = match preferred_kind {
-        Some(InputKind::PolarH10) => (scan_polar().await, Ok(Vec::new())),
-        Some(InputKind::VernierGoDirect) => (Ok(Vec::new()), scan_vernier().await),
-        None => tokio::join!(scan_polar(), scan_vernier()),
+    let polar_scan = async {
+        if scan_polar_enabled {
+            scan_polar().await
+        } else {
+            Ok(Vec::new())
+        }
     };
+    let vernier_scan = async {
+        if scan_vernier_enabled {
+            scan_vernier().await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let (polar, vernier) = tokio::join!(polar_scan, vernier_scan);
     let mut devices = Vec::new();
     if let Ok(found) = &polar {
         devices.extend(found.iter().cloned());
@@ -614,6 +632,16 @@ async fn scan_devices(
             .then_with(|| left.name.cmp(&right.name))
     });
     Ok(devices)
+}
+
+fn input_scan_plan(active_kinds: &[InputKind], preferred_kind: Option<InputKind>) -> (bool, bool) {
+    let polar_missing = !active_kinds.contains(&InputKind::PolarH10);
+    let vernier_missing = !active_kinds.contains(&InputKind::VernierGoDirect);
+    match preferred_kind {
+        Some(InputKind::PolarH10) => (polar_missing, false),
+        Some(InputKind::VernierGoDirect) => (false, vernier_missing),
+        None => (polar_missing, vernier_missing),
+    }
 }
 
 #[tauri::command]
@@ -1479,6 +1507,28 @@ mod tests {
         let vernier_config = source_output_config(config, &vernier).unwrap();
         assert_eq!(vernier_config.outputs, ["raw_force"]);
         assert_eq!(vernier_config.stream_name, "Polar-H10_source-2");
+    }
+
+    #[test]
+    fn active_sensor_family_scans_only_for_the_missing_protocol() {
+        assert_eq!(input_scan_plan(&[], None), (true, true));
+        assert_eq!(input_scan_plan(&[InputKind::PolarH10], None), (false, true));
+        assert_eq!(
+            input_scan_plan(&[InputKind::VernierGoDirect], None),
+            (true, false)
+        );
+        assert_eq!(
+            input_scan_plan(&[InputKind::PolarH10, InputKind::VernierGoDirect], None),
+            (false, false)
+        );
+        assert_eq!(
+            input_scan_plan(&[InputKind::PolarH10], Some(InputKind::VernierGoDirect)),
+            (false, true)
+        );
+        assert_eq!(
+            input_scan_plan(&[InputKind::PolarH10], Some(InputKind::PolarH10)),
+            (false, false)
+        );
     }
 
     #[cfg(feature = "rusty-lsl-backend")]

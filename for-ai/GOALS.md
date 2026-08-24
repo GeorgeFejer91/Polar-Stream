@@ -76,6 +76,13 @@ items into the dated history instead of silently deleting them.
    - Keep Polar's ECG/ACC library, Vernier's raw/breathing protocol, and future
      device profiles independently declarative. Mixed connections must switch
      complete profiles by selected source without cross-family UI leakage.
+   - Keep acquisition independent from the selected UI source. After either
+     family connects, scan only for the missing family while the first source
+     continues publishing; when both are live, keep their source-suffixed LSL
+     outlets advancing concurrently.
+   - Retain the exact four-inlet official pylsl gate for ECG, ACC, rawVernier,
+     and vernierBreathing with an overlapping local-LSL-clock interval. A
+     physical paired H10/GDX run remains required before hardware qualification.
 
 ## Next
 

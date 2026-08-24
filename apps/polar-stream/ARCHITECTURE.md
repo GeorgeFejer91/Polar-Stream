@@ -48,6 +48,13 @@ apps/polar-stream (thin coordinator)
                                    Canvas 2D
 ```
 
+Vernier Go Direct follows the same coordinator boundary through its independent
+input session and source-owned output router. Native Polar and Vernier sessions
+do not replace one another: after the first connects, discovery invokes only
+the missing protocol pool while the live pool continues feeding its router.
+The renderer's selected source controls only which profile and buffers are
+visible; it is never an acquisition or publication switch.
+
 Rules enforced by the crate graph:
 
 - Input does not know whether the consumer is a UI, recorder, LSL, or OSC.
