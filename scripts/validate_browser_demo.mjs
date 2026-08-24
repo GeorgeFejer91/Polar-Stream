@@ -412,6 +412,21 @@ try {
   assert.equal(await desktop.locator("#runtime-path-label").textContent(), "Browser-local inputs");
   assert.match(await desktop.locator(".device-row.mock").textContent(), /RECORDED/);
   assert.match(await desktop.locator(".device-row.mock").textContent(), /seamless loop of an anonymized 60-second ECG \+ ACC recording/i);
+  assert.equal(await desktop.locator("body").getAttribute("data-device-profile"), "none");
+  assert.equal(await desktop.locator("#output-empty-state").isVisible(), true, "Output must begin empty before a device connects");
+  assert.equal(await desktop.locator("#output-workspace").isHidden(), true);
+  assert.equal(await desktop.locator("#visual-empty-state").isVisible(), true, "Visualization must begin empty before a device connects");
+  assert.equal(await desktop.locator("#visual-workspace").isHidden(), true);
+  assert.equal(await desktop.locator("#output-state").textContent(), "Waiting");
+  assert.equal(await desktop.locator("#visual-source option").count(), 0);
+  await connectMock(desktop);
+  assert.equal(await desktop.locator("body").getAttribute("data-device-profile"), "polar");
+  assert.equal(await desktop.locator("#output-workspace").isVisible(), true);
+  assert.equal(await desktop.locator("#visual-workspace").isVisible(), true);
+  assert.deepEqual(
+    await desktop.locator("#visual-source option").evaluateAll((options) => options.map((option) => option.value)),
+    ["raw_ecg", "raw_acc"],
+  );
   assert.equal(await desktop.locator("#browser-local-destination").isVisible(), true, "browser-local destination is missing");
   assert.equal(await desktop.locator("#csv-destination-row").isVisible(), true, "local CSV toggle is missing");
   assert.equal(await desktop.locator("#audio-destination-row").isVisible(), true, "audio-data toggle is missing");
@@ -473,7 +488,6 @@ try {
     window.__polarChannelReceiver = new BroadcastChannel(window.PolarBrowserSession.channelName);
     window.__polarChannelReceiver.addEventListener("message", () => { window.__polarChannelEvents += 1; });
   });
-  await connectMock(desktop);
   await desktop.waitForFunction(() => window.__polarBrowserEvents > 3 && window.__polarChannelEvents > 3);
   await desktop.locator("#csv-destination-row").click();
   await desktop.locator("#browser-recorder-status").filter({ hasText: "REC" }).waitFor();
@@ -781,6 +795,9 @@ try {
   });
   await installFakeVernierWebBluetooth(vernier);
   await vernier.goto(baseUrl, { waitUntil: "networkidle" });
+  assert.equal(await vernier.locator("body").getAttribute("data-device-profile"), "none");
+  assert.equal(await vernier.locator("#output-empty-state").isVisible(), true);
+  assert.equal(await vernier.locator("#visual-empty-state").isVisible(), true);
   const vernierRow = vernier.locator('.device-row[data-input-kind="web-bluetooth-vernier"]');
   assert.match(await vernierRow.textContent(), /Vernier Go Direct via browser/);
   assert.match(await vernierRow.textContent(), /Choose GDX/);
@@ -809,9 +826,42 @@ try {
   assert.match(await vernier.locator("#app-state-text").textContent(), /Go Direct connected directly/);
   assert.match(await vernier.locator(".active-source-chip").textContent(), /Browser source 1.*GDX-RB TEST/);
   assert.equal(await vernier.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), "#00c2ff");
+  assert.equal(await vernier.locator("body").getAttribute("data-device-profile"), "vernier");
+  assert.match(await vernier.locator("#device-profile-title").textContent(), /respiration belt/i);
+  assert.match(await vernier.locator("#device-profile-description").textContent(), /Primary use: breathing/i);
+  assert.equal(await vernier.locator("#raw-ecg-card").isHidden(), true);
+  assert.equal(await vernier.locator("#raw-acc-card").isHidden(), true);
+  assert.equal(await vernier.locator("#raw-force-card").isVisible(), true);
+  assert.equal(await vernier.locator("#vernier-breathing-card").isVisible(), true);
+  assert.equal(await vernier.locator("#output-chips > *").count(), 0, "fresh Vernier connections must not add a redundant raw-force compatibility stream");
+  assert.equal(await vernier.locator("#output-state").textContent(), "2 signals");
+  assert.match(await vernier.locator("#vernier-breathing-value").textContent(), /^(?:0\.\d{3}|1\.000)$/);
+  assert.deepEqual(
+    await vernier.locator("#visual-source option").evaluateAll((options) => options.map((option) => option.value)),
+    ["raw_force", "vernier_breathing"],
+  );
+  assert.equal(await vernier.locator("#visual-source").inputValue(), "vernier_breathing");
+  await vernier.locator("#open-output-dialog").click();
+  await vernier.locator('.metric-option[data-metric-id="raw_force"]').waitFor();
+  assert.equal(await vernier.locator("#output-dialog").getAttribute("data-family"), "vernier");
+  assert.equal(await vernier.locator("#metric-family-toggle").isHidden(), true);
+  assert.equal(await vernier.locator("#vernier-protocol-panel").isVisible(), true);
+  assert.equal(await vernier.locator("#vernier-protocol-panel article").count(), 2);
+  assert.deepEqual(
+    await vernier.locator(".metric-option").evaluateAll((options) => options.map((option) => option.dataset.metricId)),
+    ["raw_force"],
+  );
+  assert.equal(await vernier.locator("#open-formula-lab").isHidden(), true);
+  assert.match(await vernier.locator("#vernier-protocol-note").textContent(), /require the installed app/i);
+  await vernier.locator('#output-dialog [aria-label="Close"]').click();
   await assertNoHorizontalOverflow(vernier, "desktop Go Direct Web Bluetooth input");
   await vernier.locator("#disconnect-button").click();
   await vernier.locator("#input-state").filter({ hasText: "Browser ready" }).waitFor();
+  assert.equal(await vernier.locator("body").getAttribute("data-device-profile"), "none");
+  assert.equal(await vernier.locator("#output-empty-state").isVisible(), true);
+  assert.equal(await vernier.locator("#output-workspace").isHidden(), true);
+  assert.equal(await vernier.locator("#visual-empty-state").isVisible(), true);
+  assert.equal(await vernier.locator("#visual-workspace").isHidden(), true);
   await vernier.close();
 
   const phone = await browser.newPage({
@@ -825,14 +875,8 @@ try {
   await installFakeWebBluetooth(phone);
   await phone.goto(baseUrl, { waitUntil: "networkidle" });
   await assertNoHorizontalOverflow(phone, "phone browser demo before connection");
-  assert.equal(await phone.locator("#lsl-destination-row").isVisible(), true, "phone browser UI hid the shared LSL control");
-  assert.equal(await phone.locator("#osc-destination-row").isVisible(), true, "phone browser UI hid the shared OSC control");
-  await phone.locator("#lsl-destination-row").click();
-  assert.equal(await phone.locator("#lsl-toggle").isChecked(), false, "phone browser LSL must fail closed");
-  assert.equal(await phone.locator("#native-output-browser-error").isVisible(), true, "phone browser LSL refusal is not visible");
-  const downloadLinkBox = await phone.locator("#native-output-browser-error a").boundingBox();
-  assert.ok(downloadLinkBox.height >= 44, `phone installed-app download link is too short: ${downloadLinkBox.height}`);
-  await phone.locator(".toast").evaluateAll((toasts) => toasts.forEach((toast) => toast.remove()));
+  assert.equal(await phone.locator("#output-empty-state").isVisible(), true);
+  assert.equal(await phone.locator("#visual-empty-state").isVisible(), true);
   const panelTops = await phone.locator(".workspace-panel").evaluateAll((panels) => panels.map((panel) => panel.getBoundingClientRect().top));
   assert.ok(panelTops[0] < panelTops[1] && panelTops[1] < panelTops[2], `phone panels are not stacked: ${panelTops}`);
   const scanBox = await phone.locator("#scan-button").boundingBox();
@@ -848,6 +892,14 @@ try {
   await phone.locator("#disconnect-button").click();
   await phone.locator("#input-state").filter({ hasText: "Browser ready" }).waitFor();
   await connectMock(phone);
+  assert.equal(await phone.locator("#lsl-destination-row").isVisible(), true, "phone browser UI hid the shared LSL control after connection");
+  assert.equal(await phone.locator("#osc-destination-row").isVisible(), true, "phone browser UI hid the shared OSC control after connection");
+  await phone.locator("#lsl-destination-row").click();
+  assert.equal(await phone.locator("#lsl-toggle").isChecked(), false, "phone browser LSL must fail closed");
+  assert.equal(await phone.locator("#native-output-browser-error").isVisible(), true, "phone browser LSL refusal is not visible");
+  const downloadLinkBox = await phone.locator("#native-output-browser-error a").boundingBox();
+  assert.ok(downloadLinkBox.height >= 44, `phone installed-app download link is too short: ${downloadLinkBox.height}`);
+  await phone.locator(".toast").evaluateAll((toasts) => toasts.forEach((toast) => toast.remove()));
 
   await phone.locator("#open-output-dialog").scrollIntoViewIfNeeded();
   await phone.locator("#open-output-dialog").click();

@@ -2,9 +2,13 @@
 
 Polar Stream is a compact, low-latency desktop bridge for simultaneous Polar
 H10 ECG/accelerometer and Vernier Go Direct respiration-belt inputs. Its interface has
-three focused areas: sensor input, stream
-output, and live visualization. The output library starts with a prominent
-red ECG / blue accelerometer selector. ECG mode contains the H10's core ECG,
+three focused areas: sensor input, stream output, and live visualization. Output
+and Visualization begin empty: the first connected device instantiates its own
+preset, and selecting a source when Polar and Vernier are both active switches
+the whole visible protocol without mixing cards or samples. Polar defaults to
+raw ECG and accelerometer; Vernier defaults to its complete raw recording plus
+the separate 0–1 breathing waveform. The Polar output library starts with a
+prominent red ECG / blue accelerometer selector. ECG mode contains the H10's core ECG,
 heart-rate, HRV, coherence, Excite-O-Meter and experimental activation outputs;
 ACC mode contains raw motion plus the complete experimental breathing and
 breathing-dynamics catalog.
@@ -71,7 +75,10 @@ irregular-rate LSL stream containing every metadata-exposed device channel plus
 timing/loss diagnostics, and `<base>_vernierBreathing`, a separately identified
 derived 0–1 relative belt-force waveform. Missing slow/aperiodic raw values are
 `NaN`, never carried forward; the compatible channel-1 rawForce output remains
-available. Browser Web Bluetooth remains channel-1 Force only and cannot create
+available as an opt-in compatibility module rather than a third default stream.
+The Vernier preset exposes only force/breathing cards and visualizations; Polar
+ECG/ACC and Formula Lab controls are not shown for that source. Browser Web
+Bluetooth remains channel-1 Force only and cannot create
 native LSL outlets.
 
 Compatibility is capability-based rather than tied to a browser-name allowlist.

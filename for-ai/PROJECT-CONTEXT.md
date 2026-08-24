@@ -81,6 +81,13 @@ operational contract for that ordering.
   Double64 recording contract; the derived outlet is an explicitly labeled
   Float32 0–1 relative belt-force waveform. Browser Go Direct remains
   channel-1 force-only and has no native LSL capability.
+- Output and Visualization have a real no-device state. A source connection
+  activates only that device profile's defaults, and the selected profile's
+  active outputs determine the available visualizations. Polar defaults to raw
+  ECG/ACC; Vernier defaults to automatic `rawVernier` plus
+  `vernierBreathing`, while rawForce remains an optional compatibility module.
+  When both families are connected, selecting a source switches the entire UI
+  profile and never combines Polar cards/formulas with Vernier breathing cards.
 - LSL and OSC share the same canonical discoverable output name.
 - Official Rusty-backend qualification must enumerate broadly and apply exact
   client-side name/type/channel/rate/format/source-ID matching before opening.

@@ -126,22 +126,59 @@
     : [...staticCatalog.slice(0, 2), rawForceMetric, ...staticCatalog.slice(2)];
 
   const visualDefinitions = {
-    raw_ecg: { label: "Raw ECG", unit: "µV", rate: 130, color: "#d85151", symmetric: true },
+    raw_ecg: { label: "Raw ECG", unit: "µV", rate: 130, color: "#d85151", symmetric: true, deviceProfile: "polar" },
     raw_acc: {
-      label: "Raw accelerometer · X/Y/Z", unit: "mg", rate: 200,
+      label: "Raw accelerometer · X/Y/Z", unit: "mg", rate: 200, deviceProfile: "polar",
       channels: [
         { buffer: "acc_x", label: "X", color: "#3b78aa", symmetric: true },
         { buffer: "acc_y", label: "Y", color: "#168259", symmetric: true },
         { buffer: "acc_z", label: "Z", color: "#a66d19", symmetric: true },
       ],
     },
-    raw_force: { label: "Raw Go Direct force", unit: "N", rate: 10, color: "#00c2ff" },
+    raw_force: { label: "Raw Go Direct force", unit: "N", rate: 10, color: "#00c2ff", deviceProfile: "vernier", automatic: true, adjustable: true },
+    vernier_breathing: {
+      label: "Vernier breathing waveform", unit: "0–1", rate: 10, color: "#168259",
+      deviceProfile: "vernier", automatic: true, breathingTrail: true,
+    },
     heart_rate: { label: "Heart rate", unit: "bpm", rate: 1, color: "#d85151" },
     rr_interval: { label: "RR interval", unit: "ms", rate: 2, color: "#6c62a8" },
     acc_magnitude: { label: "3D acceleration magnitude", unit: "g", rate: 200, color: "#3b78aa" },
     acc_breathing_magnitude: { label: "ACC breathing magnitude estimate", unit: "g", rate: 20, color: "#3b78aa" },
     rmssd: { label: "RMSSD", unit: "ms", rate: 1, color: "#168259" },
   };
+
+  const deviceProfiles = Object.freeze({
+    none: Object.freeze({
+      id: "none",
+      mark: "—",
+      title: "Connect a sensor",
+      purpose: "Device protocols are instantiated only after a Polar H10 or Vernier GDX-RB connects.",
+      deviceRole: "No device protocol active",
+      defaultVisual: "",
+      defaultOutputs: Object.freeze([]),
+      automaticOutputCount: 0,
+    }),
+    polar: Object.freeze({
+      id: "polar",
+      mark: "H10",
+      title: "Polar H10 · ECG-first",
+      purpose: "Primary use: raw ECG and cardiac timing. Accelerometer outputs are secondary motion and experimental breathing signals.",
+      deviceRole: "ECG + cardiac timing",
+      defaultVisual: "raw_ecg",
+      defaultOutputs: Object.freeze(["raw_ecg", "raw_acc"]),
+      automaticOutputCount: 0,
+    }),
+    vernier: Object.freeze({
+      id: "vernier",
+      mark: "GDX",
+      title: "Vernier GDX-RB · respiration belt",
+      purpose: "Primary use: breathing. Polar Stream preserves raw force and all native Vernier values, then exposes a separate relative 0–1 breathing waveform.",
+      deviceRole: "Breathing · force + 0–1 waveform",
+      defaultVisual: "vernier_breathing",
+      defaultOutputs: Object.freeze([]),
+      automaticOutputCount: 2,
+    }),
+  });
 
   const accLibraryIds = new Set(fallbackCatalog
     .filter((metric) => metric.id === "raw_acc"
@@ -220,6 +257,68 @@
     }
   }
 
+  class VernierBreathingDisplayProcessor {
+    constructor() {
+      this.history = [];
+      this.elapsedSeconds = 0;
+      this.lowerForceN = 0;
+      this.upperForceN = 0;
+      this.samplesSinceBounds = 0;
+      this.lastValue01 = 0.5;
+    }
+
+    push(forceValuesN, samplePeriodUs) {
+      const stepSeconds = Math.max(1, Number(samplePeriodUs) || 100_000) / 1_000_000;
+      const normalized = [];
+      for (const input of forceValuesN) {
+        const forceN = Number(input);
+        if (Number.isFinite(forceN)) {
+          this.history.push([this.elapsedSeconds, forceN]);
+          this.samplesSinceBounds += 1;
+          this.pruneHistory();
+          if (this.history.length <= 5 || this.samplesSinceBounds >= 5) this.updateBounds();
+          this.lastValue01 = normalizeVernierForce(forceN, this.lowerForceN, this.upperForceN);
+        }
+        normalized.push(this.lastValue01);
+        this.elapsedSeconds += stepSeconds;
+      }
+      return normalized;
+    }
+
+    pruneHistory() {
+      const cutoff = this.elapsedSeconds - 30;
+      while (this.history.length && (this.history[0][0] < cutoff || this.history.length > 30_000)) {
+        this.history.shift();
+      }
+    }
+
+    updateBounds() {
+      const values = this.history.map(([, value]) => value).sort((left, right) => left - right);
+      if (values.length) {
+        if (values.length >= 20) {
+          this.lowerForceN = sortedQuantile(values, 0.05);
+          this.upperForceN = sortedQuantile(values, 0.95);
+        } else {
+          this.lowerForceN = values[0];
+          this.upperForceN = values[values.length - 1];
+        }
+      }
+      this.samplesSinceBounds = 0;
+    }
+  }
+
+  function normalizeVernierForce(value, lower, upper) {
+    if (![value, lower, upper].every(Number.isFinite) || upper - lower < 1e-9) return 0.5;
+    return Math.max(0, Math.min(1, (value - lower) / (upper - lower)));
+  }
+
+  function sortedQuantile(sorted, quantile) {
+    const position = (sorted.length - 1) * quantile;
+    const low = Math.floor(position);
+    const high = Math.ceil(position);
+    return sorted[low] + (sorted[high] - sorted[low]) * (position - low);
+  }
+
   const bufferIds = new Set(Object.entries(visualDefinitions).flatMap(([id, definition]) => (
     [id, ...(definition.channels?.map((channel) => channel.buffer) || [])]
   )));
@@ -227,19 +326,21 @@
     return Object.fromEntries([...bufferIds].map((id) => [id, new RingBuffer()]));
   }
   const sourceBuffers = new Map();
+  const vernierDisplayProcessors = new Map();
   let buffers = createBufferBank();
   const elements = {};
   const ids = [
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value", "connection-metric-1-label", "connection-metric-1-value", "connection-metric-2-label", "connection-metric-2-value", "active-source-strip",
     "scan-button", "scan-caption", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "activity-list", "output-state", "raw-ecg-value",
-    "raw-acc-x", "raw-acc-y", "raw-acc-z", "raw-force-value", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
-    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source",
+    "output-empty-state", "output-workspace", "visual-empty-state", "visual-workspace", "device-profile-card", "device-profile-mark", "device-profile-title", "device-profile-description", "raw-ecg-card", "raw-acc-card", "raw-force-card", "vernier-breathing-card",
+    "raw-acc-x", "raw-acc-y", "raw-acc-z", "raw-force-value", "vernier-breathing-value", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
+    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "device-protocol-block", "device-protocol-cards", "included-output-heading", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
-    "chart-empty", "y-max", "y-min", "footer-status", "sample-counter", "output-dialog",
+    "chart-empty", "chart-empty-title", "chart-empty-detail", "y-max", "y-min", "footer-status", "footer-device-role", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "metric-back-button", "dialog-output-status", "save-metric-output", "toast-region",
     "stream-name-preview", "metric-search", "metric-filters", "metric-library-summary",
-    "metric-family-toggle", "metric-family-context", "metric-family-note",
+    "metric-family-picker", "metric-family-toggle", "metric-family-context", "metric-family-note", "vernier-protocol-panel", "vernier-protocol-note",
     "adjust-visual", "visual-window-label", "visual-scale-label", "module-dialog", "module-dialog-title",
     "module-dialog-intro", "module-settings", "module-dialog-status", "save-module-settings",
     "pipeline-title", "pipeline-detail", "browser-export-button",
@@ -262,7 +363,8 @@
     scanning: false,
     configuring: false,
     catalog: fallbackCatalog,
-    outputs: new Set(["raw_ecg", "raw_acc", "raw_force"]),
+    outputs: new Set(),
+    savedOutputIds: new Set(),
     metricOptions: {},
     customFormulas: [],
     formulaDraft: null,
@@ -285,6 +387,7 @@
     currentDeviceId: null,
     currentInputKind: null,
     activeSources: new Map(),
+    activatedProfiles: new Set(),
     selectedSourceId: null,
     pendingDevice: null,
     devices: [],
@@ -299,6 +402,56 @@
       : rendererPreferences,
     activity: [{ time: "NOW", message: isNative ? "Bluetooth interface ready" : "Browser demo ready" }],
   };
+
+  function deviceProfileForSource(source) {
+    if (!source) return deviceProfiles.none;
+    return source.inputKind === "vernierGoDirect" ? deviceProfiles.vernier : deviceProfiles.polar;
+  }
+
+  function deviceProfileForDevice(device) {
+    return device?.inputKind === "vernierGoDirect" || device?.kind === "web-bluetooth-vernier"
+      ? deviceProfiles.vernier
+      : deviceProfiles.polar;
+  }
+
+  function selectedDeviceProfile() {
+    return deviceProfileForSource(app.activeSources.get(app.selectedSourceId));
+  }
+
+  function runtimeInputKindForSource(source) {
+    if (!source) return null;
+    if (source.inputKind === "vernierGoDirect") {
+      return source.transport === "web-bluetooth" ? "web-bluetooth-vernier" : "vernierGoDirect";
+    }
+    if (source.transport === "web-bluetooth") return "web-bluetooth";
+    return source.inputKind || null;
+  }
+
+  function metricMatchesDeviceProfile(metric, profile = selectedDeviceProfile()) {
+    if (profile.id === "none") return false;
+    return profile.id === "vernier" ? metric.id === "raw_force" : metric.id !== "raw_force";
+  }
+
+  function visualMatchesDeviceProfile(definition, profile = selectedDeviceProfile()) {
+    return (definition?.deviceProfile || "polar") === profile.id;
+  }
+
+  function automaticVernierStreamName(suffix, value = app.streamName) {
+    const base = normalizeStreamBase(value);
+    const slot = app.activeSources.get(app.selectedSourceId)?.slot;
+    return base ? `${base}${slot ? `_${slot}` : ""}_${suffix}` : `—_${suffix}`;
+  }
+
+  function idleDestinationDetail(protocol) {
+    if (selectedDeviceProfile().id !== "vernier") {
+      if (protocol === "lsl") return "Local network · time synchronized";
+      if (protocol === "osc") return "UDP · localhost:9000";
+      return "All received raw data and produced metrics · bounded writer";
+    }
+    if (protocol === "lsl") return "Automatic rawVernier Double64 + vernierBreathing Float32 0–1";
+    if (protocol === "osc") return "Selected force compatibility outputs · UDP localhost:9000";
+    return "Raw Vernier rows and selected outputs · bounded writer";
+  }
 
   function normalizeStreamBase(value) {
     if (typeof value !== "string") return null;
@@ -434,6 +587,7 @@
   }
 
   function renderRuntimeContext({ simulated = false, transport = null } = {}) {
+    const profile = selectedDeviceProfile();
     if (simulated) {
       elements["runtime-path-label"].textContent = "Seamless recorded H10 loop";
       elements["pipeline-title"].textContent = "Recorded preview loops locally";
@@ -447,18 +601,106 @@
     if (transport === "web-bluetooth") {
       elements["runtime-path-label"].textContent = "Browser Bluetooth · experimental";
       elements["pipeline-title"].textContent = "Acquisition stays in this tab";
-      elements["pipeline-detail"].textContent = "Chromium reads H10 ECG, ACC, HR and RR directly. No companion or installed process is used.";
+      elements["pipeline-detail"].textContent = profile.id === "vernier"
+        ? "Chromium reads GDX-RB force directly and derives only the local 0–1 display waveform. Native LSL requires the installed app."
+        : "Chromium reads H10 ECG, ACC, HR and RR directly. No companion or installed process is used.";
       return;
     }
     if (runtime.isBrowser) {
       elements["runtime-path-label"].textContent = "Browser-local inputs";
       elements["pipeline-title"].textContent = "Choose live or recorded input";
-      elements["pipeline-detail"].textContent = "Connect an H10 with Chromium Web Bluetooth, or replay the anonymized 60-second H10 recording. All processing stays in this tab.";
+      elements["pipeline-detail"].textContent = "Connect an H10 or GDX-RB with Chromium Web Bluetooth, or replay the anonymized H10 recording. All browser processing stays in this tab.";
       return;
     }
     elements["runtime-path-label"].textContent = "Native data path";
-    elements["pipeline-title"].textContent = "Acquisition stays native";
-    elements["pipeline-detail"].textContent = "The chart receives display-rate batches; LSL and OSC do not wait for rendering.";
+    elements["pipeline-title"].textContent = profile.id === "vernier" ? "Raw Vernier recording stays first" : "Acquisition stays native";
+    elements["pipeline-detail"].textContent = profile.id === "vernier"
+      ? "The complete rawVernier frame is published before the separate 0–1 breathing waveform and this display; rendering cannot delay LSL."
+      : "The chart receives display-rate batches; LSL and OSC do not wait for rendering.";
+  }
+
+  function renderDeviceProtocolCards() {
+    const vernier = selectedDeviceProfile().id === "vernier";
+    elements["device-protocol-block"].hidden = !vernier;
+    if (!vernier) {
+      elements["device-protocol-cards"].replaceChildren();
+      return;
+    }
+    const protocols = [
+      {
+        label: "Complete raw recording",
+        stream: automaticVernierStreamName("rawVernier", elements["stream-name"].value),
+        detail: "Double64 · every compatible metadata channel + timing/loss diagnostics",
+      },
+      {
+        label: "Breathing waveform",
+        stream: automaticVernierStreamName("vernierBreathing", elements["stream-name"].value),
+        detail: "Float32 · relative belt force · causal 0–1 · inhale rises",
+      },
+    ];
+    const cards = protocols.map((protocol) => {
+      const card = document.createElement("article");
+      card.className = `device-protocol-card${runtime.isBrowser ? " unavailable" : ""}`;
+      const header = document.createElement("span");
+      const label = document.createElement("strong");
+      label.textContent = protocol.label;
+      const stream = document.createElement("code");
+      stream.textContent = protocol.stream;
+      header.append(label, stream);
+      const detail = document.createElement("small");
+      detail.textContent = runtime.isBrowser
+        ? `${protocol.detail} · installed-app LSL`
+        : `${protocol.detail} · automatic when LSL is on`;
+      card.append(header, detail);
+      return card;
+    });
+    elements["device-protocol-cards"].replaceChildren(...cards);
+  }
+
+  function syncDeviceProfileUi() {
+    const profile = selectedDeviceProfile();
+    const hasSource = profile.id !== "none";
+    const vernier = profile.id === "vernier";
+    document.body.dataset.deviceProfile = profile.id;
+    elements["output-empty-state"].hidden = hasSource;
+    elements["output-workspace"].hidden = !hasSource;
+    elements["visual-empty-state"].hidden = hasSource;
+    elements["visual-workspace"].hidden = !hasSource;
+    elements["output-state"].classList.toggle("live-state", hasSource);
+    elements["device-profile-card"].dataset.profile = profile.id;
+    elements["device-profile-mark"].textContent = profile.mark;
+    elements["device-profile-title"].textContent = profile.title;
+    elements["device-profile-description"].textContent = profile.purpose;
+    elements["raw-ecg-card"].hidden = !hasSource || vernier;
+    elements["raw-acc-card"].hidden = !hasSource || vernier;
+    elements["raw-force-card"].hidden = !hasSource || !vernier;
+    elements["vernier-breathing-card"].hidden = !hasSource || !vernier;
+    elements["chart-empty-title"].textContent = vernier ? "Waiting for breathing" : "Waiting for ECG";
+    elements["chart-empty-detail"].textContent = vernier
+      ? "Connect a Vernier GDX-RB respiration belt to begin."
+      : "Connect a Polar H10 to begin.";
+    elements["footer-device-role"].textContent = !hasSource
+      ? profile.deviceRole
+      : vernier
+        ? "Vernier GDX-RB · breathing research input"
+        : "Polar H10 · ECG-first research input";
+    elements["included-output-heading"].textContent = vernier
+      ? "Optional Vernier compatibility outputs"
+      : "Included H10 outputs";
+    elements["open-output-dialog"].lastChild.textContent = vernier ? "Add Vernier output" : "Add output";
+    elements["vernier-protocol-panel"].hidden = !hasSource || !vernier;
+    elements["open-formula-lab"].hidden = !hasSource || vernier;
+    elements["open-output-dialog"].disabled = !hasSource;
+    elements["vernier-protocol-note"].textContent = runtime.isBrowser
+      ? "These named LSL streams require the installed app. This browser keeps raw force and the 0–1 display waveform local, with bounded browser CSV available below."
+      : "Both named streams are created automatically when native LSL is enabled. The optional raw-force compatibility output remains below.";
+    if (vernier) app.metricFamily = "vernier";
+    else if (hasSource && app.metricFamily === "vernier") app.metricFamily = "ecg";
+    if (!elements["lsl-toggle"].checked) elements["lsl-detail"].textContent = idleDestinationDetail("lsl");
+    if (!elements["osc-toggle"].checked) elements["osc-detail"].textContent = idleDestinationDetail("osc");
+    if (!elements["csv-toggle"].checked && !runtime.isBrowser) elements["csv-detail"].textContent = idleDestinationDetail("csv");
+    renderDeviceProtocolCards();
+    if (hasSource) window.requestAnimationFrame(resizeCanvas);
   }
 
   async function initialize() {
@@ -502,7 +744,8 @@
     const initialConfig = isNative
       ? bootstrap.preferences?.outputConfig || bootstrap.config || {}
       : app.preferences.outputConfig || bootstrap.config || {};
-    app.outputs = new Set(initialConfig.outputs || ["raw_ecg", "raw_acc", "raw_force"]);
+    app.savedOutputIds = new Set(initialConfig.outputs || ["raw_ecg", "raw_acc"]);
+    app.outputs = new Set();
     app.metricOptions = structuredClone(initialConfig.metricOptions || {});
     app.customFormulas = (initialConfig.customFormulas || []).map(normalizeFormulaDraft);
     app.breathingSettings = configuredBreathingSettings(app.metricOptions);
@@ -542,13 +785,13 @@
     renderDevices(app.devices);
     if (app.devices.length) {
       elements["input-state"].textContent = runtime.isBrowser ? "Browser ready" : "Mock ready";
-      elements["connection-detail"].textContent = "Choose browser Bluetooth for a live H10, or replay the anonymized recording.";
+      elements["connection-detail"].textContent = "Choose a Polar H10 for ECG, a Vernier GDX-RB for breathing, or replay the anonymized H10 recording.";
     }
 
+    syncDeviceProfileUi();
     renderMetricFilters();
     renderOutputs();
     installInteractions();
-    await configureOutputs({ quiet: true });
     if (runtime.isBrowser && browserSession) browserSession.subscribe(renderBrowserRecorder);
     if (audioDataLink) audioDataLink.subscribe(renderAudioOutput);
     resizeCanvas();
@@ -676,8 +919,12 @@
     elements["open-output-dialog"].addEventListener("click", async () => {
       app.selectedMetricId = null;
       app.libraryMetricDraft = null;
+      app.metricFilter = "All";
+      app.metricSearch = "";
+      elements["metric-search"].value = "";
       setMetricLibraryView("browse");
       updateMetricFamilyUi();
+      renderMetricFilters();
       renderMetricDetail();
       elements["output-dialog"].showModal();
       const loading = document.createElement("p");
@@ -729,6 +976,7 @@
       }
       app.metricOptions[metric.id] = draft;
       app.outputs.add(metric.id);
+      app.savedOutputIds.add(metric.id);
       renderOutputs();
       configureOutputs();
       elements["output-dialog"].close();
@@ -930,6 +1178,7 @@
       const isCurrent = [...app.activeSources.values()].some((source) => source.deviceId === device.id);
       const isPending = app.pendingDevice?.id === device.id;
       const isPreferred = app.preferences.lastDevice?.id === device.id;
+      const profile = deviceProfileForDevice(device);
       const button = document.createElement("button");
       button.className = `device-row${isMock ? " mock" : ""}${isWebBluetooth || isWebVernier ? " browser-bluetooth" : ""}${device.available === false ? " unavailable" : ""}${isCurrent ? " current" : ""}${isPreferred ? " preferred" : ""}`;
       button.type = "button";
@@ -953,6 +1202,10 @@
         badge.textContent = device.sourceLabel;
         nameLine.append(badge);
       }
+      const role = document.createElement("span");
+      role.className = `preference-badge device-role-badge ${profile.id}`;
+      role.textContent = profile.id === "vernier" ? "BREATH" : "ECG";
+      nameLine.append(role);
       if (isPreferred) {
         const badge = document.createElement("span");
         badge.className = "preference-badge";
@@ -960,7 +1213,7 @@
         nameLine.append(badge);
       }
       const id = document.createElement("small");
-      id.textContent = device.detail || device.id;
+      id.textContent = `${profile.deviceRole} · ${device.detail || device.id}`;
       copy.append(nameLine, id);
       const rssi = document.createElement("span");
       rssi.className = "rssi";
@@ -1103,11 +1356,22 @@
       case "metrics":
         ingestMetrics(event);
         break;
-      case "force":
-        ensureBuffer("raw_force").pushMany(event.values || []);
-        app.sampleCount += (event.values || []).length;
+      case "force": {
+        const values = event.values || [];
+        ensureBuffer("raw_force").pushMany(values);
+        if (source?.id) {
+          const processor = vernierDisplayProcessors.get(source.id) || new VernierBreathingDisplayProcessor();
+          vernierDisplayProcessors.set(source.id, processor);
+          const samplePeriodUs = event.samplePeriodUs || source.samplePeriodUs || 100_000;
+          ensureBuffer("vernier_breathing").pushMany(processor.push(values, samplePeriodUs));
+          if (visualDefinitions.vernier_breathing) {
+            visualDefinitions.vernier_breathing.rate = 1_000_000 / Math.max(1, samplePeriodUs);
+          }
+        }
+        app.sampleCount += values.length;
         markTelemetryDirty();
         break;
+      }
       case "streamHealth":
         if (event.droppedBatches || event.malformedFrames || event.deviceDropReports) {
           addActivity(`${source?.label || "Source"}: ${event.droppedBatches || 0} dropped batches · ${event.deviceDropReports || 0} device drop reports · ${event.malformedFrames || 0} malformed frames`);
@@ -1134,6 +1398,7 @@
     if (event?.source?.id) return {
       ...event.source,
       deviceId: device?.id,
+      ...(event.transport ? { transport: event.transport } : {}),
       ...(event.deviceName ? { deviceName: event.deviceName } : {}),
     };
     if (!device && !event?.simulated && event?.transport !== "web-bluetooth") return null;
@@ -1156,9 +1421,25 @@
 
   function registerSource(source, { focus = false } = {}) {
     const existing = app.activeSources.get(source.id) || {};
-    app.activeSources.set(source.id, { ...existing, ...source });
+    const merged = { ...existing, ...source };
+    const profile = deviceProfileForSource(merged);
+    app.activeSources.set(source.id, merged);
+    if (!Object.keys(existing).length && !app.activatedProfiles.has(profile.id)) {
+      activateDeviceOutputs(profile);
+      app.activatedProfiles.add(profile.id);
+    }
     if (!app.selectedSourceId || focus) selectSource(source.id);
     else renderActiveSources();
+  }
+
+  function activateDeviceOutputs(profile) {
+    const byId = new Map(app.catalog.map((metric) => [metric.id, metric]));
+    const savedForProfile = [];
+    for (const id of app.savedOutputIds) {
+      const metric = byId.get(id);
+      if (metric && metricMatchesDeviceProfile(metric, profile)) savedForProfile.push(id);
+    }
+    for (const id of savedForProfile.length ? savedForProfile : profile.defaultOutputs) app.outputs.add(id);
   }
 
   function selectSource(sourceId) {
@@ -1166,11 +1447,14 @@
     app.selectedSourceId = sourceId;
     buffers = buffersForSource(sourceId);
     const source = app.activeSources.get(sourceId);
-    app.currentInputKind = source.inputKind === "vernierGoDirect"
-      ? "web-bluetooth-vernier"
-      : source.inputKind || null;
+    app.currentInputKind = runtimeInputKindForSource(source);
     renderActiveSources();
     updateSelectedSourceUi();
+    syncDeviceProfileUi();
+    renderRuntimeContext({
+      simulated: source.inputKind === "mock",
+      transport: source.transport || null,
+    });
     refreshTelemetry();
     renderOutputs();
     updateVisualLabels();
@@ -1230,10 +1514,12 @@
     elements["device-name"].textContent = source.deviceName || source.label;
     const firmwareDetail = isVernier && source.firmwareVersion
       ? ` · firmware ${source.firmwareVersion}` : "";
-    elements["connection-detail"].textContent = `${app.activeSources.size} source${app.activeSources.size === 1 ? "" : "s"} streaming · ${source.label}${firmwareDetail}`;
+    const profile = deviceProfileForSource(source);
+    elements["connection-detail"].textContent = `${app.activeSources.size} source${app.activeSources.size === 1 ? "" : "s"} streaming · ${source.label} · ${profile.deviceRole}${firmwareDetail}`;
     elements["battery-value"].textContent = source.batteryPercent == null ? "—" : `${source.batteryPercent}%`;
     const sampleRate = source.samplePeriodUs > 0 ? 1_000_000 / source.samplePeriodUs : 10;
     if (isVernier && visualDefinitions.raw_force) visualDefinitions.raw_force.rate = sampleRate;
+    if (isVernier && visualDefinitions.vernier_breathing) visualDefinitions.vernier_breathing.rate = sampleRate;
     elements["connection-metric-1-label"].textContent = isVernier ? (source.sensorName || "FORCE").toUpperCase() : "ECG";
     elements["connection-metric-1-value"].textContent = isVernier ? `${sampleRate.toFixed(sampleRate % 1 ? 1 : 0)} Hz` : "130 Hz";
     elements["connection-metric-2-label"].textContent = isVernier ? "CHANNEL" : "ACC";
@@ -1273,6 +1559,9 @@
     }
     if (event.connected && source) {
       app.manualDisconnects.delete(source.id);
+      if (source.inputKind === "vernierGoDirect") {
+        vernierDisplayProcessors.set(source.id, new VernierBreathingDisplayProcessor());
+      }
       registerSource({
         ...source,
         deviceName: event.deviceName,
@@ -1289,6 +1578,7 @@
     if (!event.connected && source) {
       app.activeSources.delete(source.id);
       sourceBuffers.delete(source.id);
+      vernierDisplayProcessors.delete(source.id);
       if (app.selectedSourceId === source.id) {
         app.selectedSourceId = app.activeSources.keys().next().value || null;
         buffers = app.selectedSourceId ? buffersForSource(app.selectedSourceId) : createBufferBank();
@@ -1309,9 +1599,8 @@
     if (app.connected) {
       const connectedDevice = device || app.devices.find((candidate) => candidate.name === event.deviceName);
       app.currentDeviceId = connectedDevice?.id || null;
-      app.currentInputKind = selectedKind === "vernierGoDirect"
-        ? "web-bluetooth-vernier"
-        : simulated ? "mock" : webBluetooth ? "web-bluetooth" : selectedKind || "polar";
+      app.currentInputKind = runtimeInputKindForSource(app.activeSources.get(app.selectedSourceId))
+        || (simulated ? "mock" : webBluetooth ? "web-bluetooth" : selectedKind || "polar");
       if (connectedDevice && !simulated && !webBluetooth) {
         app.preferences = { ...app.preferences, lastDevice: { id: connectedDevice.id, name: connectedDevice.name } };
         if (!isNative) app.preferences = preferences.saveLastDevice(connectedDevice);
@@ -1323,6 +1612,7 @@
     renderDevices(app.devices);
     renderActiveSources();
     if (app.connected) updateSelectedSourceUi();
+    syncDeviceProfileUi();
     if (event.connected && source?.inputKind === "vernierGoDirect") {
       cancelVernierReconnect();
       elements["keep-awake-status"].textContent = app.keepVernierAwake
@@ -1362,9 +1652,11 @@
     if (!app.connected) elements["render-rate"].textContent = "Idle";
     if (elements["output-dialog"].open) {
       updateMetricFamilyUi();
+      renderMetricFilters();
       renderMetricOptions();
     }
     renderOutputs();
+    if (event.connected && source) void configureOutputs({ quiet: true });
     if (runtime.isBrowser && browserSession) renderBrowserRecorder(browserSession.status());
     markTelemetryDirty();
   }
@@ -1466,6 +1758,7 @@
     elements["raw-acc-y"].textContent = formatValue(buffers.acc_y.latest(), 0);
     elements["raw-acc-z"].textContent = formatValue(buffers.acc_z.latest(), 0);
     elements["raw-force-value"].textContent = formatValue(ensureBuffer("raw_force").latest(), 3);
+    elements["vernier-breathing-value"].textContent = formatValue(ensureBuffer("vernier_breathing").latest(), 3);
     updateSparkline();
     updateSampleCounter();
   }
@@ -1719,6 +2012,9 @@
   }
 
   function libraryCatalog() {
+    if (selectedDeviceProfile().id === "vernier") {
+      return app.catalog.filter((metric) => metric.id === "raw_force");
+    }
     if (app.metricFamily === "acc") {
       return app.catalog.filter((metric) => accLibraryIds.has(metric.id));
     }
@@ -1736,11 +2032,21 @@
   }
 
   function updateMetricFamilyUi() {
+    const vernier = selectedDeviceProfile().id === "vernier";
+    if (vernier) app.metricFamily = "vernier";
+    else if (app.metricFamily === "vernier") app.metricFamily = "ecg";
     elements["output-dialog"].dataset.family = app.metricFamily;
+    elements["metric-family-toggle"].hidden = vernier;
     for (const button of elements["metric-family-toggle"].querySelectorAll("button[data-family]")) {
       const active = button.dataset.family === app.metricFamily;
       button.classList.toggle("active", active);
       button.setAttribute("aria-pressed", String(active));
+    }
+    if (vernier) {
+      elements["metric-family-context"].textContent = "Respiration-belt outputs";
+      elements["metric-family-note"].textContent = "GDX-RB is treated as a breathing device: its raw recording and 0–1 breathing LSL streams are automatic; raw force remains an optional compatibility output.";
+      elements["metric-search"].placeholder = "Search Vernier force outputs…";
+      return;
     }
     const acc = app.metricFamily === "acc";
     elements["metric-family-context"].textContent = acc
@@ -1785,7 +2091,7 @@
       option.className = `metric-option${app.selectedMetricId === metric.id ? " selected" : ""}${support.supported ? "" : " unavailable"}`;
       option.setAttribute("aria-pressed", String(app.selectedMetricId === metric.id));
       const mark = document.createElement("span");
-      mark.textContent = app.metricFamily === "acc" ? "ACC" : "ECG";
+      mark.textContent = app.metricFamily === "vernier" ? "GDX" : app.metricFamily === "acc" ? "ACC" : "ECG";
       const copy = document.createElement("span");
       copy.className = "metric-option-copy";
       const heading = document.createElement("span");
@@ -1827,7 +2133,8 @@
     } else {
       elements["metric-options"].replaceChildren(...options);
     }
-    elements["metric-library-summary"].textContent = `${visible.length} of ${familyCatalog.length} ${app.metricFamily.toUpperCase()} metrics`;
+    const familyLabel = app.metricFamily === "vernier" ? "Vernier outputs" : `${app.metricFamily.toUpperCase()} metrics`;
+    elements["metric-library-summary"].textContent = `${visible.length} of ${familyCatalog.length} ${familyLabel}`;
     renderMetricDetail();
   }
 
@@ -2231,16 +2538,18 @@
         rate: formula.source === "ecg" ? 130 : formula.source === "accelerometer" ? 200 : 1,
         color: formulaSources[formula.source].color,
         formulaId: formula.id,
+        deviceProfile: "polar",
       };
       ensureBuffer(id);
     }
   }
 
   function renderOutputs() {
+    const profile = selectedDeviceProfile();
     const byId = new Map(app.catalog.map((metric) => [metric.id, metric]));
     const cards = [...app.outputs].map((id) => {
       const metric = byId.get(id);
-      if (!metric) return null;
+      if (!metric || !metricMatchesDeviceProfile(metric, profile)) return null;
       const support = runtime.outputSupport(id, app.currentInputKind);
       const card = document.createElement("article");
       card.className = `output-card${metric.raw ? " raw-output-card" : ""}${support.supported ? "" : " unavailable"}`;
@@ -2257,6 +2566,7 @@
       remove.textContent = "×";
       remove.addEventListener("click", () => {
         app.outputs.delete(id);
+        app.savedOutputIds.delete(id);
         delete app.metricOptions[id];
         renderOutputs();
         configureOutputs();
@@ -2286,7 +2596,7 @@
       card.append(controls);
       return card;
     }).filter(Boolean);
-    for (const formula of app.customFormulas.filter((candidate) => candidate.enabled)) {
+    for (const formula of app.customFormulas.filter((candidate) => candidate.enabled && profile.id === "polar")) {
       const card = document.createElement("article");
       card.className = "output-card formula-output-card";
       const header = document.createElement("header");
@@ -2321,10 +2631,14 @@
       cards.push(card);
     }
     elements["output-chips"].replaceChildren(...cards);
-    const count = app.outputs.size + app.customFormulas.filter((formula) => formula.enabled).length;
+    const count = cards.length;
     elements["included-count"].textContent = `${count} active`;
-    elements["output-state"].textContent = `${count} signal${count === 1 ? "" : "s"}`;
+    const totalCount = count + profile.automaticOutputCount;
+    elements["output-state"].textContent = profile.id === "none"
+      ? "Waiting"
+      : `${totalCount} signal${totalCount === 1 ? "" : "s"}`;
     updateStreamNamePreview();
+    renderDeviceProtocolCards();
     rebuildVisualOptions();
     applySourceColor();
   }
@@ -2598,12 +2912,24 @@
   }
 
   function updateStreamNamePreview() {
+    const profile = selectedDeviceProfile();
+    if (profile.id === "none") {
+      elements["stream-name-preview"].textContent = "Connect a device to create its default outputs.";
+      return;
+    }
     const byId = new Map(app.catalog.map((metric) => [metric.id, metric]));
     const names = [...app.outputs]
       .map((id) => byId.get(id))
-      .filter(Boolean)
+      .filter((metric) => metric && metricMatchesDeviceProfile(metric, profile))
       .map((metric) => streamOutputName(metric, elements["stream-name"].value));
-    names.push(...app.customFormulas.filter((formula) => formula.enabled).map((formula) => customStreamName(formula, elements["stream-name"].value)));
+    if (profile.id === "polar") {
+      names.push(...app.customFormulas.filter((formula) => formula.enabled).map((formula) => customStreamName(formula, elements["stream-name"].value)));
+    } else if (!runtime.isBrowser) {
+      names.unshift(
+        automaticVernierStreamName("rawVernier", elements["stream-name"].value),
+        automaticVernierStreamName("vernierBreathing", elements["stream-name"].value),
+      );
+    }
     if (!normalizeStreamBase(elements["stream-name"].value)) {
       elements["stream-name-preview"].textContent = "Use at least one letter or number; spaces become underscores.";
       return;
@@ -2616,10 +2942,14 @@
   }
 
   function rebuildVisualOptions() {
+    const profile = selectedDeviceProfile();
     const choices = [];
     for (const [id, definition] of Object.entries(visualDefinitions)) {
+      if (!visualMatchesDeviceProfile(definition, profile)) continue;
       const parent = definition.parent || id;
-      const enabled = definition.formulaId
+      const enabled = definition.automatic
+        ? true
+        : definition.formulaId
         ? app.customFormulas.some((formula) => formula.id === definition.formulaId && formula.enabled)
         : app.outputs.has(parent);
       if (!enabled) continue;
@@ -2632,7 +2962,9 @@
       return option;
     }));
     if (!choices.some((choice) => choice.id === app.selectedVisual)) {
-      app.selectedVisual = choices[0]?.id || "";
+      app.selectedVisual = choices.some((choice) => choice.id === profile.defaultVisual)
+        ? profile.defaultVisual
+        : choices[0]?.id || "";
     }
     elements["visual-source"].value = app.selectedVisual;
     elements["visual-source"].disabled = !choices.length;
@@ -2641,7 +2973,7 @@
 
   function updateVisualLabels() {
     const definition = visualDefinitions[app.selectedVisual];
-    const breathingTrail = app.selectedVisual === "breathing_volume";
+    const breathingTrail = Boolean(definition?.breathingTrail || app.selectedVisual === "breathing_volume");
     const custom = Boolean(definition?.formulaId);
     const options = custom
       ? { normalization: "none", windowSeconds: 60, displayWindowSeconds: 5 }
@@ -2654,7 +2986,7 @@
       : normalized
         ? options.normalization === "session" ? "0–1 whole run" : `0–1 / ${options.windowSeconds}s`
         : "Original scale";
-    elements["adjust-visual"].disabled = !definition || custom;
+    elements["adjust-visual"].disabled = !definition || custom || Boolean(definition.automatic && !definition.adjustable);
     elements["chart-shell"].classList.toggle("phase-visual", app.selectedVisual === "breathing_phase");
     elements["chart-shell"].classList.toggle("breathing-trail-visual", breathingTrail);
     elements["chart-shell"].classList.toggle("stacked-axes", Boolean(definition?.channels));
@@ -2662,7 +2994,9 @@
     elements["signal-canvas"].setAttribute(
       "aria-label",
       breathingTrail
-        ? "Preliminary one-dimensional ACC breathing waveform. The newest sample is a moving dot and recent samples form a leftward trail; rising follows the configured inhale direction."
+        ? app.selectedVisual === "vernier_breathing"
+          ? "Live Vernier respiration-belt waveform from 0 to 1. The newest sample is a moving dot and recent samples form a leftward trail; increasing belt force and inhalation move upward."
+          : "Preliminary one-dimensional ACC breathing waveform. The newest sample is a moving dot and recent samples form a leftward trail; rising follows the configured inhale direction."
         : definition?.channels
           ? "Live raw accelerometer X, Y, and Z signals in three stacked plots"
           : `Live ${definition?.label || "selected Polar H10"} signal`,
@@ -2720,10 +3054,11 @@
       oscEnabled: runtime.isBrowser ? false : elements["osc-toggle"].checked,
       csvEnabled: elements["csv-toggle"].checked,
       audioEnabled: elements["audio-toggle"].checked,
-      outputs: [...app.outputs],
-      metricOptions: Object.fromEntries([...app.outputs].map((id) => [id, metricOptionFor(id)])),
+      outputs: [...new Set([...app.savedOutputIds, ...app.outputs])],
+      metricOptions: Object.fromEntries([...new Set([...app.savedOutputIds, ...app.outputs])].map((id) => [id, metricOptionFor(id)])),
       customFormulas: app.customFormulas.map((formula) => ({ ...formula })),
     };
+    app.savedOutputIds = new Set(config.outputs);
     const sequence = ++app.outputSequence;
     try {
       const health = await runtime.updateOutputConfig(config);
@@ -2755,13 +3090,13 @@
   function updateDestinationHealth(health) {
     const lslText = runtime.isBrowser
       ? health.lsl
-      : elements["lsl-toggle"].checked ? health.lsl : "Local network · time synchronized";
+      : elements["lsl-toggle"].checked ? health.lsl : idleDestinationDetail("lsl");
     const oscText = runtime.isBrowser
       ? health.osc
-      : elements["osc-toggle"].checked ? health.osc : "UDP · localhost:9000";
+      : elements["osc-toggle"].checked ? health.osc : idleDestinationDetail("osc");
     const csvText = runtime.isBrowser
       ? elements["csv-detail"].textContent
-      : elements["csv-toggle"].checked ? health.csv : "All received raw data and produced metrics · bounded writer";
+      : elements["csv-toggle"].checked ? health.csv : idleDestinationDetail("csv");
     const audioText = elements["audio-toggle"].checked
       ? health.audio || audioDataLink?.supportStatus().reason
       : "CRC-checked stereo data modem · cable or digital recording";
@@ -2871,7 +3206,7 @@
       drawBreathingPhase(context, canvas, buffer);
       return;
     }
-    if (app.selectedVisual === "breathing_volume") {
+    if (definition.breathingTrail || app.selectedVisual === "breathing_volume") {
       drawBreathingTrail(context, canvas, buffer, definition, options);
       return;
     }
@@ -3235,7 +3570,25 @@
     return Math.round(value).toString();
   }
 
+  function ensureRendererPolarSource() {
+    if (app.activeSources.has("source-1")) {
+      selectSource("source-1");
+      return;
+    }
+    handleNativeEvent({
+      kind: "connection",
+      source: { id: "source-1", slot: "source-1", label: "Source 1", color: "#00c2ff", inputKind: "polarH10" },
+      connected: true,
+      streaming: true,
+      simulated: true,
+      deviceName: "Polar H10 A",
+      batteryPercent: 88,
+      message: "Raw ECG and accelerometer are streaming",
+    });
+  }
+
   async function renderInterfaceScenario(name) {
+    ensureRendererPolarSource();
     if (name === "multiple-colored-sources") {
       const polarSource = { id: "source-1", slot: "source-1", label: "Source 1", color: "#00c2ff", inputKind: "polarH10" };
       const vernierSource = { id: "source-2", slot: "source-2", label: "Source 2", color: "#ffb000", inputKind: "vernierGoDirect" };
@@ -3254,15 +3607,28 @@
         values: Array.from({ length: 80 }, (_, index) => 3.2 + Math.sin(index / 7) * 0.45),
       });
       refreshTelemetry();
-      app.outputs.add("raw_force");
       renderOutputs();
-      app.selectedVisual = "raw_force";
       rebuildVisualOptions();
-      elements["visual-source"].value = "raw_force";
       updateVisualLabels();
+      updateMetricFamilyUi();
+      renderMetricFilters();
+      renderMetricOptions();
       resizeCanvas();
       drawSignal();
       await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+      selectSource("source-1");
+      const polarSwitch = {
+        deviceProfile: document.body.dataset.deviceProfile,
+        visualOptions: [...elements["visual-source"].options].map((option) => option.value),
+        outputLabels: [...elements["output-chips"].querySelectorAll("header strong")].map((label) => label.textContent),
+        rawCardVisibility: {
+          ecg: !elements["raw-ecg-card"].hidden,
+          acc: !elements["raw-acc-card"].hidden,
+          force: !elements["raw-force-card"].hidden,
+          breathing: !elements["vernier-breathing-card"].hidden,
+        },
+      };
+      selectSource("source-2");
       return {
         scenario: name,
         selectedSource: app.selectedSourceId,
@@ -3271,10 +3637,26 @@
         chartColor: elements["chart-shell"].style.getPropertyValue("--source-color"),
         outputColors: [...elements["output-chips"].children].map((card) => card.style.getPropertyValue("--source-color")),
         forceValue: elements["raw-force-value"].textContent,
+        breathingValue: elements["vernier-breathing-value"].textContent,
+        selectedVisual: app.selectedVisual,
+        visualOptions: [...elements["visual-source"].options].map((option) => option.value),
+        deviceProfile: document.body.dataset.deviceProfile,
+        deviceProfileTitle: elements["device-profile-title"].textContent,
+        rawCardVisibility: {
+          ecg: !elements["raw-ecg-card"].hidden,
+          acc: !elements["raw-acc-card"].hidden,
+          force: !elements["raw-force-card"].hidden,
+          breathing: !elements["vernier-breathing-card"].hidden,
+        },
+        libraryIds: libraryCatalog().map((metric) => metric.id),
+        formulaLabHidden: elements["open-formula-lab"].hidden,
+        protocolCardCount: elements["device-protocol-cards"].children.length,
         streamName: streamOutputName(app.catalog.find((metric) => metric.id === "raw_force")),
+        polarSwitch,
       };
     }
     if (name === "metric-library-previews") {
+      if (app.activeSources.has("source-1")) selectSource("source-1");
       await Promise.all([ensureMetricPreviews(), ensurePreviewRecording()]);
       app.selectedMetricId = "raw_ecg";
       app.libraryMetricDraft = structuredClone(metricOptionFor("raw_ecg", { forSelection: true }));

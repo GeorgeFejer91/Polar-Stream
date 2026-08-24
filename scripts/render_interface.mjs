@@ -121,13 +121,37 @@ const page = await browser.newPage({
 try {
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.waitForFunction(() => Boolean(window.PolarInterfaceRenderer));
+  await page.evaluate(() => window.PolarInterfaceRenderer.ready());
+  const emptyState = await page.evaluate(() => ({
+    profile: document.body.dataset.deviceProfile,
+    outputEmptyVisible: !document.querySelector("#output-empty-state").hidden,
+    outputWorkspaceHidden: document.querySelector("#output-workspace").hidden,
+    visualEmptyVisible: !document.querySelector("#visual-empty-state").hidden,
+    visualWorkspaceHidden: document.querySelector("#visual-workspace").hidden,
+    outputState: document.querySelector("#output-state").textContent,
+    visualChoices: [...document.querySelector("#visual-source").options].map((option) => option.value),
+    outputCards: document.querySelector("#output-chips").children.length,
+  }));
+  assert.deepEqual(emptyState, {
+    profile: "none",
+    outputEmptyVisible: true,
+    outputWorkspaceHidden: true,
+    visualEmptyVisible: true,
+    visualWorkspaceHidden: true,
+    outputState: "Waiting",
+    visualChoices: [],
+    outputCards: 0,
+  }, "outputs or visualizations were instantiated before a device connected");
+  const emptyScreenshot = join(output, "empty-device-protocols.png");
+  await page.screenshot({ path: emptyScreenshot, fullPage: true });
+  assert.ok((await stat(emptyScreenshot)).size > 20_000, "empty protocol screenshot was unexpectedly empty");
   const measurements = new Map();
   for (const [scenario, label, expectedColor] of targets) {
     const result = await page.evaluate((name) => window.PolarInterfaceRenderer.render(name), scenario);
     assert.equal(result.currentLabel, label, `${scenario} rendered the wrong class label`);
     assert.equal(result.selectedVisual, "breathing_phase");
     assert.match(result.streamName, /_breathingPhase$/);
-    assert.equal(await page.locator("#chart-shell").getAttribute("class"), "chart-shell phase-visual");
+    assert.match(await page.locator("#chart-shell").getAttribute("class"), /\bphase-visual\b/);
     const canvas = await inspectCanvas(page);
     assert.ok(canvas.width > 100 && canvas.height > 100, `${scenario} did not render a circle`);
     assert.ok(colorDistance(canvas.color, expectedColor) < 55, `${scenario} rendered the wrong phase color: ${canvas.color}`);
@@ -199,7 +223,25 @@ try {
   assert.equal(multipleSources.chartColor, "#ffb000");
   assert.ok(multipleSources.outputColors.every((color) => color === "#ffb000"));
   assert.notEqual(multipleSources.forceValue, "—");
+  assert.match(multipleSources.breathingValue, /^(?:0\.\d{3}|1\.000)$/);
+  assert.equal(multipleSources.selectedVisual, "vernier_breathing");
+  assert.deepEqual(multipleSources.visualOptions, ["raw_force", "vernier_breathing"]);
+  assert.equal(multipleSources.deviceProfile, "vernier");
+  assert.match(multipleSources.deviceProfileTitle, /respiration belt/i);
+  assert.deepEqual(multipleSources.rawCardVisibility, { ecg: false, acc: false, force: true, breathing: true });
+  assert.deepEqual(multipleSources.libraryIds, ["raw_force"]);
+  assert.equal(multipleSources.formulaLabHidden, true);
+  assert.equal(multipleSources.protocolCardCount, 2);
   assert.match(multipleSources.streamName, /_source-2_rawForce$/);
+  assert.equal(multipleSources.polarSwitch.deviceProfile, "polar");
+  assert.ok(multipleSources.polarSwitch.visualOptions.includes("raw_ecg"));
+  assert.ok(multipleSources.polarSwitch.visualOptions.includes("raw_acc"));
+  assert.ok(!multipleSources.polarSwitch.visualOptions.includes("raw_force"));
+  assert.ok(!multipleSources.polarSwitch.visualOptions.includes("vernier_breathing"));
+  assert.ok(multipleSources.polarSwitch.outputLabels.includes("Raw ECG"));
+  assert.ok(multipleSources.polarSwitch.outputLabels.includes("Raw accelerometer"));
+  assert.ok(!multipleSources.polarSwitch.outputLabels.includes("Raw Go Direct force"));
+  assert.deepEqual(multipleSources.polarSwitch.rawCardVisibility, { ecg: true, acc: true, force: false, breathing: false });
   await page.screenshot({ path: join(output, "multiple-colored-sources.png"), fullPage: true });
 
   const library = await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));

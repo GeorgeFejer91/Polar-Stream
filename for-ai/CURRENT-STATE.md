@@ -198,6 +198,15 @@ Last verified: 2026-08-24
 - Demand-driven ECG, HRV, coherence, breathing, breathing-dynamics, quality,
   and explicitly experimental metric modules.
 - Three-panel Tauri UI with remembered native preferences.
+- Output and Visualization remain empty until at least one source connects.
+  The first source activates its device profile and default outputs; active
+  outputs then gate that profile's visualization choices. Polar activates raw
+  ECG/ACC and its ECG/ACC output library. Vernier exposes only raw force plus
+  the 0–1 breathing display and automatically presents the two native protocol
+  outputs (`rawVernier` Double64 and `vernierBreathing` Float32); rawForce is an
+  opt-in compatibility module. With mixed sources, source selection swaps the
+  complete preset, and deterministic/browser checks reject cross-family cards,
+  visualizations, and formulas.
 - The shared destination controls use a compact adaptive grid: four 44px
   LSL/OSC/CSV/audio toggle targets form a 2-by-2 block when the Output panel is
   wide enough and collapse to one column without horizontal overflow when it

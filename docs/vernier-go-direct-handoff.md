@@ -132,6 +132,7 @@ or unit conversion occurs in the raw stream.
 | Backpressure | bounded event/UI queues | bounded event/UI queues | UI may drop display batches; acquisition cannot wait for the WebView |
 | Diagnostics | staged input and output health | malformed/drop/high-water/decode-latency counters | loss and latency remain observable |
 | Output identity | source-suffixed ECG/ACC/metrics | source-suffixed rawVernier and vernierBreathing, plus compatible rawForce | streams from different bodies/devices cannot collide |
+| UI protocol | ECG/ACC defaults, metrics, and Formula Lab | automatic rawVernier/vernierBreathing, force/breathing visuals, optional rawForce | no modules before connection; selected source switches the complete profile |
 
 The key parallel is architectural, not a claim that the wire protocols are the
 same. Polar PMD carries device timestamps in measurement frames. Go Direct

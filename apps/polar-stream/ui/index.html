@@ -108,16 +108,32 @@
             <p class="eyebrow">Output</p>
             <h2 id="output-heading">Signals &amp; streams</h2>
           </div>
-          <span class="section-state live-state" id="output-state">2 signals</span>
+          <span class="section-state live-state" id="output-state">Waiting</span>
         </header>
 
+        <div class="panel-empty-state" id="output-empty-state">
+          <span class="panel-empty-mark">02</span>
+          <strong>Outputs appear after connection</strong>
+          <p>Connect a Polar H10, a Vernier GDX-RB, or both. Each device loads only its own default output protocol.</p>
+        </div>
+
+        <div class="output-workspace" id="output-workspace" hidden>
+
+        <div class="device-profile-card" id="device-profile-card" data-profile="polar">
+          <span class="device-profile-mark" id="device-profile-mark">H10</span>
+          <span class="device-profile-copy">
+            <strong id="device-profile-title">Polar H10 · ECG-first</strong>
+            <small id="device-profile-description">Primary use: raw ECG and cardiac timing. Accelerometer outputs are secondary motion and experimental breathing signals.</small>
+          </span>
+        </div>
+
         <div class="raw-grid" aria-label="Latest raw sensor values">
-          <article class="raw-card ecg-card">
+          <article class="raw-card ecg-card" id="raw-ecg-card">
             <header><span class="signal-swatch"></span><strong>Raw ECG</strong><small>µV</small></header>
             <div class="raw-reading"><span id="raw-ecg-value">—</span><small id="ecg-rate">130 samples/s</small></div>
             <svg class="spark-placeholder" viewBox="0 0 280 44" preserveAspectRatio="none" aria-hidden="true"><path id="ecg-spark" d="M0 24h280" /></svg>
           </article>
-          <article class="raw-card acc-card">
+          <article class="raw-card acc-card" id="raw-acc-card">
             <header><span class="signal-swatch"></span><strong>Raw accelerometer</strong><small>mg</small></header>
             <div class="acc-reading">
               <span><small>X</small><strong id="raw-acc-x">—</strong></span>
@@ -126,9 +142,14 @@
             </div>
             <small class="sample-rate">200 samples/s · 3 axes</small>
           </article>
-          <article class="raw-card force-card">
+          <article class="raw-card force-card" id="raw-force-card" hidden>
             <header><span class="signal-swatch"></span><strong>Raw Go Direct force</strong><small>N</small></header>
             <div class="raw-reading"><span id="raw-force-value">—</span><small>configured 10 samples/s</small></div>
+          </article>
+          <article class="raw-card vernier-breathing-card" id="vernier-breathing-card" hidden>
+            <header><span class="signal-swatch"></span><strong>Breathing waveform</strong><small>0–1</small></header>
+            <div class="raw-reading"><span id="vernier-breathing-value">—</span><small>relative belt force</small></div>
+            <small class="sample-rate">Inhale rises · derived display; raw force is unchanged</small>
           </article>
         </div>
 
@@ -139,6 +160,11 @@
             <span class="valid-mark" aria-hidden="true">✓</span>
           </div>
           <p class="field-help" id="stream-name-preview">Publishes Polar-H10_rawECG · Polar-H10_rawACC</p>
+        </div>
+
+        <div class="device-protocol-block" id="device-protocol-block" hidden>
+          <div class="mini-heading"><strong>Automatic Vernier LSL protocol</strong><span>Respiration</span></div>
+          <div class="device-protocol-cards" id="device-protocol-cards"></div>
         </div>
 
         <div class="destination-block">
@@ -202,12 +228,13 @@
         </div>
 
         <div class="outputs-block">
-          <div class="mini-heading"><strong>Included outputs</strong><span id="included-count">2 active</span></div>
+          <div class="mini-heading"><strong id="included-output-heading">Included H10 outputs</strong><span id="included-count">2 active</span></div>
           <div class="output-cards" id="output-chips"></div>
           <button class="add-output-button" id="open-output-dialog">
             <span aria-hidden="true">＋</span>
             Add output
           </button>
+        </div>
         </div>
       </section>
 
@@ -220,6 +247,14 @@
           </div>
           <span class="section-state" id="render-rate">Idle</span>
         </header>
+
+        <div class="panel-empty-state visual-empty-state" id="visual-empty-state">
+          <span class="panel-empty-mark">03</span>
+          <strong>Visualizations follow outputs</strong>
+          <p>Connect a device first. Its default outputs determine which live visualizations become available here.</p>
+        </div>
+
+        <div class="visual-workspace" id="visual-workspace" hidden>
 
         <div class="visual-toolbar">
           <label for="visual-device">Source</label>
@@ -238,8 +273,8 @@
           <div class="chart-y-labels" aria-hidden="true"><span id="y-max">—</span><span>0</span><span id="y-min">—</span></div>
           <div class="chart-empty" id="chart-empty">
             <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M7 35h10l5-14 8 28 7-23 5 9h15"/></svg>
-            <strong>Waiting for signal</strong>
-            <span>Connect a Polar H10 to begin.</span>
+            <strong id="chart-empty-title">Waiting for ECG</strong>
+            <span id="chart-empty-detail">Connect a Polar H10 to begin.</span>
           </div>
         </div>
 
@@ -253,13 +288,14 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 5 14h6l-1 8 9-13h-6V2Z"/></svg>
           <div><strong id="pipeline-title">Acquisition stays native</strong><span id="pipeline-detail">The chart receives display-rate batches; LSL and OSC do not wait for rendering.</span></div>
         </div>
+        </div>
       </section>
     </main>
 
     <footer class="status-bar">
       <span><i class="footer-dot"></i><span id="footer-status">Engine ready</span></span>
       <span id="sample-counter">0 samples</span>
-      <span>Polar H10 · unofficial research tool</span>
+      <span id="footer-device-role">No device protocol active</span>
     </footer>
 
     <dialog class="output-dialog" id="output-dialog" data-mobile-view="browse" aria-labelledby="output-dialog-title">
@@ -276,7 +312,7 @@
           <p>Choose a signal, review its animated output, scientific summary, and sources, then add it.</p>
           <button class="secondary-button compact" id="open-formula-lab" type="button">Open Formula Lab</button>
         </div>
-        <section class="metric-family-picker" aria-labelledby="metric-family-heading">
+        <section class="metric-family-picker" id="metric-family-picker" aria-labelledby="metric-family-heading">
           <div class="metric-family-heading">
             <span id="metric-family-heading">Signal family</span>
             <strong id="metric-family-context">ECG-first outputs</strong>
@@ -292,6 +328,27 @@
             </button>
           </div>
           <p id="metric-family-note">Start with ECG for the signal the H10 is designed to measure; interpretation limits still apply.</p>
+        </section>
+        <section class="vernier-protocol-panel" id="vernier-protocol-panel" hidden aria-labelledby="vernier-protocol-title">
+          <header>
+            <span>GDX-RB DEVICE PROTOCOL</span>
+            <strong id="vernier-protocol-title">Respiration-belt outputs</strong>
+          </header>
+          <div class="vernier-protocol-grid">
+            <article>
+              <span>RAW · DOUBLE64</span>
+              <strong>Complete Vernier recording</strong>
+              <code>_rawVernier</code>
+              <small>All metadata-defined numeric channels, sparse NaN values, timing and loss diagnostics.</small>
+            </article>
+            <article>
+              <span>BREATH · FLOAT32</span>
+              <strong>Relative breathing waveform</strong>
+              <code>_vernierBreathing</code>
+              <small>Causal 30-second normalization, bounded 0–1, with increasing belt force moving upward.</small>
+            </article>
+          </div>
+          <p id="vernier-protocol-note">Both named streams are created automatically when native LSL is enabled. The optional raw-force compatibility output remains below.</p>
         </section>
         <div class="metric-library-tools">
           <label class="metric-search">

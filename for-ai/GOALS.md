@@ -68,6 +68,14 @@ items into the dated history instead of silently deleting them.
    - Keep the force-only browser transport and lack of browser LSL explicit.
      Retain official liblsl-consumer coverage and physically requalify the
      revised all-channel mask/two-outlet path before broadening hardware claims.
+5. Preserve device-first protocol modularity in the canonical interface.
+   - Keep Output and Visualization empty when no source is connected.
+   - Treat connection as the only trigger for a device profile's default
+     outputs, and treat those outputs as the only trigger for applicable
+     visualizations.
+   - Keep Polar's ECG/ACC library, Vernier's raw/breathing protocol, and future
+     device profiles independently declarative. Mixed connections must switch
+     complete profiles by selected source without cross-family UI leakage.
 
 ## Next
 

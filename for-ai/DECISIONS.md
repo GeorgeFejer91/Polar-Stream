@@ -1,5 +1,21 @@
 # Decision log
 
+## 2026-08-24 — Make the interface device-first, then output-first
+
+Represent no connected source as a real `none` profile: Output and Visualization
+remain empty and expose no configuration or display choices. A first connection
+activates only the selected device profile's defaults. Polar activates raw ECG
+and raw accelerometer; Vernier presents the automatic complete `rawVernier` and
+derived `vernierBreathing` protocol outputs, while the older rawForce route stays
+an opt-in compatibility module.
+
+Rebuild visualization choices from the selected source profile and its active or
+automatic outputs. When Polar and Vernier are connected together, selecting a
+source swaps the whole visible preset—including raw cards, output library,
+Formula Lab availability, automatic protocol cards, and visualizations—without
+mixing device families. Keep preferences transport-free, but do not instantiate
+visible modules before a matching device connection.
+
 ## 2026-08-24 — Make the complete Vernier schema raw and the waveform derived
 
 After confirming the GDX-RB and its required channel-1 Force (N) sensor, decode
