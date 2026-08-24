@@ -417,6 +417,22 @@ try {
   assert.equal(await desktop.locator("#audio-destination-row").isVisible(), true, "audio-data toggle is missing");
   assert.equal(await desktop.locator("#lsl-destination-row").isVisible(), true, "shared LSL control is missing in browser mode");
   assert.equal(await desktop.locator("#osc-destination-row").isVisible(), true, "shared OSC control is missing in browser mode");
+  const destinationLayout = await desktop.locator(".destination-options").evaluate((group) => {
+    const rows = [...group.querySelectorAll(".destination-row")].map((row) => {
+      const bounds = row.getBoundingClientRect();
+      return { left: Math.round(bounds.left), top: Math.round(bounds.top), height: bounds.height };
+    });
+    return {
+      columnCount: new Set(rows.map((row) => row.left)).size,
+      rowCount: new Set(rows.map((row) => row.top)).size,
+      heights: rows.map((row) => row.height),
+      height: group.getBoundingClientRect().height,
+    };
+  });
+  assert.equal(destinationLayout.columnCount, 2, `desktop destinations are not arranged in two columns: ${JSON.stringify(destinationLayout)}`);
+  assert.equal(destinationLayout.rowCount, 2, `desktop destinations are not arranged in two rows: ${JSON.stringify(destinationLayout)}`);
+  assert.ok(destinationLayout.heights.every((height) => height >= 44 && height <= 52), `desktop destination controls are not compact: ${JSON.stringify(destinationLayout)}`);
+  assert.ok(destinationLayout.height <= 110, `desktop destination group is too tall: ${JSON.stringify(destinationLayout)}`);
   assert.equal(await desktop.locator("#lsl-toggle").isEnabled(), true, "browser LSL control must remain interactive so it can explain the limitation");
   assert.equal(await desktop.locator("#osc-toggle").isEnabled(), true, "browser OSC control must remain interactive so it can explain the limitation");
   await desktop.locator("#lsl-destination-row").click();

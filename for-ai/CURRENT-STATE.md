@@ -198,6 +198,10 @@ Last verified: 2026-08-24
 - Demand-driven ECG, HRV, coherence, breathing, breathing-dynamics, quality,
   and explicitly experimental metric modules.
 - Three-panel Tauri UI with remembered native preferences.
+- The shared destination controls use a compact adaptive grid: four 44px
+  LSL/OSC/CSV/audio toggle targets form a 2-by-2 block when the Output panel is
+  wide enough and collapse to one column without horizontal overflow when it
+  is narrow. Browser-only capability and recorder messages remain full width.
 - Deterministic metric previews derived from the canonical anonymized 60-second
   real H10 ECG/ACC recording, with its fingerprint checked in the asset. Only the
   selected metric renders an SVG loop; list rows remain static. Formula Lab

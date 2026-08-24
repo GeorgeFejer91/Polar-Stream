@@ -151,33 +151,44 @@
             </span>
             <strong class="local-only-mark">TAB</strong>
           </div>
-          <label class="destination-row" id="lsl-destination-row">
-            <span class="protocol-mark lsl-mark">LSL</span>
-            <span><strong>Lab Streaming Layer</strong><small id="lsl-detail">Local network · time synchronized</small></span>
-            <input id="lsl-toggle" class="switch-input" type="checkbox" />
-            <span class="switch" aria-hidden="true"></span>
-          </label>
-          <label class="destination-row" id="osc-destination-row">
-            <span class="protocol-mark osc-mark">OSC</span>
-            <span><strong>Open Sound Control</strong><small id="osc-detail">UDP · localhost:9000</small></span>
-            <input id="osc-toggle" class="switch-input" type="checkbox" />
-            <span class="switch" aria-hidden="true"></span>
-          </label>
+          <div class="destination-options">
+            <label class="destination-row" id="lsl-destination-row">
+              <span class="protocol-mark lsl-mark">LSL</span>
+              <span><strong>Lab Streaming Layer</strong><small id="lsl-detail">Local network · time synchronized</small></span>
+              <input id="lsl-toggle" class="switch-input" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="destination-row" id="osc-destination-row">
+              <span class="protocol-mark osc-mark">OSC</span>
+              <span><strong>Open Sound Control</strong><small id="osc-detail">UDP · localhost:9000</small></span>
+              <input id="osc-toggle" class="switch-input" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="destination-row" id="csv-destination-row">
+              <span class="protocol-mark csv-mark">CSV</span>
+              <span>
+                <strong>Save local CSV</strong>
+                <small id="csv-detail">All received raw data and produced metrics · bounded writer</small>
+              </span>
+              <input id="csv-toggle" class="switch-input" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="destination-row" id="audio-destination-row">
+              <span class="protocol-mark audio-mark">PCM</span>
+              <span>
+                <strong>Audio data output <em>EXPERIMENTAL</em></strong>
+                <small id="audio-detail">CRC-checked stereo data modem · cable or digital recording</small>
+              </span>
+              <input id="audio-toggle" class="switch-input" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+          </div>
           <div class="destination-error" id="native-output-browser-error" role="alert" hidden>
             <span id="native-output-browser-error-text">This output requires the installed Polar Stream app.</span>
             <a id="desktop-app-download" href="#" target="_blank" rel="noreferrer">
               Download the installed app
             </a>
           </div>
-          <label class="destination-row" id="csv-destination-row">
-            <span class="protocol-mark csv-mark">CSV</span>
-            <span>
-              <strong>Save local CSV</strong>
-              <small id="csv-detail">All received raw data and produced metrics · bounded writer</small>
-            </span>
-            <input id="csv-toggle" class="switch-input" type="checkbox" />
-            <span class="switch" aria-hidden="true"></span>
-          </label>
           <div class="browser-recorder-actions" id="browser-recorder-actions" hidden>
             <span>
               <strong class="local-only-mark" id="browser-recorder-status">READY</strong>
@@ -188,15 +199,6 @@
               <button class="recorder-link" id="browser-discard-button" type="button" hidden>Discard</button>
             </span>
           </div>
-          <label class="destination-row" id="audio-destination-row">
-            <span class="protocol-mark audio-mark">PCM</span>
-            <span>
-              <strong>Audio data output <em>EXPERIMENTAL</em></strong>
-              <small id="audio-detail">CRC-checked stereo data modem · cable or digital recording</small>
-            </span>
-            <input id="audio-toggle" class="switch-input" type="checkbox" />
-            <span class="switch" aria-hidden="true"></span>
-          </label>
         </div>
 
         <div class="outputs-block">
