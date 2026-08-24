@@ -112,7 +112,11 @@ const server = await startServer();
 const address = server.address();
 const baseUrl = `http://127.0.0.1:${address.port}/index.html?renderer=1`;
 const browser = await chromium.launch({ headless: true });
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+const page = await browser.newPage({
+  viewport: { width: 1440, height: 900 },
+  deviceScaleFactor: 1,
+  locale: "en-US",
+});
 
 try {
   await page.goto(baseUrl, { waitUntil: "networkidle" });

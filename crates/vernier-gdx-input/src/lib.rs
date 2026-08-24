@@ -10,7 +10,10 @@ use std::{
 };
 
 use btleplug::{
-    api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType},
+    api::{
+        Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter,
+        WriteType,
+    },
     platform::{Manager, Peripheral},
 };
 use futures_util::{Stream, StreamExt};
@@ -592,11 +595,25 @@ async fn write_command(
     for chunk in command.chunks(ATT_PAYLOAD_BYTES) {
         timed(
             "Go Direct command write",
-            peripheral.write(characteristic, chunk, WriteType::WithResponse),
+            peripheral.write(
+                characteristic,
+                chunk,
+                command_write_type(characteristic.properties)?,
+            ),
         )
         .await?;
     }
     Ok(())
+}
+
+fn command_write_type(properties: CharPropFlags) -> Result<WriteType, String> {
+    if properties.contains(CharPropFlags::WRITE_WITHOUT_RESPONSE) {
+        return Ok(WriteType::WithoutResponse);
+    }
+    if properties.contains(CharPropFlags::WRITE) {
+        return Ok(WriteType::WithResponse);
+    }
+    Err("Go Direct command characteristic is not writable.".into())
 }
 
 async fn wait_for_response<S>(
@@ -773,5 +790,34 @@ mod tests {
             respiration_period(&sensor, DEFAULT_PERIOD_US).unwrap(),
             200_000
         );
+    }
+
+    #[test]
+    fn command_writes_without_response_when_supported() {
+        assert!(matches!(
+            command_write_type(CharPropFlags::WRITE_WITHOUT_RESPONSE),
+            Ok(WriteType::WithoutResponse)
+        ));
+    }
+
+    #[test]
+    fn command_write_falls_back_to_write_with_response() {
+        assert!(matches!(
+            command_write_type(CharPropFlags::WRITE),
+            Ok(WriteType::WithResponse)
+        ));
+    }
+
+    #[test]
+    fn command_write_prefers_without_response_when_both_are_supported() {
+        assert!(matches!(
+            command_write_type(CharPropFlags::WRITE_WITHOUT_RESPONSE | CharPropFlags::WRITE),
+            Ok(WriteType::WithoutResponse)
+        ));
+    }
+
+    #[test]
+    fn command_write_rejects_a_nonwritable_characteristic() {
+        assert!(command_write_type(CharPropFlags::READ).is_err());
     }
 }

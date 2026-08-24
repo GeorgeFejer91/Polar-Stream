@@ -56,6 +56,7 @@ jobs:
       - run: python scripts/generate_metric_previews.py --check
       - run: npm run check:catalog
       - run: node --test apps/polar-stream/ui/tests/recorded-preview.test.cjs
+      - run: node --test apps/polar-stream/ui/tests/preferences.test.cjs
       - run: npx playwright install --with-deps chromium
       - run: node --check apps/polar-stream/ui/runtime-api.js
       - run: node --check apps/polar-stream/ui/polar-web-bluetooth.js

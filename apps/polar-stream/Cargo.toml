@@ -1,6 +1,6 @@
 [package]
 name = "polar-stream"
-description = "Low-latency Polar H10 bridge for LSL, OSC, local CSV, and live visualization"
+description = "Low-latency Polar H10 and Vernier GDX-RB bridge for LSL, OSC, local CSV, and live visualization"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

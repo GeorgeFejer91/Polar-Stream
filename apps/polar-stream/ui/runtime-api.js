@@ -231,8 +231,8 @@
     async migrateLegacyPreferences(legacy) {
       return isNative ? invoke("migrate_legacy_preferences", { legacy }) : legacy;
     },
-    async scanDevices() {
-      if (isNative) return invoke("scan_devices");
+    async scanDevices(preferredDeviceId = null) {
+      if (isNative) return invoke("scan_devices", { preferredDeviceId });
       return previewDelay([], 180);
     },
     async connectDevice(deviceId, onEvent) {

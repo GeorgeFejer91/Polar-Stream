@@ -6,6 +6,7 @@
   const browserSession = window.PolarBrowserSession;
   const audioDataLink = window.PolarAudioDataLink;
   const preferences = window.PolarPreferences;
+  const rendererPreferences = preferences.load();
   const previewFixtureApi = window.PolarPreviewFixture;
   const formulaPreview = window.PolarFormulaPreview;
   let metricPreviews = window.PolarMetricPreviews || null;
@@ -231,7 +232,7 @@
   const ids = [
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value", "connection-metric-1-label", "connection-metric-1-value", "connection-metric-2-label", "connection-metric-2-value", "active-source-strip",
-    "scan-button", "scan-caption", "device-list", "activity-list", "output-state", "raw-ecg-value",
+    "scan-button", "scan-caption", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "activity-list", "output-state", "raw-ecg-value",
     "raw-acc-x", "raw-acc-y", "raw-acc-z", "raw-force-value", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
     "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
@@ -287,11 +288,15 @@
     selectedSourceId: null,
     pendingDevice: null,
     devices: [],
+    keepVernierAwake: rendererPreferences.keepVernierAwake === true,
+    vernierReconnectTimer: null,
+    vernierReconnectAttempt: 0,
+    manualDisconnects: new Set(),
     breathingSettings: defaultBreathingSettings(),
     phaseMotion: { level: 0.5, velocity: 0, lastAt: 0 },
     preferences: isNative
-      ? { streamName: null, lastDevice: null, outputConfig: null }
-      : preferences.load(),
+      ? { streamName: null, lastDevice: null, outputConfig: null, keepVernierAwake: rendererPreferences.keepVernierAwake === true }
+      : rendererPreferences,
     activity: [{ time: "NOW", message: isNative ? "Bluetooth interface ready" : "Browser demo ready" }],
   };
 
@@ -491,6 +496,7 @@
         streamName: bootstrap.preferences.outputConfig?.streamName || null,
         outputConfig: bootstrap.preferences.outputConfig || null,
         lastDevice: bootstrap.preferences.lastDevice || null,
+        keepVernierAwake: rendererPreferences.keepVernierAwake === true,
       };
     }
     const initialConfig = isNative
@@ -509,6 +515,8 @@
     elements["lsl-toggle"].checked = Boolean(initialConfig.lslEnabled);
     elements["osc-toggle"].checked = Boolean(initialConfig.oscEnabled);
     elements["csv-toggle"].checked = runtime.isBrowser ? false : Boolean(initialConfig.csvEnabled);
+    elements["keep-vernier-awake"].checked = app.keepVernierAwake;
+    elements["keep-awake-control"].hidden = !isNative;
     // Web Audio must be resumed from an explicit user gesture. Never restore
     // an emitting audio modem silently after launch or reload.
     elements["audio-toggle"].checked = false;
@@ -564,6 +572,25 @@
       void scanDevices();
     });
     elements["disconnect-button"].addEventListener("click", disconnectDevice);
+    elements["keep-vernier-awake"].addEventListener("change", () => {
+      app.keepVernierAwake = elements["keep-vernier-awake"].checked;
+      app.preferences = {
+        ...app.preferences,
+        keepVernierAwake: app.keepVernierAwake,
+      };
+      preferences.saveKeepVernierAwake(app.keepVernierAwake);
+      if (!app.keepVernierAwake) {
+        cancelVernierReconnect();
+        elements["keep-awake-status"].textContent = "Live measurement continues while connected; automatic reconnect is off.";
+        addActivity("Vernier keep-connected retry disabled");
+        return;
+      }
+      elements["keep-awake-status"].textContent = hasActiveVernierSource()
+        ? "Live 10 Hz measurement active · automatic reconnect armed."
+        : "Maintains the live 10 Hz measurement and reconnects after an unexpected drop.";
+      addActivity("Vernier keep-connected retry enabled");
+      if (!hasActiveVernierSource()) scheduleVernierReconnect(app.preferences.lastDevice);
+    });
     elements["lsl-toggle"].addEventListener("change", () => handleNativeDestinationToggle("LSL"));
     elements["osc-toggle"].addEventListener("change", () => handleNativeDestinationToggle("OSC"));
     elements["csv-toggle"].addEventListener("change", async () => {
@@ -777,8 +804,48 @@
     observer.observe(elements["chart-shell"]);
   }
 
-  async function scanDevices({ automatic = false } = {}) {
-    if (app.scanning) return;
+  function hasActiveVernierSource() {
+    return [...app.activeSources.values()].some((source) => source.inputKind === "vernierGoDirect");
+  }
+
+  function cancelVernierReconnect({ resetAttempts = true } = {}) {
+    if (app.vernierReconnectTimer) window.clearTimeout(app.vernierReconnectTimer);
+    app.vernierReconnectTimer = null;
+    if (resetAttempts) app.vernierReconnectAttempt = 0;
+  }
+
+  function scheduleVernierReconnect(preferredDevice = null) {
+    if (!isNative || !app.keepVernierAwake || hasActiveVernierSource()) return;
+    const device = preferredDevice?.id?.startsWith("vernier:")
+      ? preferredDevice
+      : app.preferences.lastDevice?.id?.startsWith("vernier:")
+        ? app.preferences.lastDevice
+        : null;
+    if (!device) return;
+
+    cancelVernierReconnect({ resetAttempts: false });
+    const attempt = app.vernierReconnectAttempt;
+    const delayMilliseconds = Math.min(30_000, 1_500 * (2 ** Math.min(attempt, 5)));
+    app.vernierReconnectAttempt += 1;
+    const delaySeconds = Math.ceil(delayMilliseconds / 1000);
+    elements["keep-awake-status"].textContent = `Vernier link dropped · retrying in ${delaySeconds} s while the sensor advertises.`;
+    app.vernierReconnectTimer = window.setTimeout(() => {
+      app.vernierReconnectTimer = null;
+      if (!app.keepVernierAwake || hasActiveVernierSource()) return;
+      if (app.scanning || app.connecting) {
+        scheduleVernierReconnect(device);
+        return;
+      }
+      addActivity(`Vernier keep-connected retry ${app.vernierReconnectAttempt}`);
+      void scanDevices({ automatic: true, keepAwakeRetry: true });
+    }, delayMilliseconds);
+  }
+
+  async function scanDevices({ automatic = false, keepAwakeRetry = false } = {}) {
+    if (app.scanning) {
+      if (keepAwakeRetry) scheduleVernierReconnect(app.preferences.lastDevice);
+      return;
+    }
     app.scanning = true;
     elements["scan-button"].disabled = true;
     elements["scan-button"].classList.add("scanning");
@@ -788,7 +855,9 @@
     addActivity(automatic ? "Looking for last used sensor" : "BLE scan started");
 
     try {
-      const discovered = await runtime.scanDevices();
+      const discovered = await runtime.scanDevices(
+        automatic ? app.preferences.lastDevice?.id || null : null,
+      );
       const devices = [...runtime.getInputModules(), ...discovered]
         .filter((device, index, all) => all.findIndex((candidate) => candidate.id === device.id) === index);
       app.devices = devices;
@@ -808,6 +877,7 @@
         elements["input-state"].textContent = polarCount ? `${polarCount} found` : "Mock ready";
         setTopStatus("Last used sensor unavailable · choose below");
         addActivity("Last used sensor was not found");
+        if (keepAwakeRetry) scheduleVernierReconnect(app.preferences.lastDevice);
         return;
       }
 
@@ -829,6 +899,7 @@
       elements["input-state"].textContent = "Error";
       addActivity(message);
       toast(message, true);
+      if (keepAwakeRetry) scheduleVernierReconnect(app.preferences.lastDevice);
     } finally {
       app.scanning = false;
       elements["scan-button"].disabled = false;
@@ -918,6 +989,8 @@
     const isMock = runtime.isMockDevice(device.id);
     const isWebBluetooth = runtime.isBrowserBluetoothDevice(device.id);
     const isWebVernier = runtime.isBrowserVernierDevice(device.id);
+    const isNativeVernier = device.inputKind === "vernierGoDirect";
+    const sensorLabel = isNativeVernier || isWebVernier ? "Vernier GDX-RB" : "Polar H10";
     app.connecting = true;
     app.pendingDevice = device;
     elements["scan-button"].disabled = true;
@@ -928,7 +1001,7 @@
         ? "Starting recorded Polar H10 preview"
         : isWebBluetooth || isWebVernier
           ? "Waiting for browser Bluetooth selection"
-          : automatic ? "Reconnecting to last used Polar H10" : "Connecting to Polar H10",
+          : automatic ? `Reconnecting to last used ${sensorLabel}` : `Connecting to ${sensorLabel}`,
       "working",
     );
     elements["input-state"].textContent = "Connecting";
@@ -982,6 +1055,12 @@
   async function disconnectDevice() {
     const sourceId = app.selectedSourceId;
     if (!sourceId) return;
+    await disconnectSource(sourceId);
+  }
+
+  async function disconnectSource(sourceId) {
+    app.manualDisconnects.add(sourceId);
+    cancelVernierReconnect();
     try {
       const result = await runtime.disconnectDevice(sourceId);
       if (!result?.emitted && app.activeSources.has(sourceId)) {
@@ -992,6 +1071,7 @@
         });
       }
     } catch (error) {
+      app.manualDisconnects.delete(sourceId);
       toast(runtime.formatError(error), true);
     }
   }
@@ -1112,7 +1192,7 @@
       close.setAttribute("aria-label", `Disconnect ${source.label}`);
       close.addEventListener("click", (event) => {
         event.stopPropagation();
-        void runtime.disconnectDevice(source.id);
+        void disconnectSource(source.id);
       });
       chip.append(label, close);
       return chip;
@@ -1184,18 +1264,28 @@
 
   function updateConnection(event, device = null) {
     const source = eventSource(event, device);
-    if (event.connected && source) registerSource({
-      ...source,
-      deviceName: event.deviceName,
-      batteryPercent: event.batteryPercent,
-      deviceModel: event.deviceModel,
-      firmwareVersion: event.firmwareVersion,
-      sensorNumber: event.sensorNumber,
-      sensorName: event.sensorName,
-      sensorUnit: event.sensorUnit,
-      samplePeriodUs: event.samplePeriodUs,
-      message: event.message,
-    }, { focus: true });
+    const disconnectedVernier = !event.connected && source?.inputKind === "vernierGoDirect";
+    const deliberateDisconnect = !event.connected && source
+      ? app.manualDisconnects.has(source.id)
+      : false;
+    if (deliberateDisconnect) {
+      window.setTimeout(() => app.manualDisconnects.delete(source.id), 5_000);
+    }
+    if (event.connected && source) {
+      app.manualDisconnects.delete(source.id);
+      registerSource({
+        ...source,
+        deviceName: event.deviceName,
+        batteryPercent: event.batteryPercent,
+        deviceModel: event.deviceModel,
+        firmwareVersion: event.firmwareVersion,
+        sensorNumber: event.sensorNumber,
+        sensorName: event.sensorName,
+        sensorUnit: event.sensorUnit,
+        samplePeriodUs: event.samplePeriodUs,
+        message: event.message,
+      }, { focus: true });
+    }
     if (!event.connected && source) {
       app.activeSources.delete(source.id);
       sourceBuffers.delete(source.id);
@@ -1233,6 +1323,12 @@
     renderDevices(app.devices);
     renderActiveSources();
     if (app.connected) updateSelectedSourceUi();
+    if (event.connected && source?.inputKind === "vernierGoDirect") {
+      cancelVernierReconnect();
+      elements["keep-awake-status"].textContent = app.keepVernierAwake
+        ? "Live 10 Hz measurement active · automatic reconnect armed."
+        : "Live 10 Hz measurement active · automatic reconnect is off.";
+    }
     elements["connection-card"].classList.toggle("connected", app.connected);
     elements["disconnect-button"].hidden = !app.connected;
     elements["connection-meta"].hidden = !app.connected;
@@ -1257,7 +1353,12 @@
         : runtime.isBrowser ? "Browser inputs ready" : "Ready to connect",
       app.connected ? "connected" : "idle",
     );
-    addActivity(app.connected ? `${event.deviceName} ${simulated ? "started" : "connected"}` : simulated ? "Recorded preview stopped" : "Sensor disconnected");
+    addActivity(event.connected
+      ? `${event.deviceName} ${simulated ? "started" : "connected"}`
+      : simulated ? "Recorded preview stopped" : `${event.deviceName || "Sensor"} disconnected`);
+    if (disconnectedVernier && !deliberateDisconnect) {
+      scheduleVernierReconnect(device || source);
+    }
     if (!app.connected) elements["render-rate"].textContent = "Idle";
     if (elements["output-dialog"].open) {
       updateMetricFamilyUi();

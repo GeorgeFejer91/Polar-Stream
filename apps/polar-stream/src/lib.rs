@@ -510,7 +510,10 @@ fn validate_saved_device(device: SavedDevice) -> CommandResult<SavedDevice> {
 }
 
 #[tauri::command]
-async fn scan_devices(state: State<'_, AppState>) -> CommandResult<Vec<DeviceSummary>> {
+async fn scan_devices(
+    state: State<'_, AppState>,
+    preferred_device_id: Option<String>,
+) -> CommandResult<Vec<DeviceSummary>> {
     let _configuration = state.input_configuration.lock().await;
     if !state.active_sources.lock().await.is_empty() {
         return Err(CommandError::new(
@@ -519,37 +522,60 @@ async fn scan_devices(state: State<'_, AppState>) -> CommandResult<Vec<DeviceSum
             true,
         ));
     }
-    let polar = state.polar_input.scan().await;
-    let vernier = state.gdx_input.scan().await;
+    let scan_polar = async || {
+        state.polar_input.scan().await.map(|found| {
+            found
+                .into_iter()
+                .map(|device| DeviceSummary {
+                    id: format!("polar:{}", device.id),
+                    name: device.name,
+                    rssi: device.rssi,
+                    input_kind: InputKind::PolarH10,
+                    model_code: "H10".into(),
+                    detail: "Polar H10 · ECG + accelerometer".into(),
+                    respiration_belt_candidate: false,
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let scan_vernier = async || {
+        state.gdx_input.scan().await.map(|found| {
+            found
+                .into_iter()
+                .map(|device| DeviceSummary {
+                    id: format!("vernier:{}", device.id),
+                    name: device.name,
+                    rssi: device.rssi,
+                    input_kind: InputKind::VernierGoDirect,
+                    model_code: device.model_code.into(),
+                    detail: if device.respiration_belt_candidate {
+                        format!("{} · respiration belt · Force (N)", device.model_code)
+                    } else {
+                        format!(
+                            "{} · model and channels verified on connection",
+                            device.model_name
+                        )
+                    },
+                    respiration_belt_candidate: device.respiration_belt_candidate,
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let preferred_kind = preferred_device_id
+        .as_deref()
+        .and_then(|device_id| parse_device_id(device_id).ok())
+        .map(|(kind, _)| kind);
+    let (polar, vernier) = match preferred_kind {
+        Some(InputKind::PolarH10) => (scan_polar().await, Ok(Vec::new())),
+        Some(InputKind::VernierGoDirect) => (Ok(Vec::new()), scan_vernier().await),
+        None => tokio::join!(scan_polar(), scan_vernier()),
+    };
     let mut devices = Vec::new();
     if let Ok(found) = &polar {
-        devices.extend(found.iter().map(|device| DeviceSummary {
-            id: format!("polar:{}", device.id),
-            name: device.name.clone(),
-            rssi: device.rssi,
-            input_kind: InputKind::PolarH10,
-            model_code: "H10".into(),
-            detail: "Polar H10 · ECG + accelerometer".into(),
-            respiration_belt_candidate: false,
-        }));
+        devices.extend(found.iter().cloned());
     }
     if let Ok(found) = &vernier {
-        devices.extend(found.iter().map(|device| DeviceSummary {
-            id: format!("vernier:{}", device.id),
-            name: device.name.clone(),
-            rssi: device.rssi,
-            input_kind: InputKind::VernierGoDirect,
-            model_code: device.model_code.into(),
-            detail: if device.respiration_belt_candidate {
-                format!("{} · respiration belt · Force (N)", device.model_code)
-            } else {
-                format!(
-                    "{} · model and channels verified on connection",
-                    device.model_name
-                )
-            },
-            respiration_belt_candidate: device.respiration_belt_candidate,
-        }));
+        devices.extend(found.iter().cloned());
     }
     if devices.is_empty() {
         let message = format!(

@@ -1,6 +1,6 @@
 # Vernier Go Direct and multi-source handoff
 
-Last updated: 2026-08-20
+Last updated: 2026-08-24
 
 ## Status and scope
 
@@ -8,7 +8,11 @@ Polar Stream now has an independent Go Direct implementation in Rust and a
 matching Chromium Web Bluetooth adapter. No Respyra source code or GPL Go Direct
 implementation is imported. The protocol shape was checked against Vernier's
 official [godirect-js](https://github.com/VernierST/godirect-js) and
-[Go Direct examples](https://github.com/VernierST/godirect-examples).
+[godirect-py](https://github.com/VernierST/godirect-py) implementations plus
+the [Go Direct examples](https://github.com/VernierST/godirect-examples).
+The two Rust crates are direct workspace dependencies compiled into the Tauri
+desktop binary. Native Vernier support requires no Python helper, browser shim,
+proprietary SDK, plugin, or separately installed protocol module.
 
 The implemented product profile is specifically the GDX-RB respiration belt.
 Native and browser paths parse device identity, enumerate the advertised sensor
@@ -18,10 +22,13 @@ Hz) period when the metadata says it is valid, otherwise they use the sensor's
 plausible typical period. Both paths wait for the start acknowledgement and a
 valid force measurement before reporting the source as streaming.
 
-Automated protocol, application, output, and emulated-browser tests pass. No
-physical Go Direct device was available for this handoff, so radio behavior,
-actual channel metadata, sustained loss, and end-to-end latency remain hardware
-validation gates rather than completed claims.
+Automated protocol, application, output, and emulated-browser tests pass. On
+2026-08-24, the native Windows/WinRT verifier also passed against a physical
+GDX-RB running main firmware 5.3: exact channel-1 periodic Force (N), 70 primary
+samples at 10.01 Hz with zero drop/malformed/nonfinite counts, explicit
+disconnect, and 20 reconnect samples at 10.05 Hz. This is single-device native
+evidence, not browser, mixed-source, cross-platform, long-run, respiratory-
+agreement, or end-to-end latency qualification.
 
 The bounded native verifier exercises the shipped Rust input pool directly:
 
@@ -135,16 +142,29 @@ Chromium can hold several Go Direct sessions, up to the same eight-source
 bound. Web Bluetooth requires a fresh user-triggered chooser for each new
 device, so a website cannot silently enumerate all nearby GDX sensors. Native
 desktop discovery can return multiple Polar and Vernier candidates in one
-application scan, although its two transport scans are sequential to avoid
-radio/setup contention.
+application scan. The two advertisement scans run concurrently to avoid adding
+their full scan windows together; connection/setup remains serialized per
+selected device. On startup, an exact saved GDX-RB preference scans the Go
+Direct transport directly and reconnects without waiting for a Polar scan.
 
 ## Latency and reliability choices
 
 - BLE notifications are consumed as delivered; no timer aggregation is added.
 - Go Direct notification batches remain batches through decoding and native
   output, avoiding per-value channel overhead.
-- Reliable setup uses characteristic writes with response. Streaming itself is
-  notification-driven.
+- Native setup selects the command characteristic's advertised write mode,
+  preferring write without response and falling back to write with response
+  only when supported. Streaming itself is notification-driven.
+- After connection, the requested periodic Force measurement remains active
+  until explicit disconnect. Vernier's public protocol implementations expose
+  no keep-awake or remote-wake command; a sleeping, non-advertising belt still
+  requires its physical button.
+- The default-off **Keep Vernier connected / awake** option leaves that
+  measurement subscription active and, after an unexpected link loss, performs
+  saved-device Go Direct-only discovery with exponential retry delays bounded
+  from 1.5 to 30 seconds. A deliberate Disconnect cancels retry. This is a
+  connection policy, not a firmware wake command, and it can reconnect only
+  while the belt advertises.
 - Each Go Direct session has its own decoder and bounded 256-event queue.
 - Cancellation races the complete BLE setup/stream future, not only the steady
   notification loop. Teardown uses non-blocking terminal events and a bounded
@@ -206,9 +226,13 @@ a native background service.
 - deterministic interface validation including two colored sources
 - staged browser-demo parity and Polar PMD + Vernier Go Direct Web Bluetooth
   acceptance with desktop/mobile responsive checks
+- physical Windows/WinRT GDX-RB native stream, disconnect, and reconnect
+  qualification on 2026-08-24
 
-These are software and emulated-device results. They do not prove physical Go
-Direct compatibility or latency.
+The physical result closes only the single-device native gate. The remaining
+software and emulated-browser results do not prove physical browser,
+mixed-source, cross-platform, under-load, respiratory-agreement, or latency
+compatibility.
 
 ## Required physical gate
 
@@ -248,7 +272,8 @@ conditions, metrics, and interpretation limits.
   channel-1 periodic Force (N) sensor. Generic Go Direct devices and an
   arbitrary sensor picker remain future work and are rejected rather than
   mislabeled as respiration belts.
-- Physical GDX-RB/native/browser validation is still pending.
+- One physical GDX-RB/native Windows run passed; physical browser,
+  mixed-source, cross-platform, under-load, and long-run validation is pending.
 - Browser source discovery is chooser-based by Web Bluetooth design.
 - Go Direct absolute device-clock synchronization is not implemented; periodic
   samples use explicit host-receipt/backfilled timestamps.

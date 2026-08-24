@@ -2,7 +2,12 @@
   "use strict";
 
   const STORAGE_KEY = "polar-stream.preferences.v1";
-  const defaults = Object.freeze({ streamName: null, lastDevice: null, outputConfig: null });
+  const defaults = Object.freeze({
+    streamName: null,
+    lastDevice: null,
+    outputConfig: null,
+    keepVernierAwake: false,
+  });
 
   function load() {
     try {
@@ -18,7 +23,8 @@
         && Array.isArray(stored.outputConfig.outputs)
         ? structuredClone(stored.outputConfig)
         : null;
-      return { streamName, lastDevice, outputConfig };
+      const keepVernierAwake = stored?.keepVernierAwake === true;
+      return { streamName, lastDevice, outputConfig, keepVernierAwake };
     } catch (_error) {
       return { ...defaults };
     }
@@ -41,10 +47,15 @@
     return write({ ...load(), streamName: outputConfig.streamName, outputConfig: structuredClone(outputConfig) });
   }
 
+  function saveKeepVernierAwake(keepVernierAwake) {
+    return write({ ...load(), keepVernierAwake: keepVernierAwake === true });
+  }
+
   window.PolarPreferences = Object.freeze({
     STORAGE_KEY,
     load,
     saveLastDevice,
     saveOutputConfig,
+    saveKeepVernierAwake,
   });
 })();

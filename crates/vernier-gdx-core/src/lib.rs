@@ -22,6 +22,7 @@ pub const GET_DEFAULT_SENSOR_MASK: u8 = 0x56;
 
 const COMMAND_HEADER: u8 = 0x58;
 const MEASUREMENT_HEADER: u8 = 0x20;
+const FRAME_KIND_MASK: u8 = 0x1f;
 const MAX_FRAME_BYTES: usize = 255;
 const MAX_ACCUMULATED_BYTES: usize = MAX_FRAME_BYTES * 2;
 
@@ -409,7 +410,7 @@ impl FrameAccumulator {
             if self.bytes.len() < 2 {
                 break;
             }
-            if !matches!(self.bytes[0], COMMAND_HEADER | MEASUREMENT_HEADER) {
+            if !is_frame_header(self.bytes[0]) {
                 let invalid = self.bytes.remove(0);
                 return Err(ProtocolError::InvalidHeader(invalid));
             }
@@ -450,7 +451,7 @@ fn validate_frame(bytes: &[u8]) -> Result<(), ProtocolError> {
     if bytes.len() < 5 {
         return Err(ProtocolError::Truncated);
     }
-    if !matches!(bytes[0], COMMAND_HEADER | MEASUREMENT_HEADER) {
+    if !is_frame_header(bytes[0]) {
         return Err(ProtocolError::InvalidHeader(bytes[0]));
     }
     if bytes[1] as usize != bytes.len() {
@@ -460,6 +461,10 @@ fn validate_frame(bytes: &[u8]) -> Result<(), ProtocolError> {
         });
     }
     Ok(())
+}
+
+fn is_frame_header(header: u8) -> bool {
+    header == MEASUREMENT_HEADER || header & FRAME_KIND_MASK == COMMAND_HEADER & FRAME_KIND_MASK
 }
 
 fn decode_masked_f32(bytes: &[u8], wide: bool) -> Result<Measurement, ProtocolError> {
@@ -692,6 +697,27 @@ mod tests {
         let mut tail = first[4..].to_vec();
         tail.extend(&second);
         assert_eq!(accumulator.push(&tail).unwrap(), vec![first, second]);
+    }
+
+    #[test]
+    fn physical_ble_response_header_is_accepted() {
+        let response = vec![
+            0xb8, 0x1a, 0x00, 0xe0, INITIALIZE, 0xfe, 0x55, 0xaa, 0x56, 0xa9, 0x57, 0xa8, 0x58,
+            0xa7, 0x59, 0xa6, 0x5a, 0xa5, 0x5b, 0xa4, 0x5c, 0xa3, 0x5d, 0xa2, 0x5e, 0xa1,
+        ];
+        let mut accumulator = FrameAccumulator::default();
+        assert_eq!(accumulator.push(&response).unwrap(), vec![response.clone()]);
+        assert!(matches!(decode_frame(&response), Ok(Frame::Response(_))));
+    }
+
+    #[test]
+    fn response_header_family_accepts_status_and_rejects_unrelated_bytes() {
+        assert!(is_frame_header(0x58));
+        assert!(is_frame_header(0x98));
+        assert!(is_frame_header(0xb8));
+        assert!(is_frame_header(MEASUREMENT_HEADER));
+        assert!(!is_frame_header(0x00));
+        assert!(!is_frame_header(0xff));
     }
 
     #[test]

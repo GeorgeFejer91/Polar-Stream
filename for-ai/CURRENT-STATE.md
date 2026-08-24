@@ -1,6 +1,6 @@
 # Current state
 
-Last verified: 2026-08-22
+Last verified: 2026-08-24
 
 ## Implemented
 
@@ -100,8 +100,15 @@ Last verified: 2026-08-22
   Saved output configuration is transport-free: formula validation uses a
   destination-disabled router and only connected source routers may create
   LSL/OSC/CSV endpoints, preventing empty legacy unsuffixed streams.
+  Polar and Go Direct advertisement scans run concurrently so one sensor family
+  cannot add its complete scan window ahead of the other; connection remains a
+  user selection or an exact saved-device reconnect. Automatic startup scans
+  use the saved device's transport only, so a remembered GDX-RB does not wait
+  for the Polar scan window before reconnecting.
 - Independent MIT `vernier-gdx-core` and `vernier-gdx-input` crates implement
-  Go Direct command framing, decrementing counters/checksums, 20-byte writes,
+  Go Direct command framing, decrementing counters/checksums, 20-byte writes
+  without a GATT response when the characteristic advertises that mode (with a
+  supported write-with-response fallback),
   correlated control responses, bounded fragmented/coalesced frame assembly,
   periodic/single float and integer measurement decoding, multi-session BLE,
   first-valid-measurement readiness, bounded queues, and latency/drop health.
@@ -115,8 +122,21 @@ Last verified: 2026-08-22
   main firmware major/minor and battery percentage in native and Chromium
   connection metadata. A bounded native verifier exercises sustained samples,
   continuity/rate/health thresholds, explicit disconnect, and reconnect while
-  retaining no Bluetooth identifier. Its 2026-08-20 local attempt found no
-  advertised GDX-RB, so physical Go Direct verification is still pending.
+  retaining no Bluetooth identifier. A 2026-08-24 Windows/WinRT run against a
+  physical GDX-RB on firmware 5.3 passed exact channel-1 Force (N) identity,
+  70 primary samples at 10.01 Hz with zero drop/malformed/nonfinite counts,
+  bounded disconnect, and a 20-sample reconnect stream at 10.05 Hz. The repair
+  honors the characteristic's write mode and accepts the observed Go Direct
+  response-header family while retaining bounded length and command/counter
+  checks. Once connected, the 10 Hz measurement session remains active until
+  explicit disconnect; no undocumented keep-awake command is sent, and a
+  powered-down non-advertising belt cannot be awakened over BLE. These path
+  dependencies are compiled into the desktop binary; Vernier support requires
+  no Python process, browser shim, proprietary SDK, or separately installed
+  runtime module. A default-off **Keep Vernier connected / awake** control can
+  retain that active measurement subscription and retry unexpected link drops
+  with bounded exponential backoff. Deliberate disconnects never trigger a
+  retry, and only an advertising sensor can reconnect.
 - Raw Go Direct force is a first-class N-valued output. Notification batches
   publish before UI work; output timestamps backfill from one host receipt using
   the configured period. Its LSL nominal rate is irregular (`0`) to avoid false
@@ -280,9 +300,10 @@ Last verified: 2026-08-22
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.
 - Go Direct intentionally supports only a metadata-verified GDX-RB channel-1
-  periodic Force (N) profile and rejects generic sensors. Its physical native
-  and Chromium compatibility,
-  sustained loss, reconnect, and latency percentiles remain unverified.
+  periodic Force (N) profile and rejects generic sensors. One physical native
+  Windows stream/disconnect/reconnect qualification passed on 2026-08-24;
+  Chromium, mixed-source, under-load, cross-platform, long-run loss, and latency
+  percentile qualification remain open.
 - Chromium can connect to Go Direct only in a secure context and only after a
   user-triggered device chooser for each device. A page cannot passively scan
   or silently enumerate all nearby sensors, and hidden-tab/screen-lock

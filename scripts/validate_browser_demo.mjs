@@ -401,7 +401,11 @@ const baseUrl = `http://127.0.0.1:${address.port}/`;
 const browser = await chromium.launch({ headless: true });
 
 try {
-  const desktop = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  const desktop = await browser.newPage({
+    viewport: { width: 1440, height: 900 },
+    deviceScaleFactor: 1,
+    locale: "en-US",
+  });
   await desktop.goto(baseUrl, { waitUntil: "networkidle" });
   assert.equal(await desktop.locator("body").getAttribute("data-runtime"), "browser-demo");
   assert.equal(await desktop.locator("#platform-label").textContent(), "BROWSER DEMO");
@@ -593,7 +597,11 @@ try {
   assert.ok((await stat(desktopScreenshot)).size > 30_000, "desktop browser-demo screenshot is unexpectedly empty");
   await desktop.close();
 
-  const bluetooth = await browser.newPage({ viewport: { width: 1280, height: 820 }, deviceScaleFactor: 1 });
+  const bluetooth = await browser.newPage({
+    viewport: { width: 1280, height: 820 },
+    deviceScaleFactor: 1,
+    locale: "en-US",
+  });
   await installFakeWebBluetooth(bluetooth);
   await bluetooth.goto(baseUrl, { waitUntil: "networkidle" });
   const webBluetoothRow = bluetooth.locator('.device-row[data-input-kind="web-bluetooth"]');
@@ -750,7 +758,11 @@ try {
   await assertNoHorizontalOverflow(bluetooth, "desktop Web Bluetooth input");
   await bluetooth.close();
 
-  const vernier = await browser.newPage({ viewport: { width: 1280, height: 820 }, deviceScaleFactor: 1 });
+  const vernier = await browser.newPage({
+    viewport: { width: 1280, height: 820 },
+    deviceScaleFactor: 1,
+    locale: "en-US",
+  });
   await installFakeVernierWebBluetooth(vernier);
   await vernier.goto(baseUrl, { waitUntil: "networkidle" });
   const vernierRow = vernier.locator('.device-row[data-input-kind="web-bluetooth-vernier"]');
@@ -789,6 +801,7 @@ try {
   const phone = await browser.newPage({
     viewport: { width: 390, height: 844 },
     deviceScaleFactor: 1,
+    locale: "en-US",
     hasTouch: true,
     isMobile: true,
     userAgent: "Mozilla/5.0 (Linux; Android 14; Moto G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36",
@@ -874,7 +887,12 @@ try {
   assert.ok((await stat(phoneScreenshot)).size > 20_000, "phone browser-demo screenshot is unexpectedly empty");
   await phone.close();
 
-  const narrow = await browser.newPage({ viewport: { width: 320, height: 720 }, hasTouch: true, isMobile: true });
+  const narrow = await browser.newPage({
+    viewport: { width: 320, height: 720 },
+    hasTouch: true,
+    isMobile: true,
+    locale: "en-US",
+  });
   await narrow.goto(baseUrl, { waitUntil: "networkidle" });
   await assertNoHorizontalOverflow(narrow, "320px browser demo");
   assert.ok(await narrow.locator(".device-row.mock").isVisible(), "mock input is not visible at 320px");

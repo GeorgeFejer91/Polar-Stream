@@ -76,6 +76,15 @@
           <span class="scan-caption" id="scan-caption">Bluetooth Low Energy</span>
         </div>
 
+        <label class="keep-awake-control" id="keep-awake-control">
+          <span class="keep-awake-copy">
+            <strong>Keep Vernier connected / awake</strong>
+            <small id="keep-awake-status">Maintains the live 10 Hz measurement and reconnects after an unexpected drop.</small>
+          </span>
+          <input class="switch-input" id="keep-vernier-awake" type="checkbox" />
+          <span class="switch" aria-hidden="true"></span>
+        </label>
+
         <div class="device-list" id="device-list" aria-live="polite">
           <div class="empty-state" id="device-empty">
             <span class="empty-orbit" aria-hidden="true"></span>

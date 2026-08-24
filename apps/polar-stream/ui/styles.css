@@ -122,6 +122,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .primary-button.compact { min-height: 34px; }
 .scan-caption { color: var(--muted); font-size: 10px; }
 
+.keep-awake-control { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; margin: 0 0 10px; padding: 10px 11px; border: 1px solid #c8d9cf; border-radius: 7px; background: #f2f8f4; cursor: pointer; }
+.keep-awake-control:hover { border-color: #89b6a0; }
+.keep-awake-copy { display: grid; gap: 3px; min-width: 0; }
+.keep-awake-copy strong { font-size: 10px; }
+.keep-awake-copy small { color: var(--muted); font-size: 8px; line-height: 1.4; }
+.keep-awake-control .switch-input { grid-column: 2; grid-row: 1; }
+.keep-awake-control .switch { grid-column: 2; grid-row: 1; }
+
 .device-list { min-height: 150px; max-height: 240px; overflow: auto; }
 .empty-state { min-height: 148px; display: grid; justify-items: center; align-content: center; text-align: center; padding: 18px; border: 1px dashed var(--line-strong); border-radius: 8px; background: rgb(255 255 255 / 48%); }
 .empty-state p { margin: 12px 0 4px; font-weight: 700; }

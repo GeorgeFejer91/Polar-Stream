@@ -83,10 +83,10 @@ items into the dated history instead of silently deleting them.
   host-time alignment, polarity/lag analysis, and identifier-free evidence
   schema are implemented; physical paired recordings and held-out acceptance
   evidence remain pending.
-- Run the identifier-free native GDX-RB verifier with a powered belt, then
-  qualify browser streaming, mixed multi-device load, and a synchronized
-  H10-ACC/GDX-RB reference recording before making compatibility, respiratory
-  agreement, or latency-percentile claims.
+- Retain the passing 2026-08-24 single-device native GDX-RB gate, then qualify
+  browser streaming, mixed multi-device load, cross-platform/under-load runs,
+  and a synchronized H10-ACC/GDX-RB reference recording before making broader
+  compatibility, respiratory-agreement, or latency-percentile claims.
 
 ## Later
 
@@ -97,6 +97,14 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-24: repaired native Go Direct interoperability by selecting the
+  command characteristic's advertised write mode and accepting the bounded
+  response-header family observed from the belt. A Windows/WinRT physical
+  GDX-RB run passed channel-1 Force (N), 70 samples at 10.01 Hz with zero
+  drop/malformed/nonfinite counts, disconnect, and a 20-sample reconnect at
+  10.05 Hz. The desktop UI now offers an opt-in keep-connected policy that
+  retains the live measurement session and retries unexpected drops without
+  inventing an unsupported remote-wake command.
 - 2026-08-20: added a bounded offline H10/GDX-RB respiration-reference
   analyzer that reconstructs native ACC batches, replays the production Rust
   breathing processor, aligns PMD sensor spacing with host-timed force, and

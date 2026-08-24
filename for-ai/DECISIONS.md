@@ -1,5 +1,35 @@
 # Decision log
 
+## 2026-08-24 — Honor physical Go Direct BLE write and response framing
+
+Select the command characteristic's advertised GATT write mode, preferring
+write without response as Vernier's native implementation does and falling
+back to write with response only when that is the supported property. Treat
+the low-five-bit `0x18` header family as bounded command responses while
+retaining the distinct `0x20` measurement header, declared-length limits, and
+command/counter correlation. Physical firmware 5.3 returned `0xb8` for
+initialization and `0x98` for status rather than echoing outbound `0x58`.
+
+This decision is backed by a passing identifier-free Windows/WinRT run through
+the application's `InputSessionPool`: exact GDX-RB channel-1 Force (N), 70
+primary samples, zero drop/malformed/nonfinite counts, explicit disconnect,
+and a 20-sample reconnect stream. It closes only the single-device native gate;
+browser, mixed-source, cross-platform, under-load, synchronized-reference, and
+latency-percentile gates remain open.
+
+Run Polar and Go Direct discovery concurrently rather than serializing their
+complete scan windows. After a GDX-RB connects, keep its documented measurement
+session active until explicit disconnect; do not invent a keep-awake command
+that Vernier's public implementations do not expose. Software cannot wake a
+device whose radio has been put to sleep, so saved-device reconnect minimizes
+the pre-connection idle window by scanning only its remembered transport, but
+still requires the belt to be advertising. Manual scans continue to discover
+both sensor families. Expose an opt-in renderer setting that keeps the active
+10 Hz measurement subscription open and retries an unexpected GDX link loss at
+1.5-to-30-second bounded exponential intervals. Persist that UI lifecycle
+choice locally, never retry a deliberate disconnect, and do not represent the
+retry policy as a firmware wake command.
+
 ## 2026-08-22 — Visualize the canonical 1D waveform as a dot and trail
 
 Specialize the existing `breathing_volume` visualizer instead of creating a
