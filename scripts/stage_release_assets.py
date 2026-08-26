@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import shutil
-import tomllib
 
 
 EXTENSIONS = {
@@ -15,6 +15,20 @@ EXTENSIONS = {
     "windows": (".exe", ".msi"),
     "macos": (".dmg",),
 }
+
+
+def cargo_workspace_version(path: Path) -> str:
+    section = ""
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            continue
+        if section == "workspace.package":
+            match = re.fullmatch(r'version\s*=\s*"([^"]+)"', line)
+            if match:
+                return match.group(1)
+    raise SystemExit(f"Cargo workspace version was not found in {path}")
 
 
 def find_one(bundle_root: Path, extension: str) -> Path:
@@ -41,9 +55,7 @@ def main() -> None:
 
     version = args.version.removeprefix("v")
     configured_versions = {
-        "Cargo workspace": tomllib.loads(
-            Path("Cargo.toml").read_text(encoding="utf-8")
-        )["workspace"]["package"]["version"],
+        "Cargo workspace": cargo_workspace_version(Path("Cargo.toml")),
         "Tauri application": json.loads(
             Path("apps/polar-stream/tauri.conf.json").read_text(encoding="utf-8")
         )["version"],
