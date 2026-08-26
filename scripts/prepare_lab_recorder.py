@@ -240,13 +240,15 @@ def bundle_linux_dependencies(destination: Path) -> None:
                 continue
             if dependency.name in LINUX_GLIBC_LIBRARIES:
                 continue
+            target = library_destination / dependency.name
+            if dependency.resolve() == target.resolve():
+                continue
             existing = copied_by_name.get(dependency.name)
             if existing and existing.resolve() != dependency.resolve():
                 raise RuntimeError(
                     f"Conflicting Linux dependencies named {dependency.name}: "
                     f"{existing} and {dependency}"
                 )
-            target = library_destination / dependency.name
             if not target.exists():
                 shutil.copy2(dependency, target, follow_symlinks=True)
                 copied_by_name[dependency.name] = dependency

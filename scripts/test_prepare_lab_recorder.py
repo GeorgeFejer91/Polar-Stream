@@ -110,6 +110,35 @@ class PrepareLabRecorderTests(unittest.TestCase):
             ):
                 recorder.bundle_linux_dependencies(destination)
 
+    def test_linux_dependency_walk_accepts_its_already_staged_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / "bundle"
+            seed_library = destination / "lib" / "libfixture.so"
+            staged_dependency = destination / "lib" / "libstdc++.so.6"
+            system_dependency = root / "system" / "libstdc++.so.6"
+            executable = destination / "LabRecorder"
+            plugin_root = root / "plugins"
+            seed_library.parent.mkdir(parents=True)
+            system_dependency.parent.mkdir()
+            plugin_root.mkdir()
+            seed_library.write_bytes(b"seed")
+            system_dependency.write_bytes(b"runtime")
+            executable.write_bytes(b"executable")
+
+            def dependencies(binary: Path) -> set[Path]:
+                if binary.name == "libfixture.so":
+                    return {system_dependency}
+                return {staged_dependency}
+
+            with (
+                mock.patch.object(recorder, "qt_plugin_root", return_value=plugin_root),
+                mock.patch.object(recorder, "ldd_dependencies", side_effect=dependencies),
+            ):
+                recorder.bundle_linux_dependencies(destination)
+
+            self.assertEqual(staged_dependency.read_bytes(), b"runtime")
+
 
 if __name__ == "__main__":
     unittest.main()
