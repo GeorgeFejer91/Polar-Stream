@@ -106,6 +106,11 @@ items into the dated history instead of silently deleting them.
 
 ## Next
 
+- Extend the physically passing native timed ACC breathing gate to the direct
+  browser hardware path and to a synchronized independent respiration reference.
+  Exercise Lost/recovery and both presentation modes in the full UI without
+  changing raw LSL/OSC/CSV behavior. Do not turn one H10 run into physiological
+  acceptance.
 - Decide whether and how an AGPL-enabled source build may be distributed before
   enabling Rusty LSL in any package. Keep liblsl as the default until both that
   decision and physical/cross-platform gates close.
@@ -146,6 +151,17 @@ items into the dated history instead of silently deleting them.
 
 ## History
 
+- 2026-08-26: physically qualified the native timed ACC breathing estimator on
+  Windows through the production H10 input owner: 6,120/6,120 samples in 170
+  36-sample frames over 30.035968212 source seconds, 202.547103 Hz effective
+  interpolated cadence, zero late/gap/order/cadence errors, calibration/readiness,
+  all three phase values, and 0.903095 waveform span. No output transport was
+  initialized and physiological acceptance remains false.
+- 2026-08-26: implemented an uncommitted host-qualified timed ACC breathing
+  candidate with source-time reconstruction, versioned legacy migration,
+  fixed-span hysteretic state, bounded diagnostics/presentation points, and
+  matching native/browser damage and invariance tests. Real-H10 validation is
+  deliberately required before publication.
 - 2026-08-24: added the pinned official LabRecorder as a self-contained native
   package resource with an **Open Lab Recorder** UI action. The separate process
   discovers user-selected LSL outlets and records XDF; the launcher accepts no

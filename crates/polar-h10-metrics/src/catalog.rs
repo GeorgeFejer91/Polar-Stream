@@ -208,16 +208,20 @@ fn formula_for(id: &str) -> &'static str {
         "coherence_peak_power" => "Ppeak = ∫ P(f)df from fpeak−0.015 to fpeak+0.015 Hz",
         "coherence_total_power" => "Ptotal = ∫ P(f)df from 0.0033 to 0.4 Hz",
         "acc_breathing_magnitude" => {
-            "b(t) = smoothed projection of selected ACC axes onto the calibrated principal axis"
+            "b(t) = dot[EMA_dt(selected ACC) − calibration center, calibrated PCA axis]"
         }
-        "breathing_volume" => "volume(t) = clamp[(b(t)−q₀.₀₅)/(q₀.₉₅−q₀.₀₅), 0, 1]",
-        "breathing_phase" => "phase(t) = threshold[(volume(t)−volume(t−Δt))/Δt]; {−1,0,+1}",
-        "breathing_calibration" => "progress(t) = collected calibration samples / required samples",
-        "breathing_axis_range" => "axisRange = q₀.₉₅(b) − q₀.₀₅(b)",
+        "breathing_volume" => {
+            "waveform(t) = clamp[(b(t)−outputLower)/(outputUpper−outputLower), 0, 1]"
+        }
+        "breathing_phase" => {
+            "phase(t) = hysteresis+dwell[EMA_dt(d((b−fixedLower)/fixedSpan)/dt)]; {−1,0,+1}"
+        }
+        "breathing_calibration" => "progress(t) = elapsed accepted source time / calibration time",
+        "breathing_axis_range" => "axisRange = outputUpper − outputLower",
         "breathing_signal_confidence" => {
-            "confidence = rangeQuality · motionQuality · (0.4 + 0.6·coverage·periodicity)"
+            "confidence = rangeQuality · motionQuality · PCA dominance"
         }
-        "breathing_signal_ready" => "ready = calibrated ∧ fresh ∧ motionQuality ≥ 0.35",
+        "breathing_signal_ready" => "ready = calibrated ∧ notLost ∧ motionQuality ≥ 0.35",
         "breathing_rate" => "rate = 60 / mean(same-polarity extremum intervals)",
         "breathing_dynamics_confidence" => {
             "confidence = clamp(max(Ninterval,Namplitude) / 200, 0, 1)"
@@ -815,7 +819,7 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         "Calibrated chest-motion projection",
         "0–1",
         "Breathing",
-        "The waveform projects smoothed chest acceleration onto a calibrated principal movement axis and rescales it between observed quantile bounds. Chest accelerometers can capture breathing motion, but this H10-specific algorithm has not been validated as lung volume and is vulnerable to body movement.",
+        "The waveform applies source-time-aware smoothing, projects chest acceleration onto a calibrated principal movement axis, and rescales it between robust bounds. Chest accelerometers can capture breathing motion, but this H10-specific proxy has not been validated as lung volume or airflow and remains vulnerable to movement and mounting changes.",
         "experimental estimate",
         BREATH_ACC,
         BREATH_ACC_URL,
@@ -869,7 +873,7 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         "+1 inhale · −1 exhale · 0 pause or not ready",
         "class",
         "Breathing",
-        "Phase classifies the calibrated ACC waveform velocity into three public states: inhale, exhale, or pause/not ready. Its threshold is normalized per second from the accepted ACC sample count so BLE batch size does not change the classification scale. It remains an unvalidated motion classification rather than airflow; movement, posture, strap placement and axis choice can obscure or reverse the inferred phase.",
+        "Phase classifies a source-time derivative of the fixed-calibration ACC projection into inhale, exhale, or pause/not ready. Derivative smoothing, enter/hold hysteresis, confirmation and minimum dwell are evaluated per accepted sample, so BLE notification batch size and adaptive display bounds do not define the canonical state. It remains an unvalidated motion classification rather than airflow; movement, posture, strap placement and axis choice can obscure or reverse the inferred phase.",
         "unvalidated experimental classification",
         BREATH_ACC,
         BREATH_ACC_URL,

@@ -12,12 +12,16 @@ mod ecg;
 mod excitation;
 mod hrv;
 mod reference_validation;
+mod timed_breathing;
 mod vernier_breathing;
 
 use polar_h10_core::AccSample;
 use serde::Serialize;
 
-pub use breathing::{BreathingPhase, BreathingProcessor, BreathingSettings, BreathingSnapshot};
+pub use breathing::{
+    BreathingDiagnostics, BreathingPhase, BreathingProcessor, BreathingSettings, BreathingSnapshot,
+    BreathingStateMode, BreathingVolumeMode, BreathingWaveformPoint, TimedAccBatch,
+};
 pub use breathing_dynamics::{BreathingDynamicsSnapshot, FeatureSet};
 pub use catalog::{
     METRIC_CATALOG, MetricCitation, MetricDefinition, MetricFormulaDefinition, metric_citations,
@@ -206,11 +210,21 @@ impl MetricEngine {
         self.selection = selection;
     }
 
-    /// Applies saved classifier controls. Tuning changes intentionally restart
-    /// calibration, matching the original tracker and avoiding mixed settings.
+    /// Applies saved classifier controls. Timed state-only changes preserve the
+    /// calibrated waveform; waveform changes restart calibration.
     pub fn apply_breathing_settings(&mut self, settings: BreathingSettings) {
         self.breathing.apply_settings(settings);
         self.breathing_dynamics = BreathingDynamicsProcessor::default();
+    }
+
+    pub fn breathing_diagnostics(&self) -> BreathingDiagnostics {
+        self.breathing.diagnostics()
+    }
+
+    /// Drains bounded source-time points intended only for UI presentation.
+    /// Canonical metrics and phase state do not consume this data.
+    pub fn take_breathing_presentation_points(&mut self) -> Vec<BreathingWaveformPoint> {
+        self.breathing.take_presentation_points()
     }
 
     pub fn process_heart_rate(&mut self, bpm: u16, rr_intervals_ms: &[f32]) -> Vec<MetricSample> {
@@ -280,6 +294,22 @@ impl MetricEngine {
     }
 
     pub fn process_accelerometer(&mut self, samples: &[AccSample]) -> Vec<MetricSample> {
+        self.process_accelerometer_with(samples, None)
+    }
+
+    pub fn process_accelerometer_timed(
+        &mut self,
+        samples: &[AccSample],
+        timing: TimedAccBatch,
+    ) -> Vec<MetricSample> {
+        self.process_accelerometer_with(samples, Some(timing))
+    }
+
+    fn process_accelerometer_with(
+        &mut self,
+        samples: &[AccSample],
+        timing: Option<TimedAccBatch>,
+    ) -> Vec<MetricSample> {
         let mut output = if self.selection.acc_magnitude {
             samples
                 .iter()
@@ -291,14 +321,18 @@ impl MetricEngine {
         } else {
             Vec::new()
         };
-        if self.selection.breathing
-            && let Some(breathing) = self.breathing.push(samples)
-        {
-            output.extend(breathing.samples());
-            if self.selection.breathing_dynamics
-                && let Some(dynamics) = self.breathing_dynamics.push(breathing)
-            {
-                output.extend(dynamics.samples());
+        if self.selection.breathing {
+            let breathing = match timing {
+                Some(timing) => self.breathing.push_timed(samples, timing),
+                None => self.breathing.push(samples),
+            };
+            if let Some(breathing) = breathing {
+                output.extend(breathing.samples());
+                if self.selection.breathing_dynamics
+                    && let Some(dynamics) = self.breathing_dynamics.push(breathing)
+                {
+                    output.extend(dynamics.samples());
+                }
             }
         }
         self.selection.retain_selected(&mut output);

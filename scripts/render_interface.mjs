@@ -180,7 +180,12 @@ try {
   assert.equal(await page.getByLabel("X axis · recommended").isChecked(), true);
   assert.equal(await page.getByLabel("Y axis · rotational").isChecked(), false);
   assert.equal(await page.getByLabel("Z axis · recommended").isChecked(), true);
-  assert.equal(await page.getByLabel("Sensitivity").inputValue(), "0.6");
+  assert.equal(await page.getByLabel("Volume algorithm").inputValue(), "timed-pca-v1");
+  assert.equal(await page.getByLabel("Phase algorithm").inputValue(), "hysteresis-v1");
+  assert.equal(await page.getByLabel("Timed volume filter tau").inputValue(), "0.18");
+  assert.equal(await page.getByLabel("Phase enter threshold").inputValue(), "0.03");
+  assert.equal(await page.getByLabel("Breathing display mode").inputValue(), "fresh-smooth");
+  assert.equal(await page.getByLabel("Display delay").inputValue(), "0.18");
   await page.screenshot({ path: join(output, "breathing-phase-settings.png"), fullPage: true });
   await page.getByLabel("Display window").fill("12");
   await page.getByRole("button", { name: "Save module" }).click();

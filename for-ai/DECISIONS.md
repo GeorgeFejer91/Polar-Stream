@@ -1,5 +1,51 @@
 # Decision log
 
+## 2026-08-26 — Interpolate ordinary ACC batches between PMD source anchors
+
+A physical H10 delivered 36 samples per frame while consecutive newest-sample
+anchors advanced at about 177.8 ms, an effective source cadence near 202.5 Hz.
+Treating every internal interval as exactly 5 ms concentrated the device-clock
+residual into a roughly 2.7 ms notification-boundary step. That was ordered data,
+not packet loss, but it unnecessarily perturbed dt-aware processing.
+
+Keep 5 ms as the nominal first-frame and genuine-gap backfill. For every ordinary
+advancing batch, interpolate its samples from the previous newest anchor to the
+current newest anchor with integer arithmetic and an exact current endpoint.
+Detect Lost from the nominal boundary excess, not from the full frame-to-frame
+duration. Duplicate/backward/overlapping input retains the immediate watermark
+policy. Rust and browser implementations share this rule.
+
+The bounded 2026-08-26 Windows verifier accepted 6,120/6,120 samples, reported
+zero late drops, gaps, order errors, and cadence errors, and observed all three
+breath states after calibration. It initialized no LSL/OSC/CSV output and does
+not establish physiological validity.
+
+## 2026-08-26 — Separate source-timed breathing estimation from presentation
+
+Treat the H10 PMD ACC frame timestamp as the newest sample time and reconstruct
+the other samples from source anchors under the interpolation decision above. Keep raw publication
+first. The canonical timed estimator processes every accepted sample in source
+time, drops samples at or behind its watermark with diagnostics, and treats real
+forward gaps or clock resets as Lost/reset evidence. Notification batch size or
+host arrival cadence must not determine waveform or phase.
+
+Version the waveform and state independently. New settings default to
+`timed-pca-v1` and `hysteresis-v1`; a missing persisted field selects
+`legacy-v0` for that field. Timed state differentiates a fixed calibration
+coordinate, so optional adaptive 0–1 output bounds cannot create state changes.
+Use dt-aware filtering, enter/hold hysteresis, independent confirmation and
+minimum dwell, explicit readiness, and zero plus readiness to distinguish Hold
+from invalid.
+
+Renderer presentation is non-authoritative. It may consume at most 512 ordered
+source-time waveform points and offer either fresh render smoothing or an
+intentional timestamp-faithful delay. Those points and settings never enter
+LSL, OSC, CSV, calibration, or classification. Keep the browser adapter aligned
+with the Rust equations, but retain native Rust as the authoritative desktop
+acquisition/publication path. Host tests are necessary; the bounded native H10
+engineering gate passed on 2026-08-26, while browser-device and physiological
+validation remain separate open gates.
+
 ## 2026-08-26 — Make source clocks, renderer lifetime, and live discovery independent
 
 This supersedes the 2026-08-24 rule that only the missing protocol may be

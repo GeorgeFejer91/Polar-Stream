@@ -21,9 +21,10 @@ use std::{
 };
 
 pub use config::{
-    CustomFormulaConfig, FormulaHealth, FormulaSource, MetricOutputOptions,
-    MetricProcessingOptions, MetricSpec, NormalizationMode, OutputConfig, OutputHealth,
-    custom_output_stream_name, normalize_stream_base, output_stream_name,
+    BreathingPresentationMode, BreathingPresentationSettings, CustomFormulaConfig, FormulaHealth,
+    FormulaSource, MetricOutputOptions, MetricPresentationOptions, MetricProcessingOptions,
+    MetricSpec, NormalizationMode, OutputConfig, OutputHealth, custom_output_stream_name,
+    normalize_stream_base, output_stream_name,
 };
 use csv::CsvPublisher;
 #[cfg(feature = "liblsl-backend")]

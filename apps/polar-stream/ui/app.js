@@ -239,18 +239,30 @@
 
   function defaultBreathingSettings() {
     return {
+      volumeMode: "timed-pca-v1",
+      stateMode: "hysteresis-v1",
       axes: [true, false, true],
       calibrationWindowSeconds: 12,
       minimumAxisRangeG: 0.01,
       smoothingWindowSeconds: 0.75,
+      volumeFilterTauSeconds: 0.18,
       sensitivity: 0.60,
-      staleTimeoutSeconds: 3,
+      staleTimeoutSeconds: 0.50,
       invertDirection: false,
-      adaptiveBounds: true,
+      adaptiveBounds: false,
       adaptiveWindowSeconds: 20,
       lowerQuantile: 0.05,
       upperQuantile: 0.95,
+      phaseDerivativeTauSeconds: 0.40,
+      phaseEnterThresholdPerSecond: 0.030,
+      phaseHoldThresholdPerSecond: 0.025,
+      phaseConfirmationSeconds: 0.40,
+      phaseMinimumDwellSeconds: 0.40,
     };
+  }
+
+  function defaultBreathingPresentationSettings() {
+    return { mode: "fresh-smooth", smoothingTauSeconds: 0.12, delaySeconds: 0.18 };
   }
 
   const MAX_TEMPORAL_BUFFER_SAMPLES = 131_072;
@@ -439,6 +451,7 @@
     return Object.fromEntries(eagerBufferIds.map((id) => [id, createTemporalBuffer(id)]));
   }
   const sourceBuffers = new Map();
+  const breathingPresentation = new Map();
   const vernierDisplayProcessors = new Map();
   let buffers = createBufferBank();
   const elements = {};
@@ -510,6 +523,7 @@
     vernierReconnectAttempt: 0,
     manualDisconnects: new Set(),
     breathingSettings: defaultBreathingSettings(),
+    breathingPresentationSettings: defaultBreathingPresentationSettings(),
     phaseMotion: { level: 0.5, velocity: 0, lastAt: 0 },
     preferences: isNative
       ? { streamName: null, lastDevice: null, outputConfig: null, keepVernierAwake: rendererPreferences.keepVernierAwake !== false }
@@ -893,6 +907,7 @@
     app.metricOptions = structuredClone(initialConfig.metricOptions || {});
     app.customFormulas = (initialConfig.customFormulas || []).map(normalizeFormulaDraft);
     app.breathingSettings = configuredBreathingSettings(app.metricOptions);
+    app.breathingPresentationSettings = configuredBreathingPresentationSettings(app.metricOptions);
     installCatalogVisuals();
     installCustomFormulaVisuals();
     app.streamName = normalizeStreamBase(app.preferences.streamName)
@@ -1125,6 +1140,7 @@
       if (breathingOutputIds.has(metric.id)) {
         if (breathingDraftIsInvalid(draft.processing.breathing)) return;
         app.breathingSettings = structuredClone(draft.processing.breathing);
+        app.breathingPresentationSettings = structuredClone(draft.presentation.breathing);
       }
       app.metricOptions[metric.id] = draft;
       app.outputs.add(metric.id);
@@ -1535,9 +1551,11 @@
         break;
       case "accelerometer":
         ingestAccelerometer(event.samples || [], event.timing);
+        ingestBreathingPresentation(event, source?.id);
         break;
       case "metrics":
         ingestMetrics(event);
+        ingestBreathingPresentation(event, source?.id);
         break;
       case "force": {
         const values = event.values || [];
@@ -1906,6 +1924,7 @@
     if (!event.connected && source) {
       app.activeSources.delete(source.id);
       sourceBuffers.delete(source.id);
+      breathingPresentation.delete(source.id);
       vernierDisplayProcessors.delete(source.id);
       if (app.selectedSourceId === source.id) {
         app.selectedSourceId = app.activeSources.keys().next().value || null;
@@ -2058,6 +2077,72 @@
     ensureBuffer("acc_magnitude").pushMany(magnitudes, timing);
     app.sampleCount += samples.length;
     markTelemetryDirty();
+  }
+
+  function presentationForSource(sourceId) {
+    if (!sourceId) return null;
+    if (!breathingPresentation.has(sourceId)) breathingPresentation.set(sourceId, {
+      points: [], value: null, lastTime: null, lastRenderClock: null, mode: "fresh-smooth", smoothingTauSeconds: 0.12, delaySeconds: 0.18,
+    });
+    return breathingPresentation.get(sourceId);
+  }
+
+  function ingestBreathingPresentation(event, sourceId) {
+    const incoming = Array.isArray(event?.breathingPresentationPoints)
+      ? event.breathingPresentationPoints : [];
+    if (!sourceId || !incoming.length) return;
+    const state = presentationForSource(sourceId);
+    if (event.timing?.gapBefore || event.breathingGapBefore) {
+      state.points = [];
+      state.value = null;
+      state.lastTime = null;
+      state.lastRenderClock = null;
+    }
+    for (const point of incoming) {
+      const timestamp = Number(point.sourceTimestampNs) / 1e9;
+      const value = Number(point.volume01);
+      if (!Number.isFinite(timestamp) || !Number.isFinite(value)) continue;
+      if (state.points.length && timestamp <= state.points.at(-1).timestamp) {
+        state.points = [];
+        state.value = null;
+        state.lastTime = null;
+        state.lastRenderClock = null;
+      }
+      state.points.push({ timestamp, value: Math.max(0, Math.min(1, value)) });
+    }
+    if (state.points.length > 512) state.points.splice(0, state.points.length - 512);
+    markTelemetryDirty();
+  }
+
+  function displayedBreathing(state, options) {
+    if (!state?.points.length) return null;
+    const display = options.presentation?.breathing || {};
+    state.mode = display.mode === "timestamp-faithful" ? "timestamp-faithful" : "fresh-smooth";
+    state.smoothingTauSeconds = numberOr(display.smoothingTauSeconds, 0.12);
+    state.delaySeconds = numberOr(display.delaySeconds, 0.18);
+    const newest = state.points.at(-1);
+    let target = newest.value;
+    let targetTime = newest.timestamp;
+    if (state.mode === "timestamp-faithful") {
+      targetTime = Math.max(state.points[0].timestamp, targetTime - state.delaySeconds);
+      const right = state.points.find((point) => point.timestamp >= targetTime);
+      const leftIndex = Math.max(0, state.points.indexOf(right) - 1);
+      const left = state.points[leftIndex] || right;
+      if (right && left && right.timestamp > left.timestamp) {
+        const ratio = Math.max(0, Math.min(1, (targetTime - left.timestamp) / (right.timestamp - left.timestamp)));
+        target = left.value + (right.value - left.value) * ratio;
+      } else if (left) target = left.value;
+    }
+    const renderClock = performance.now() / 1000;
+    if (state.value == null || state.mode === "timestamp-faithful") state.value = target;
+    else {
+      const dt = state.lastRenderClock == null ? 0 : Math.max(0, renderClock - state.lastRenderClock);
+      const alpha = dt <= 0 ? 1 : dt / (state.smoothingTauSeconds + dt);
+      state.value += alpha * (target - state.value);
+    }
+    state.lastRenderClock = renderClock;
+    state.lastTime = newest.timestamp;
+    return { timestamp: targetTime, value: Math.max(0, Math.min(1, state.value)) };
   }
 
   function ingestMetrics(event) {
@@ -2341,9 +2426,25 @@
     for (const id of breathingOutputIds) {
       const processing = metricOptions?.[id]?.processing || {};
       const stored = processing.breathing || processing.breathingPhase;
-      if (stored) return { ...defaultBreathingSettings(), ...structuredClone(stored) };
+      if (stored) {
+        const merged = { ...defaultBreathingSettings(), ...structuredClone(stored) };
+        // Stored pre-v1 settings retain their historical processor semantics.
+        if (!Object.hasOwn(stored, "volumeMode")) merged.volumeMode = "legacy-v0";
+        if (!Object.hasOwn(stored, "stateMode")) merged.stateMode = "legacy-v0";
+        if (!Object.hasOwn(stored, "adaptiveBounds")) merged.adaptiveBounds = true;
+        if (merged.volumeMode === "legacy-v0") merged.stateMode = "legacy-v0";
+        return merged;
+      }
     }
     return defaultBreathingSettings();
+  }
+
+  function configuredBreathingPresentationSettings(metricOptions) {
+    for (const id of breathingOutputIds) {
+      const stored = metricOptions?.[id]?.presentation?.breathing;
+      if (stored) return { ...defaultBreathingPresentationSettings(), ...structuredClone(stored) };
+    }
+    return defaultBreathingPresentationSettings();
   }
 
   function libraryCatalog() {
@@ -2568,7 +2669,9 @@
 
   function breathingDraftIsInvalid(breathing) {
     return selectedAxisCount(breathing.axes) < 2
-      || breathing.upperQuantile - breathing.lowerQuantile < 0.10;
+      || breathing.upperQuantile - breathing.lowerQuantile < 0.10
+      || (breathing.stateMode === "hysteresis-v1"
+        && Number(breathing.phaseHoldThresholdPerSecond) > Number(breathing.phaseEnterThresholdPerSecond));
   }
 
   async function openFormulaLab(metric = null, formulaId = null) {
@@ -2998,19 +3101,36 @@
     };
     if (breathingOutputIds.has(id)) {
       options.processing.breathing = {
+        volumeMode: breathing.volumeMode || "timed-pca-v1",
+        stateMode: breathing.stateMode || "hysteresis-v1",
         axes: Array.isArray(breathing.axes) && breathing.axes.length === 3
           ? breathing.axes.map(Boolean)
           : [true, false, true],
         calibrationWindowSeconds: numberOr(breathing.calibrationWindowSeconds, 12),
         minimumAxisRangeG: numberOr(breathing.minimumAxisRangeG, 0.01),
         smoothingWindowSeconds: numberOr(breathing.smoothingWindowSeconds, 0.75),
+        volumeFilterTauSeconds: numberOr(breathing.volumeFilterTauSeconds, 0.18),
         sensitivity: numberOr(breathing.sensitivity, 0.60),
-        staleTimeoutSeconds: numberOr(breathing.staleTimeoutSeconds, 3),
+        staleTimeoutSeconds: numberOr(breathing.staleTimeoutSeconds, 0.50),
         invertDirection: Boolean(breathing.invertDirection),
         adaptiveBounds: breathing.adaptiveBounds !== false,
         adaptiveWindowSeconds: numberOr(breathing.adaptiveWindowSeconds, 20),
         lowerQuantile: numberOr(breathing.lowerQuantile, 0.05),
         upperQuantile: numberOr(breathing.upperQuantile, 0.95),
+        phaseDerivativeTauSeconds: numberOr(breathing.phaseDerivativeTauSeconds, 0.40),
+        phaseEnterThresholdPerSecond: numberOr(breathing.phaseEnterThresholdPerSecond, 0.030),
+        phaseHoldThresholdPerSecond: numberOr(breathing.phaseHoldThresholdPerSecond, 0.025),
+        phaseConfirmationSeconds: numberOr(breathing.phaseConfirmationSeconds, 0.40),
+        phaseMinimumDwellSeconds: numberOr(breathing.phaseMinimumDwellSeconds, 0.40),
+      };
+      const display = stored.presentation?.breathing || app.breathingPresentationSettings;
+      options.presentation = {
+        ...(stored.presentation || {}),
+        breathing: {
+          mode: display.mode === "timestamp-faithful" ? "timestamp-faithful" : "fresh-smooth",
+          smoothingTauSeconds: Math.max(0.01, Math.min(2, numberOr(display.smoothingTauSeconds, 0.12))),
+          delaySeconds: Math.max(0, Math.min(1, numberOr(display.delaySeconds, 0.18))),
+        },
       };
     }
     return options;
@@ -3083,16 +3203,42 @@
         }));
       });
       processing.append(
-        numberSetting("Smoothing window", "Seconds of ACC smoothing; longer is steadier but adds lag.", classifier.smoothingWindowSeconds, 0.05, 5, 0.05, (value) => classifier.smoothingWindowSeconds = clampNumber(value, 0.05, 5, 0.75)),
+        selectSetting("Volume algorithm", "Timed PCA uses sensor-time spacing; legacy-v0 preserves older behavior.", classifier.volumeMode, [
+          ["timed-pca-v1", "Timed PCA v1"], ["legacy-v0", "Legacy v0"],
+        ], (value) => {
+          classifier.volumeMode = value;
+          if (value === "legacy-v0") classifier.stateMode = "legacy-v0";
+          renderModuleSettings();
+        }),
+        selectSetting("Phase algorithm", "Hysteresis v1 requires timed PCA and separates Hold (0) from invalid using ready; legacy-v0 is retained for saved configurations.", classifier.stateMode, classifier.volumeMode === "legacy-v0" ? [
+          ["legacy-v0", "Legacy v0"],
+        ] : [
+          ["hysteresis-v1", "Hysteresis v1"], ["legacy-v0", "Legacy v0"],
+        ], (value) => { classifier.stateMode = value; renderModuleSettings(); }),
         checkSetting("Invert direction", "Flips the learned movement axis when strap orientation reverses the curve.", classifier.invertDirection, (value) => classifier.invertDirection = value),
       );
-      if (metric.id === "breathing_phase") {
+      if (classifier.volumeMode === "legacy-v0") {
+        processing.append(numberSetting("Smoothing window", "Legacy ACC smoothing window; longer is steadier but adds lag.", classifier.smoothingWindowSeconds, 0.05, 5, 0.05, (value) => classifier.smoothingWindowSeconds = clampNumber(value, 0.05, 5, 0.75)));
+      }
+      if (classifier.stateMode === "legacy-v0" && metric.id === "breathing_phase") {
         processing.append(numberSetting("Sensitivity", "0 is conservative; 1 reacts to smaller projected changes.", classifier.sensitivity, 0, 1, 0.05, (value) => classifier.sensitivity = clampNumber(value, 0, 1, 0.60)));
+      }
+      if (classifier.volumeMode === "timed-pca-v1") {
+        processing.append(numberSetting("Timed volume filter tau", "Source-time EMA time constant for the canonical waveform.", classifier.volumeFilterTauSeconds, 0.01, 5, 0.01, (value) => classifier.volumeFilterTauSeconds = clampNumber(value, 0.01, 5, 0.18)));
+      }
+      if (classifier.stateMode === "hysteresis-v1") {
+        processing.append(
+          numberSetting("Phase derivative tau", "Source-time smoothing for normalized projected velocity.", classifier.phaseDerivativeTauSeconds, 0.01, 5, 0.01, (value) => classifier.phaseDerivativeTauSeconds = clampNumber(value, 0.01, 5, 0.40)),
+          numberSetting("Phase enter threshold", "Velocity at which inhale/exhale is requested (0–1 volume/s).", classifier.phaseEnterThresholdPerSecond, 0.001, 5, 0.005, (value) => classifier.phaseEnterThresholdPerSecond = clampNumber(value, 0.001, 5, 0.030)),
+          numberSetting("Phase hold threshold", "Velocity at or below this magnitude requests Hold; must not exceed enter.", classifier.phaseHoldThresholdPerSecond, 0, 5, 0.005, (value) => classifier.phaseHoldThresholdPerSecond = clampNumber(value, 0, Math.max(0, classifier.phaseEnterThresholdPerSecond), 0.025)),
+          numberSetting("Phase confirmation", "Seconds a new direction must persist before activation.", classifier.phaseConfirmationSeconds, 0, 5, 0.05, (value) => classifier.phaseConfirmationSeconds = clampNumber(value, 0, 5, 0.40)),
+          numberSetting("Phase minimum dwell", "Minimum active direction duration in seconds.", classifier.phaseMinimumDwellSeconds, 0, 5, 0.05, (value) => classifier.phaseMinimumDwellSeconds = clampNumber(value, 0, 5, 0.40)),
+        );
       }
       processing.append(
         numberSetting("Calibration window", "Quiet seconds used to learn the principal motion axis.", classifier.calibrationWindowSeconds, 1, 60, 1, (value) => classifier.calibrationWindowSeconds = clampNumber(value, 1, 60, 12)),
         numberSetting("Minimum axis range", "Minimum selected-axis calibration travel in g.", classifier.minimumAxisRangeG, 0.001, 0.25, 0.001, (value) => classifier.minimumAxisRangeG = clampNumber(value, 0.001, 0.25, 0.01)),
-        numberSetting("Stale timeout", "Notification gap in seconds that forces not-ready / pause output.", classifier.staleTimeoutSeconds, 0.25, 30, 0.25, (value) => classifier.staleTimeoutSeconds = clampNumber(value, 0.25, 30, 3)),
+        numberSetting("Stale timeout", "Notification gap in seconds that forces not-ready / pause output.", classifier.staleTimeoutSeconds, 0.25, 30, 0.25, (value) => classifier.staleTimeoutSeconds = clampNumber(value, 0.25, 30, 0.5)),
         checkSetting("Adaptive bounds", "Update accepted calibration quantiles from recent projected motion.", classifier.adaptiveBounds, (value) => {
           classifier.adaptiveBounds = value;
           renderModuleSettings();
@@ -3109,6 +3255,15 @@
       warning.className = "settings-note";
       warning.textContent = "Unvalidated research estimate. Pause (0) also represents calibration or stale input; it does not certify good signal. Inspect raw ACC and compare with a reference respiratory sensor.";
       processing.append(warning);
+      const presentation = settingsSection("Display presentation", "Presentation smoothing or delay affects only the breathing trail; canonical metrics and recordings remain source-time values.");
+      const display = app.moduleDraft.presentation?.breathing || { mode: "fresh-smooth", smoothingTauSeconds: 0.12, delaySeconds: 0.18 };
+      presentation.append(
+        selectSetting("Breathing display mode", "Fresh smoothing follows the newest point; timestamp-faithful intentionally delays about 180 ms.", display.mode, [["fresh-smooth", "Fresh + smoothing"], ["timestamp-faithful", "Timestamp-faithful"]], (value) => { display.mode = value; app.moduleDraft.presentation.breathing = display; renderModuleSettings(); }),
+        numberSetting("Display smoothing tau", "Seconds used only for fresh display smoothing.", display.smoothingTauSeconds, 0.01, 2, 0.01, (value) => display.smoothingTauSeconds = clampNumber(value, 0.01, 2, 0.12)),
+        numberSetting("Display delay", "Seconds of intentional source-time delay for faithful interpolation.", display.delaySeconds, 0, 1, 0.01, (value) => display.delaySeconds = clampNumber(value, 0, 1, 0.18)),
+      );
+      app.moduleDraft.presentation.breathing = display;
+      sections.push(presentation);
       sections.push(processing);
     }
     elements["module-settings"].replaceChildren(...sections);
@@ -3189,10 +3344,22 @@
     if (!metric.normalizable) draft.normalization = "none";
     if (breathingOutputIds.has(id)) {
       if (breathingDraftIsInvalid(draft.processing.breathing)) {
-        toast("Choose at least two axes and keep 0.10 between calibration quantiles.", true);
+        toast("Choose at least two axes, keep 0.10 between quantiles, and keep hold threshold at or below enter.", true);
         return;
       }
       app.breathingSettings = structuredClone(draft.processing.breathing);
+      app.breathingPresentationSettings = structuredClone(draft.presentation.breathing);
+      for (const outputId of breathingOutputIds) {
+        if (app.metricOptions[outputId]) {
+          app.metricOptions[outputId].presentation = structuredClone(draft.presentation);
+        }
+      }
+      for (const state of breathingPresentation.values()) {
+        state.points = [];
+        state.value = null;
+        state.lastTime = null;
+        state.lastRenderClock = null;
+      }
     }
     app.metricOptions[id] = draft;
     resetVisualTransform(id);
@@ -3695,9 +3862,22 @@
 
   function drawBreathingTrail(context, canvas, buffer, definition, options) {
     const temporal = temporalWindow(buffer, options.displayWindowSeconds);
-    const dataPoints = temporalEnvelopePoints(buffer, temporal, canvas.width);
-    const valueCount = temporal.count;
-    const latest = Number(buffer.latest());
+    const presentationState = breathingPresentation.get(app.selectedSourceId);
+    const presented = displayedBreathing(presentationState, options);
+    const hasPresentation = Boolean(presentationState?.points.length);
+    const presentationEnd = presented?.timestamp ?? presentationState?.points.at(-1)?.timestamp;
+    const presentationDuration = Math.max(0.1, Number(options.displayWindowSeconds) || 5);
+    const plotTemporal = hasPresentation && Number.isFinite(presentationEnd)
+      ? { start: presentationEnd - presentationDuration, end: presentationEnd, duration: presentationDuration }
+      : temporal;
+    const presentedPoints = hasPresentation
+      ? presentationState.points.filter((point) => point.timestamp >= plotTemporal.start && point.timestamp <= plotTemporal.end)
+      : null;
+    const dataPoints = presentedPoints?.length
+      ? presentedPoints.map((point) => ({ timestamp: point.timestamp, value: point.value, gapBefore: false }))
+      : temporalEnvelopePoints(buffer, temporal, canvas.width);
+    const valueCount = hasPresentation ? dataPoints.length : temporal.count;
+    const latest = presented?.value ?? Number(buffer.latest());
     const hasData = dataPoints.length > 1 && Number.isFinite(latest);
     elements["chart-empty"].hidden = hasData;
     elements["visual-current"].textContent = Number.isFinite(latest) ? formatValue(latest, 3) : "—";
@@ -3709,6 +3889,9 @@
     context.clearRect(0, 0, width, height);
     canvas.dataset.visualMode = "breathing-trail";
     canvas.dataset.trailPoints = String(valueCount);
+    canvas.dataset.presentationMode = presentationState?.mode || "canonical-fallback";
+    canvas.dataset.presentationValue = Number.isFinite(latest) ? latest.toFixed(4) : "";
+    canvas.dataset.presentationDelay = String(presentationState?.delaySeconds ?? 0);
     if (!hasData) {
       delete canvas.dataset.breathDirection;
       delete canvas.dataset.latestY01;
@@ -3725,7 +3908,7 @@
     const point = (sample) => {
       const value = Math.max(0, Math.min(1, Number(sample.value) || 0));
       return {
-        x: padLeft + ((sample.timestamp - temporal.start) / temporal.duration) * drawWidth,
+        x: padLeft + ((sample.timestamp - plotTemporal.start) / plotTemporal.duration) * drawWidth,
         y: padY + (1 - value) * drawHeight,
         value,
         gapBefore: sample.gapBefore,
@@ -3733,11 +3916,14 @@
     };
     const latestPoint = point({
       value: latest,
-      timestamp: buffer.latestTimestamp(),
+      timestamp: presented?.timestamp ?? buffer.latestTimestamp(),
       gapBefore: false,
     });
-    const trendSampleCount = Math.min(6, buffer.length);
-    const trend = latestPoint.value - Number(buffer.tailValue(0, trendSampleCount));
+    const trendSampleCount = Math.min(6, hasPresentation ? dataPoints.length : buffer.length);
+    const trendBase = hasPresentation
+      ? Number(dataPoints[Math.max(0, dataPoints.length - trendSampleCount)]?.value)
+      : Number(buffer.tailValue(0, trendSampleCount));
+    const trend = latestPoint.value - (Number.isFinite(trendBase) ? trendBase : latestPoint.value);
     const direction = trend > 0.002 ? "inhale" : trend < -0.002 ? "exhale" : "pause";
     canvas.dataset.breathDirection = direction;
     canvas.dataset.latestY01 = latestPoint.value.toFixed(4);

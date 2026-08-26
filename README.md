@@ -32,19 +32,25 @@ OSC, and CSV streams; specialized multi-stage metrics remain documented without
 pretending that a misleading one-line scalar template is equivalent.
 
 Every output module has a saved visualizer window and, where meaningful,
-normalization controls. ACC breathing outputs start with the saved defaults (X +
-Z axes and a 0.75-second smoothing window) and expose those controls through
-**Adjust** after they are added. The module
-exposes a signed chest-motion projection in g, its robustly normalized 0–1
-waveform, a three-state phase classifier, and explicit readiness/confidence
-companions. Sensitivity and direction inversion remain configurable. Every
-output is an unvalidated respiratory-effort surrogate—not lung volume or
-airflow—and should be compared with a synchronized respiratory reference. The
-normalized waveform visualizer draws the latest sample as a moving dot with a
-leftward time trail: configured inhale moves upward and exhale moves downward.
-Mounting can reverse that polarity, so users must verify or invert direction. The
-classifier circle expands or shrinks with phase alone, approaches
-its size limits asymptotically, and eases its velocity toward rest during pauses.
+normalization controls. New ACC breathing outputs default to source-timed PCA
+over X + Z with a 0.18-second filter time constant. The H10 normally delivers
+roughly 37 internally 200 Hz samples per BLE notification; Polar Stream
+uses nominal 5 ms timing for the first frame and interpolates later samples
+between consecutive PMD newest-sample timestamps, so waveform and phase do not
+inherit the slower notification cadence. The module exposes a signed chest-motion projection
+in g, its robustly normalized 0–1 waveform, a hysteretic inhale/hold/exhale
+classifier, and explicit readiness/confidence companions. Saved pre-v1 settings
+retain the legacy estimator. Direction inversion, calibration, filter, state,
+and optional adaptive-bound controls remain available through **Adjust**.
+
+The waveform display separately offers responsive fresh smoothing or an
+intentional 0.18-second timestamp-faithful delay; neither presentation mode
+changes canonical LSL, OSC, CSV, or classifier values. Every output is an
+unvalidated respiratory-motion/effort surrogate—not lung volume or airflow—and
+should be compared with a synchronized respiratory reference. Mounting can
+reverse polarity, so users must verify or invert direction. The classifier
+circle expands or shrinks with phase alone, approaches its size limits
+asymptotically, and eases its velocity toward rest during holds.
 
 Raw acceleration is presented as one visualizer choice with X, Y, and Z in
 three labeled, color-coded lanes, so comparing axes does not require switching
@@ -281,8 +287,8 @@ and latency policy, and [the Tauri assessment](docs/tauri-assessment.md) for the
 evidence-based Rust/Tauri decision and its limits. Scientific definitions,
 formula caveats, and the full
 legacy-output mapping are in [the metric evidence inventory](docs/metric-evidence.md).
-The exact ACC breathing lineage, formulas, settings, known batch-timing
-limitation, and proposed reference-validation protocol are in the
+The exact ACC breathing lineage, source-time/batch contract, versioned formulas,
+settings, presentation boundary, and proposed reference-validation protocol are in the
 [ACC-derived breathing handoff](docs/acc-breathing-handoff.md).
 The [Go Direct and multi-source handoff](docs/vernier-go-direct-handoff.md)
 documents the native/browser protocol paths, timing contract, source identity,

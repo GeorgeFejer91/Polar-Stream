@@ -17,6 +17,7 @@ Polar H10
      -> polar-h10-math (only enabled bounded custom formulas)
      -> polar-h10-output -> LSL / OSC / bounded native CSV
      -> bounded display queue -> JavaScript ring buffers -> Canvas 2D
+        (breathing may also receive bounded non-authoritative source-time points)
 
 Vernier GDX-RB
   -> vernier-gdx-input (complete compatible metadata-defined channel set)
@@ -127,6 +128,14 @@ operational contract for that ordering.
   native owner.
 - Scientific definitions originate in the Rust metric catalog and are surfaced
   to the UI through bootstrap data and the generated Pages catalog asset.
+- ACC breathing owns separate raw, estimator, and presentation contracts. Raw
+  ACC publishes first. Timed PCA and phase consume reconstructed PMD source
+  samples: nominal timing is used for the first frame and gaps, while ordinary
+  batches interpolate between consecutive newest-sample device anchors. They
+  produce canonical scalar outputs; adaptive display bounds never
+  change the fixed state coordinate. Bounded waveform points may be smoothed or
+  intentionally delayed only in the renderer and never enter output transports
+  or feed the estimator.
 - Formula-compatible catalog entries expose editable templates through a
   bounded native formula runtime; sensor time is the automatic x-axis and each
   formula produces a scalar y-value from one source clock.

@@ -114,8 +114,11 @@ impl OutputConfig {
             if BREATHING_OUTPUT_IDS.contains(&id.as_str()) {
                 options.processing.breathing =
                     Some(options.processing.breathing.unwrap_or_default().clamped());
+                options.presentation.breathing =
+                    Some(options.presentation.breathing.unwrap_or_default().clamped());
             } else {
                 options.processing.breathing = None;
+                options.presentation.breathing = None;
             }
         }
         let shared_breathing = BREATHING_OUTPUT_IDS.iter().find_map(|id| {
@@ -127,6 +130,18 @@ impl OutputConfig {
             for id in BREATHING_OUTPUT_IDS {
                 if let Some(options) = self.metric_options.get_mut(id) {
                     options.processing.breathing = Some(shared_breathing);
+                }
+            }
+        }
+        let shared_breathing_presentation = BREATHING_OUTPUT_IDS.iter().find_map(|id| {
+            self.metric_options
+                .get(*id)
+                .and_then(|options| options.presentation.breathing)
+        });
+        if let Some(shared_breathing_presentation) = shared_breathing_presentation {
+            for id in BREATHING_OUTPUT_IDS {
+                if let Some(options) = self.metric_options.get_mut(id) {
+                    options.presentation.breathing = Some(shared_breathing_presentation);
                 }
             }
         }
@@ -186,6 +201,8 @@ pub struct MetricOutputOptions {
     pub display_window_seconds: u32,
     #[serde(default)]
     pub processing: MetricProcessingOptions,
+    #[serde(default)]
+    pub presentation: MetricPresentationOptions,
 }
 
 impl Default for MetricOutputOptions {
@@ -195,6 +212,7 @@ impl Default for MetricOutputOptions {
             window_seconds: default_window_seconds(),
             display_window_seconds: default_display_window_seconds(),
             processing: MetricProcessingOptions::default(),
+            presentation: MetricPresentationOptions::default(),
         }
     }
 }
@@ -204,6 +222,53 @@ impl Default for MetricOutputOptions {
 pub struct MetricProcessingOptions {
     #[serde(default, alias = "breathingPhase")]
     pub breathing: Option<BreathingSettings>,
+}
+
+/// Non-authoritative display controls. These values never change native
+/// metric calculation or LSL/OSC/CSV publication.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricPresentationOptions {
+    #[serde(default)]
+    pub breathing: Option<BreathingPresentationSettings>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BreathingPresentationMode {
+    #[default]
+    FreshSmooth,
+    TimestampFaithful,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BreathingPresentationSettings {
+    pub mode: BreathingPresentationMode,
+    pub smoothing_tau_seconds: f32,
+    pub delay_seconds: f32,
+}
+
+impl Default for BreathingPresentationSettings {
+    fn default() -> Self {
+        Self {
+            mode: BreathingPresentationMode::FreshSmooth,
+            smoothing_tau_seconds: 0.12,
+            delay_seconds: 0.18,
+        }
+    }
+}
+
+impl BreathingPresentationSettings {
+    fn clamped(mut self) -> Self {
+        self.smoothing_tau_seconds = finite_or(self.smoothing_tau_seconds, 0.12).clamp(0.01, 2.0);
+        self.delay_seconds = finite_or(self.delay_seconds, 0.18).clamp(0.0, 1.0);
+        self
+    }
+}
+
+fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() { value } else { fallback }
 }
 
 const fn default_window_seconds() -> u32 {
@@ -456,6 +521,73 @@ mod tests {
                 .processing
                 .breathing,
             Some(phase)
+        );
+    }
+
+    #[test]
+    fn breathing_outputs_share_bounded_non_authoritative_presentation() {
+        let mut metric_options = HashMap::new();
+        metric_options.insert(
+            "breathing_phase".into(),
+            MetricOutputOptions {
+                presentation: MetricPresentationOptions {
+                    breathing: Some(BreathingPresentationSettings {
+                        mode: BreathingPresentationMode::TimestampFaithful,
+                        smoothing_tau_seconds: f32::NAN,
+                        delay_seconds: 4.0,
+                    }),
+                },
+                ..MetricOutputOptions::default()
+            },
+        );
+        metric_options.insert("breathing_volume".into(), MetricOutputOptions::default());
+        let config = OutputConfig {
+            outputs: vec!["breathing_phase".into(), "breathing_volume".into()],
+            metric_options,
+            ..OutputConfig::default()
+        }
+        .normalized()
+        .unwrap();
+
+        let phase = config.metric_options["breathing_phase"]
+            .presentation
+            .breathing
+            .unwrap();
+        let volume = config.metric_options["breathing_volume"]
+            .presentation
+            .breathing
+            .unwrap();
+        assert_eq!(phase, volume);
+        assert_eq!(phase.mode, BreathingPresentationMode::TimestampFaithful);
+        assert_eq!(phase.smoothing_tau_seconds, 0.12);
+        assert_eq!(phase.delay_seconds, 1.0);
+    }
+
+    #[test]
+    fn non_breathing_outputs_cannot_retain_breathing_presentation_settings() {
+        let mut metric_options = HashMap::new();
+        metric_options.insert(
+            "rmssd".into(),
+            MetricOutputOptions {
+                presentation: MetricPresentationOptions {
+                    breathing: Some(BreathingPresentationSettings::default()),
+                },
+                ..MetricOutputOptions::default()
+            },
+        );
+        let config = OutputConfig {
+            outputs: vec!["rmssd".into()],
+            metric_options,
+            ..OutputConfig::default()
+        }
+        .normalized()
+        .unwrap();
+
+        assert!(
+            config.metric_options["rmssd"]
+                .presentation
+                .breathing
+                .is_none()
         );
     }
 

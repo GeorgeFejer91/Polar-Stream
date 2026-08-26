@@ -19,7 +19,7 @@ use polar_h10_core::AccSample;
 use polar_h10_input::{InputEvent as PolarInputEvent, InputSessionPool as PolarInputSessionPool};
 use polar_h10_metrics::{
     BreathingSettings, METRIC_CATALOG, MetricCitation, MetricDefinition, MetricEngine,
-    MetricSample, MetricSelection, VernierBreathingProcessor, metric_citations,
+    MetricSample, MetricSelection, TimedAccBatch, VernierBreathingProcessor, metric_citations,
     metric_formula_definition,
 };
 use polar_h10_output::{
@@ -305,6 +305,42 @@ impl TimingEnvelope {
     }
 }
 
+/// A renderer-only source-time point. This deliberately remains separate from
+/// the canonical metric publication path: the WebView may interpolate or
+/// smooth it for presentation, but it cannot feed a classifier or output
+/// transport.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BreathingPresentationPoint {
+    source_timestamp_ns: String,
+    volume_01: f32,
+}
+
+fn timed_acc_batch(sensor_timestamp_ns: u64, mapping: ClockMapping) -> TimedAccBatch {
+    TimedAccBatch {
+        newest_sensor_timestamp_ns: sensor_timestamp_ns,
+        sample_period_ns: ACC_SAMPLE_PERIOD_NS,
+        clock_revision: mapping.revision,
+        clock_reset: mapping.reset,
+        // The input adapter currently exposes PMD source-clock discontinuities
+        // through the mapper reset. Preserve that evidence rather than
+        // inferring a gap from BLE notification cadence.
+        gap_before: mapping.reset,
+    }
+}
+
+fn breathing_presentation_points(
+    points: Vec<polar_h10_metrics::BreathingWaveformPoint>,
+) -> Vec<BreathingPresentationPoint> {
+    points
+        .into_iter()
+        .map(|point| BreathingPresentationPoint {
+            source_timestamp_ns: point.source_timestamp_ns.to_string(),
+            volume_01: point.volume_01,
+        })
+        .collect()
+}
+
 const ECG_SAMPLE_PERIOD_NS: u64 = 1_000_000_000 / 130;
 const ACC_SAMPLE_PERIOD_NS: u64 = 1_000_000_000 / 200;
 
@@ -347,6 +383,8 @@ enum AppEvent {
         timing: TimingEnvelope,
         samples: Vec<AccSample>,
         formulas: FormulaPublishBatch,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        breathing_presentation_points: Vec<BreathingPresentationPoint>,
     },
     Metrics {
         source: SourceDescriptor,
@@ -1076,11 +1114,13 @@ async fn connect_device(
                     host_receive_timestamp_ns,
                     samples,
                 } => {
-                    let timing = TimingEnvelope::mapped_source(
-                        &mut source_clock,
-                        sensor_timestamp_ns,
+                    let mapping = source_clock
+                        .observe_and_map(sensor_timestamp_ns, host_receive_timestamp_ns);
+                    let timing = TimingEnvelope::from_mapping(
+                        Some(sensor_timestamp_ns),
                         host_receive_timestamp_ns,
                         ACC_SAMPLE_PERIOD_NS,
+                        mapping,
                     );
                     let output_open = forward_output_warning(
                         &ui_tx,
@@ -1089,7 +1129,13 @@ async fn connect_device(
                     );
                     let formulas =
                         output.process_accelerometer_formulas(sensor_timestamp_ns, &samples);
-                    let derived = metrics_engine.process_accelerometer(&samples);
+                    let derived = metrics_engine.process_accelerometer_timed(
+                        &samples,
+                        timed_acc_batch(sensor_timestamp_ns, mapping),
+                    );
+                    let breathing_presentation_points = breathing_presentation_points(
+                        metrics_engine.take_breathing_presentation_points(),
+                    );
                     if !output_open
                         || !forward_display_event(
                             &ui_tx,
@@ -1099,6 +1145,7 @@ async fn connect_device(
                                 timing: timing.clone(),
                                 samples,
                                 formulas,
+                                breathing_presentation_points,
                             },
                         )
                     {
@@ -1859,6 +1906,60 @@ mod tests {
             input_scan_plan(&[InputKind::PolarH10], Some(InputKind::PolarH10)),
             (true, false)
         );
+    }
+
+    #[test]
+    fn timed_acc_batch_preserves_pmd_and_clock_evidence() {
+        let batch = timed_acc_batch(
+            42_000_000,
+            ClockMapping {
+                mapped_time_ns: 8_000_000,
+                revision: 7,
+                quality: polar_stream_time::ClockQuality::Tracking,
+                uncertainty_ns: 2_000_000,
+                reset: true,
+            },
+        );
+
+        assert_eq!(batch.newest_sensor_timestamp_ns, 42_000_000);
+        assert_eq!(batch.sample_period_ns, ACC_SAMPLE_PERIOD_NS);
+        assert_eq!(batch.clock_revision, 7);
+        assert!(batch.clock_reset);
+        assert!(batch.gap_before);
+    }
+
+    #[test]
+    fn empty_presentation_points_do_not_change_accelerometer_ipc_shape() {
+        let event = AppEvent::Accelerometer {
+            source: SourceDescriptor {
+                id: "source-1".into(),
+                slot: "source-1".into(),
+                label: "Source 1".into(),
+                color: SOURCE_COLORS[0],
+                input_kind: InputKind::PolarH10,
+            },
+            sensor_timestamp_ns: 42_000_000,
+            timing: TimingEnvelope::arrival(45_000_000, Some(ACC_SAMPLE_PERIOD_NS), false),
+            samples: Vec::new(),
+            formulas: FormulaPublishBatch::default(),
+            breathing_presentation_points: Vec::new(),
+        };
+
+        let value = serde_json::to_value(event).expect("accelerometer event must serialize");
+        assert!(value.get("breathingPresentationPoints").is_none());
+    }
+
+    #[test]
+    fn presentation_points_keep_source_time_as_decimal_strings() {
+        let points =
+            breathing_presentation_points(vec![polar_h10_metrics::BreathingWaveformPoint {
+                source_timestamp_ns: 9_876_543_210_123,
+                volume_01: 0.75,
+            }]);
+
+        let value = serde_json::to_value(&points).expect("presentation points must serialize");
+        assert_eq!(value[0]["sourceTimestampNs"], "9876543210123");
+        assert_eq!(value[0]["volume01"], 0.75);
     }
 
     #[cfg(feature = "rusty-lsl-backend")]

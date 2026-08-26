@@ -21,8 +21,9 @@ The active native implementation is
 The browser implementation in
 [`apps/polar-stream/ui/polar-web-bluetooth.js`](../apps/polar-stream/ui/polar-web-bluetooth.js)
 uses the same settings, formulas, and constants. Browser and native behavior are
-covered by deterministic tests, but the new browser PMD path has not yet been
-verified against a physical H10.
+covered by deterministic tests. The native product input plus timed estimator
+passed the bounded physical H10 verifier on 2026-08-26; the direct browser PMD
+path has not yet received its own physical acceptance run.
 
 ## Provenance
 
@@ -46,9 +47,10 @@ one claim.
    and [formula sheet](https://mesmerprism.com/PolarH10/reference/breathing-formulas.html)
    are the original handoff surfaces.
 3. Polar Stream reimplemented a smaller, explicit variant in Rust, added the
-   user-selected axis mask, time-window smoothing, causal baseline removal,
-   adaptive robust bounds, explicit readiness/quality telemetry, the phase
-   visualizer, and an equivalent browser processor.
+   user-selected axis mask and explicit readiness/quality telemetry. The current
+   timed-v1 upgrade adds per-sample PMD source-time reconstruction, dt-aware
+   filtering, fixed-coordinate phase hysteresis, bounded optional output-range
+   adaptation, separate renderer presentation, and a matching browser processor.
 
 The protocol path is cross-checked against Polar's official
 [BLE SDK](https://github.com/polarofficial/polar-ble-sdk) and
@@ -59,203 +61,185 @@ validate the breathing inference.
 
 ## Active Polar Stream algorithm
 
-### 1. Input and axis selection
+The new default contract is `timed-pca-v1` for the continuous waveform and
+`hysteresis-v1` for phase. The pre-upgrade implementation remains available as
+`legacy-v0`; saved settings with either version field missing deserialize that
+field as legacy so an old configuration is not silently reinterpreted.
 
-The H10 supplies samples at a requested 200 Hz:
+### 1. Source-time input and ordering
 
-```text
-a[n] = [x_mg, y_mg, z_mg] / 1000            (g)
-```
-
-Disabled axes are set to zero before any filtering or calibration. At least two
-axes are required. X + Z is the current default because it reproduces the
-upstream non-rotational/XZ mode, but this is an orientation-dependent starting
-choice, not a universal anatomical rule. Including Y changes the learned PCA
-axis and may either recover useful motion or admit additional rotation/artifact.
-
-### 2. Sample smoothing
-
-Each selected axis uses an exponential moving average:
+The H10 records ACC at a nominal requested 200 Hz but normally delivers many samples
+in one BLE notification. The PMD timestamp identifies the **newest** sample in
+that frame. The first frame uses the nominal 5 ms period. Each ordinary later
+frame distributes the measured interval between consecutive newest-sample
+anchors across all samples, with the final sample landing exactly on the new
+anchor:
 
 ```text
-N_smooth = smoothing_window_seconds × 200
-alpha    = clamp(2 / (N_smooth + 1), 0.001, 1)
-f[n]     = f[n-1] + alpha × (a[n] - f[n-1])
+a[i] = [x_mg, y_mg, z_mg] / 1000                         (g)
+t_first[i] = newest - (frame_count - 1 - i) × 5 ms
+t_later[i] = previous_newest
+             + floor((newest - previous_newest) × (i + 1) / frame_count)
 ```
 
-The UI calls this a smoothing window for interpretability. It is an EMA time
-constant proxy, not a rectangular moving-average window. A longer value removes
-more rapid motion but adds lag and attenuates small/fast respiratory motion.
+Disabled axes are zeroed before filtering and PCA; at least two axes are
+required. X + Z remains the orientation-dependent default. Raw ACC publication
+stays first and unchanged. The estimator immediately discards samples at or
+behind its source-time watermark and counts them; it does not yet maintain a
+live reorder buffer. A real forward source gap beyond `stale_timeout_seconds`
+or an explicit source-clock reset produces Lost/not-ready evidence and retains
+nominal newest-anchored backfill instead of stretching across missing time. A
+clock reset also restarts calibration. Notification arrival time and
+notification size never determine waveform or state dynamics.
 
-### 3. Quiet calibration and principal axis
+### 2. Source-time smoothing and PCA calibration
 
-The processor retains the latest
-`calibration_window_seconds × 200` filtered samples. Every 0.5 seconds after the
-window is full, it tries to calibrate:
+Each selected axis uses a first-order low-pass with the actual accepted source
+time step:
 
 ```text
-center = mean(f)
-C      = mean((f - center)(f - center)^T)
-axis   = dominant eigenvector(C)
+alpha = dt / (volume_filter_tau_seconds + dt)
+f[i]  = f[i-1] + alpha × (a[i] - f[i-1])
 ```
 
-The eigenvector is found with eight power iterations, initialized on the
-dimension with the largest covariance diagonal. If `invert_direction` is true,
-the vector sign is flipped. PCA itself cannot determine which sign is inhale;
-manual inversion is therefore a necessary experimental control.
+The default time constant is 0.18 s. Calibration retains a complete
+`calibration_window_seconds` interval of filtered source-time samples, then
+computes their mean, covariance, and dominant PCA eigenvector. Power iteration
+runs 32 times from the dimension with the largest covariance diagonal. The
+largest absolute axis component is made positive for deterministic polarity;
+`invert_direction` is applied after that convention because PCA cannot know
+which physical direction is inhale.
 
-All calibration samples are projected onto that axis. The lower and upper
-quantiles form robust provisional bounds. Calibration is rejected when the raw
-quantile span is below `minimum_axis_range_g`. Accepted bounds are contracted by
-3% of the raw span at both edges. A rejected attempt leaves the rolling window
-active and tries again 0.5 seconds later.
+Calibration fails closed unless it has at least eight samples, PCA dominance is
+at least 0.05, and the 5th-to-95th percentile span (configurable) meets
+`minimum_axis_range_g`. The accepted mean, axis, lower bound, upper bound, span,
+and PCA dominance become the fixed calibration reference.
 
-### 4. Causal baseline, continuous projection, and normalized curve
+### 3. Continuous projection and normalized waveform
 
-For each subsequent filtered sample:
+For each accepted filtered sample:
 
 ```text
-beta        = 1 / (200 × 10)
-baseline[n] = baseline[n-1] + beta × (f[n] - baseline[n-1])
-p[n]        = dot(f[n] - baseline[n], axis)  (g)
-v[n] = clamp((p[n] - lower) / (upper - lower), 0, 1)
+p[i] = dot(f[i] - calibration_center, axis)                  (g)
+v[i] = clamp((p[i] - output_lower) / (output_upper-output_lower), 0, 1)
 ```
 
-`acc_breathing_magnitude` publishes `p[n]`. Despite the historical metric name,
-this is a **signed PCA projection in g**, not the non-negative Euclidean vector
-magnitude. The separate `acc_magnitude` metric is
-`sqrt(x² + y² + z²)`. In the output module, the projection can remain in g or be
-normalized to 0–1 for visualization/downstream use. `breathing_volume` publishes
-`v[n]` as the closest Polar analogue to the one-dimensional belt waveform used
-by Respyra. The ID is preserved for compatibility, but the UI labels it **ACC
-breathing waveform** because it is not calibrated respiratory volume. The
-10-second causal baseline reduces gravity and slow-posture drift without future
-samples; it does not make the signal posture invariant.
+`acc_breathing_magnitude` publishes the signed projection `p`; the historical
+name does not mean Euclidean magnitude. `breathing_volume` publishes `v` for
+compatibility, while the UI labels it **ACC breathing waveform**. It is a
+relative respiratory-motion/effort proxy, not retained lung volume, airflow, or
+a calibrated physiological volume.
 
-The live visualizer presents this output as a preliminary one-dimensional trace:
-the newest value is a moving dot and the preceding bounded display window forms
-its leftward trail. A rising dot is labeled inhale and a falling dot exhale
-according to the configured projection direction; belt placement can reverse
-that polarity, so direction inversion must be checked against observed breaths.
-The display introduces no additional filtering or respiratory estimate.
+Adaptive bounds are off by default. When enabled, projection points are sampled
+at no more than 20 Hz, retained for `adaptive_window_seconds`, and reconsidered
+at most every 0.5 s after 80 points. A quantile update is admitted only when its
+span is at least the configured minimum and between 0.5 and 2.0 times the fixed
+calibration span. Accepted output bounds move with
+`alpha = 1 - exp(-0.5 × dt)`. Adaptation affects only the displayed/published
+0–1 range; it cannot manufacture phase transitions because phase uses the fixed
+calibration coordinate below.
 
-### 5. Adaptive bounds
+### 4. Fixed-coordinate phase with hysteresis
 
-When adaptive bounds are enabled, the processor samples the projection at no
-more than 20 Hz, retains `adaptive_window_seconds`, and considers an update every
-0.5 seconds after at least 80 retained values. New quantile bounds are accepted
-only when their span:
-
-- is at least `minimum_axis_range_g`;
-- is at least 0.5 × the calibration span; and
-- is no more than 2.0 × the calibration span.
-
-Accepted bounds move 20% toward the new values. This limits abrupt visual jumps.
-Together with causal baseline removal it reduces slow drift, but it still cannot
-reliably distinguish posture changes from genuine changes in breathing effort.
-
-### 6. Time-normalized three-state phase classifier
-
-One phase decision is made per incoming ACC notification batch:
+The canonical state coordinate and derivative are calculated for every accepted
+source sample, independently of BLE batching:
 
 ```text
-reference_delta = 0.0005 + (1 - sensitivity)^2 × 0.015625
-threshold_per_s = reference_delta / 0.05 s
-batch_duration  = number_of_ACC_samples / 200 Hz
-velocity        = (latest_v - previously_emitted_v) / batch_duration
-
-velocity >  threshold_per_s  → +1 inhale
-velocity < -threshold_per_s  → -1 exhale
-otherwise                     →  0 pause/not-ready
+q[i]        = (p[i] - fixed_lower) / fixed_calibration_span
+raw_dq_dt   = (q[i] - q[i-1]) / dt
+alpha_state = dt / (phase_derivative_tau_seconds + dt)
+d[i]        = d[i-1] + alpha_state × (raw_dq_dt - d[i-1])
 ```
 
-The 50 ms reference preserves the previous sensitivity scale for a common
-10-sample notification while expressing the actual decision in normalized
-waveform units per second. A 30-sample/150 ms notification therefore needs
-three times the absolute change of a 10-sample/50 ms notification to receive
-the same phase class. Rust and Chromium use the same sample-count-derived
-duration and deterministic invariance fixtures.
+With the defaults, `d >= 0.030/s` requests Inhale, `d <= -0.030/s` requests
+Exhale, and `|d| <= 0.025/s` requests Hold. Values in the hysteresis band retain
+the active direction. A different request must persist for the 0.40 s
+confirmation time, and the current active state must independently satisfy its
+0.40 s minimum dwell before transition. A gap/reset clears derivative and state
+history; the lost batch is not allowed to change hidden phase state.
 
-Before calibration, after a host-side notification gap longer than
-`stale_timeout_seconds`, during excessive broadband motion, and on the first
-accepted value, the numeric result is also `0`. Consequently, zero does **not**
-uniquely mean a physiological pause. It may mean small motion, calibration,
-stale data, or bad signal.
+The transport value remains `+1` inhale, `0` hold/not-ready, and `-1` exhale for
+compatibility. Consumers must use `breathing_signal_ready` to distinguish a
+valid Hold from calibration, Lost, or rejected signal. `legacy-v0` retains the
+older sensitivity-derived per-batch velocity classifier for saved experiments.
 
-This removes the earlier direct dependence on BLE batch size. It still assumes
-that accepted ACC samples represent the requested 200 Hz stream; lost samples,
-sensor-rate changes, or malformed frame timing remain reasons to inspect raw
-timestamps and quality telemetry rather than treating the class as ground
-truth.
+### 5. Readiness, confidence, and diagnostics
 
-Every derived snapshot is emitted once per accepted ACC notification and is
-stamped with that notification's newest H10 PMD sensor timestamp. Native LSL
-maps this device time into the local LSL clock with the same first-frame offset
-contract as raw ACC; native OSC and CSV retain the nanosecond value directly.
-The Chromium event and browser CSV carry that same frame timestamp. This aligns
-raw and derived streams without pretending that the calculation occurred at a
-different physiological instant. It does not measure radio, operating-system,
-or transport latency; those require host receipt timestamps and a physical
-end-to-end gate.
-
-### 7. Readiness and confidence
-
-Readiness is true only after calibration, while notifications are fresh, and
-while an all-axis motion score is at least 0.35. The motion path applies the
-same EMA strength to all three raw axes before measuring successive filtered
-vectors. It is independent of the user-selected projection axes: ordinary
-high-rate sensor noise is attenuated, while broadband body motion still lowers
-the score.
+Readiness is true only after calibration, outside Lost, and while the all-axis
+motion score is at least 0.35. All-axis vectors receive the same source-time
+volume filter before their successive-vector magnitude is smoothed with a 0.50
+s time constant:
 
 ```text
 motion_threshold = max(0.1 × minimum_axis_range_g, 0.001)
-motion_score     = 1 / (1 + (filtered_motion_delta_ema_g / motion_threshold)^2)
-ready            = calibrated AND fresh AND motion_score >= 0.35
+motion_score     = 1 / (1 + (motion_delta_ema_g / motion_threshold)^2)
+range_quality    = clamp(calibration_span / (2 × minimum_axis_range_g), 0, 1)
+confidence       = range_quality × motion_score × PCA_dominance
 ```
 
-The confidence index combines calibrated range, motion, history coverage, and
-the strongest positive normalized autocorrelation over approximately 1.45–12.5
-seconds in the no-more-than-20 Hz projection history:
+Not-ready samples have confidence zero and publish phase zero. Confidence is an
+app-specific quality index, not a probability. Native diagnostics retain the
+configuration generation, source time, clock revision, accepted and late-drop
+counts, gap/reset/Lost counts, transition count, fixed span, PCA axis and
+dominance, and filtered derivative.
 
-```text
-confidence = range_score × motion_score
-             × (0.40 + 0.60 × coverage × periodicity)
-```
+### 6. Canonical output versus presentation
 
-Not-ready samples have confidence zero and force phase to zero. This is a causal,
-bounded engineering heuristic for rejecting obviously poor intervals. It is not
-a probability, does not establish that a periodic component is respiration, and
-must be calibrated against synchronized reference data before thresholds are
-used for study exclusion.
+One canonical derived snapshot is emitted per accepted ACC notification and is
+stamped with that notification's newest PMD time; its internal computation still
+used all reconstructed/interpolated sample times. Native LSL maps source time through
+the same clock contract as raw ACC, while OSC/CSV preserve their existing
+timestamp contract. The browser adapter mirrors the estimator from PMD source
+time.
+
+Separately, the core exposes at most 512 ordered `(source_timestamp_ns,
+volume_01)` points for the renderer. They never enter LSL, OSC, CSV, calibration,
+or classification. **Fresh + smoothing** follows the newest available point
+with a 0.12 s render-time smoothing constant. **Timestamp-faithful** interpolates
+the trail at an intentional 0.18 s source-time delay, matching the usual roughly
+37-sample notification span more closely. This separation provides a responsive
+display without falsifying the canonical sensor-time stream.
 
 ## Current configurable parameters
 
-New outputs use the saved breathing configuration (or the documented defaults
-for a first run). All parameters are editable through **Adjust** after the module
-is added; saving restarts calibration for both breathing outputs. The metric
-picker deliberately keeps its selected-metric window to the output loop,
-scientific summary, and reviewed sources.
+New outputs use the versioned defaults below. All parameters are editable
+through **Adjust** after the module is added and are shared by the breathing
+output family. A waveform/PCA change restarts calibration; a state-only change
+resets only the state machine in the native core. Older saved objects with no
+mode fields retain legacy behavior.
 
 | Parameter | Default | Accepted range | Effect and experimental note |
 | --- | ---: | ---: | --- |
+| `volume_mode` | `timed-pca-v1` | timed or legacy | Selects the source-time waveform estimator. Missing saved values mean `legacy-v0`. |
+| `state_mode` | `hysteresis-v1` | hysteresis or legacy | Selects the phase state machine. Hysteresis requires timed PCA; legacy volume is clamped to legacy state. Missing saved values mean `legacy-v0`. |
 | `axes` | X + Z | any 2 or 3 | Axis mask applied before smoothing/PCA. Always log the mask and physical strap orientation. |
-| `smoothing_window_seconds` | 0.75 s | 0.05–5 s | EMA strength. Longer is steadier/slower; shorter is more reactive/artifact-sensitive. |
-| `sensitivity` | 0.60 | 0–1 | Phase-velocity threshold only. Higher classifies smaller normalized change per second. It does not improve waveform quality. |
+| `volume_filter_tau_seconds` | 0.18 s | 0.01–5 s | Source-time low-pass time constant for timed PCA. |
+| `smoothing_window_seconds` | 0.75 s | 0.05–5 s | Legacy-v0 sample-count EMA control only. |
+| `sensitivity` | 0.60 | 0–1 | Legacy-v0 phase threshold only. |
 | `invert_direction` | false | boolean | Flips the PCA axis sign. Use only after a predeclared reference check. |
 | projection normalization | 0–1 | original g or 0–1 | Output/display transform for the continuous projection; does not change the classifier input. |
-| `calibration_window_seconds` | 12 s | 1–60 s | Number of quiet samples used for PCA and initial bounds. |
+| `calibration_window_seconds` | 12 s | 1–60 s | Complete source-time interval used for PCA and initial bounds. |
 | `minimum_axis_range_g` | 0.010 g | 0.001–0.250 g | Rejects calibration/adaptive windows with too little selected-axis travel. |
-| `stale_timeout_seconds` | 3 s | 0.25–30 s | Host notification gap that forces class 0/not-ready. |
-| `adaptive_bounds` | true | boolean | Permits recent accepted projection quantiles to shift normalization bounds. |
+| `stale_timeout_seconds` | 0.50 s | 0.25–30 s | Forward source-time gap that marks the current batch Lost/not-ready. Legacy saved settings default to 3 s. |
+| `phase_derivative_tau_seconds` | 0.40 s | 0.01–5 s | Source-time low-pass time constant for fixed-coordinate velocity. |
+| `phase_enter_threshold_per_second` | 0.030/s | 0.001–5/s | Absolute velocity required to request inhale/exhale. |
+| `phase_hold_threshold_per_second` | 0.025/s | 0–enter threshold | Absolute velocity at or below which Hold is requested. |
+| `phase_confirmation_seconds` | 0.40 s | 0–5 s | Continuous request time before a different phase may activate. |
+| `phase_minimum_dwell_seconds` | 0.40 s | 0–5 s | Minimum active-state duration; evaluated independently of confirmation. |
+| `adaptive_bounds` | false | boolean | Allows only the 0–1 output bounds to follow recent accepted quantiles. Legacy saved settings default to true. |
 | `adaptive_window_seconds` | 20 s | 5–300 s | Recent history retained for adaptive quantiles. |
 | `lower_quantile` | 0.05 | 0–0.40 | Robust low bound. Must stay at least 0.10 below the upper quantile. |
 | `upper_quantile` | 0.95 | 0.60–1 | Robust high bound. Must stay at least 0.10 above the lower quantile. |
+| presentation mode | fresh + smoothing | fresh or timestamp-faithful | Renderer only; never changes canonical outputs. |
+| presentation smoothing tau | 0.12 s | 0.01–2 s | Render-time smoothing for fresh mode. |
+| presentation delay | 0.18 s | 0–1 s | Intentional source-time delay for faithful interpolation. |
 
 Fixed implementation constants that must also be versioned in a reproducible
-study are: 200 Hz assumed ACC rate, eight PCA power iterations, 0.5-second
-calibration retry, 3% edge contraction, adaptive sampling capped at 20 Hz,
-minimum 80 adaptive values, 0.5–2.0 accepted span ratio, 20% bound update, and
-the phase-threshold formula plus 50 ms compatibility reference above.
+study are: 5 ms default ACC sample period, 32 PCA power iterations, eight-sample
+minimum, 0.05 PCA-dominance floor, 0.50 s motion-quality time constant, 0.35
+readiness threshold, immediate watermark late-drop policy, adaptive sampling
+capped at 20 Hz, minimum 80 adaptive values, 0.5 s update cadence, 0.5–2.0
+accepted span ratio, adaptation rate 0.5/s, and the 512-point renderer bound.
 
 ## Lessons incorporated from the Lalidis Mateo belt thesis
 
@@ -267,7 +251,7 @@ transparent treatment of cleaning failures:
 
 | Thesis mode | Thesis output | Closest Polar Stream output | Non-equivalence |
 | --- | --- | --- | --- |
-| fixed control | fixed percentile-calibrated 0–1 belt controller | `breathing_volume` with adaptive bounds off | Polar still removes a moving 10-second baseline |
+| fixed control | fixed percentile-calibrated 0–1 belt controller | timed `breathing_volume` with adaptive bounds off | Polar measures chest acceleration projected on a learned axis, not belt deformation |
 | movement proxy | median-centered signed belt movement | `acc_breathing_magnitude` | Polar is a signed PCA projection in g |
 | adaptive control | slowly adapting center/amplitude 0–1 controller | `breathing_volume` with adaptive bounds on | Polar uses bounded rolling quantiles rather than the thesis model |
 
@@ -281,13 +265,14 @@ confidence, bounded queues, and conservative phase language.
 
 Its strongest negative result is also an acceptance requirement: the tested PZT
 setup drifted by 0.33 (fixed mode) and 0.40 (adaptive mode) of the normalized
-range during a manually selected five-second retention interval. Polar Stream's
-10-second moving baseline likewise causes a sustained orientation/motion offset
-to decay toward center. Consequently, neither `acc_breathing_magnitude` nor
-`breathing_volume` is a defensible retained-lung-level signal. An interaction
-that needs a held visual state must implement and label a separate hold-control
-contract, then validate retention drift against a synchronized reference; the
-continuous respiratory-motion waveform must not silently freeze itself.
+range during a manually selected five-second retention interval. Timed Polar
+Stream no longer removes a moving baseline, but strap acceleration still does
+not encode an absolute retained-lung level and its fixed calibration coordinate
+can shift with posture or mounting. Consequently, neither
+`acc_breathing_magnitude` nor `breathing_volume` is a defensible retained-volume
+signal. An interaction that needs a held visual state must implement and label a
+separate hold-control contract, then validate retention drift against a
+synchronized reference.
 
 ## Upstream PolarH10 versus Polar Stream
 
@@ -297,15 +282,15 @@ active algorithm.
 | Concern | Upstream PolarH10 reference | Active Polar Stream |
 | --- | --- | --- |
 | Axis modes | Separate 3D PCA and XZ PCA; XZ is default | One PCA after a user-selectable 2/3-axis mask; X + Z default |
-| Timing | Estimates sensor/host sample timing | Assumes requested 200 Hz for filtering/calibration |
-| Raw smoothing | Fixed `SampleEmaAlpha = 0.10` | User-facing EMA window; default 0.75 s (`alpha ≈ 0.0132`) |
-| Projection smoothing | Separate `ProjectionEmaAlpha = 0.10` | No additional projection EMA |
-| Useful-signal gate | 4 s window, ≥80 samples, ≥20 Hz, ≥0.002 g per-axis range | Calibration/freshness/all-axis motion readiness plus range/coverage/periodicity confidence |
-| Calibration | 12 s, ≥240 samples, ≥0.01 g travel, retry every 2 s | 12 s × 200 samples, ≥0.01 g quantile span, retry every 0.5 s |
-| Bounds | 5/95% quantiles, 3% edge ease | Same default quantiles/ease, user configurable |
+| Timing | Estimates sensor/host sample timing | Uses nominal 5 ms first/gap backfill and interpolates ordinary batches between PMD newest-sample anchors; batch arrival cadence is irrelevant |
+| Raw smoothing | Fixed `SampleEmaAlpha = 0.10` | dt-aware first-order low-pass; 0.18 s default tau |
+| Projection smoothing | Separate `ProjectionEmaAlpha = 0.10` | Axis filtering occurs before projection; no batch-level projection filter |
+| Useful-signal gate | 4 s window, ≥80 samples, ≥20 Hz, ≥0.002 g per-axis range | Calibration/PCA dominance, source freshness, and all-axis motion readiness |
+| Calibration | 12 s, ≥240 samples, ≥0.01 g travel, retry every 2 s | Complete 12 s source-time window, 32-iteration PCA, quantile span and dominance gates |
+| Bounds | 5/95% quantiles, 3% edge ease | User quantiles on the fixed calibration projection; no edge contraction |
 | Direction | Optional external direction reference plus inversion | Manual inversion only |
-| Adaptation | Coverage/rate-limited expansion and contraction; default window 20 s | Simplified quantile span gate and fixed 20% blend |
-| Phase | Upstream per-update delta threshold (`0.003`) | Sensitivity-derived normalized velocity per second |
+| Adaptation | Coverage/rate-limited expansion and contraction; default window 20 s | Off by default; bounded rolling quantiles and dt-aware convergence affect output bounds only |
+| Phase | Upstream per-update delta threshold (`0.003`) | Fixed-calibration velocity, dt-aware derivative smoothing, hysteresis, confirmation, dwell, and stale/Lost reset |
 
 Relevant upstream defaults not currently ported include its exact useful-signal
 gate, minimum adaptive coverage 0.85, initial-span acceptance factors 0.75/1.35,
@@ -319,11 +304,13 @@ Do not search settings on the same recordings used to report performance. Use a
 development set with a respiratory reference, freeze one configuration, then
 evaluate it unchanged on held-out participants/conditions.
 
-A compact, interpretable development grid is:
+A compact, interpretable timed-v1 development grid is:
 
 - axes: X + Z versus X + Y + Z;
-- smoothing: 0.25, 0.75, and 1.50 seconds;
-- phase sensitivity: 0.40, 0.60, and 0.80; and
+- volume filter tau: 0.10, 0.18, and 0.30 seconds;
+- derivative filter tau: 0.25, 0.40, and 0.60 seconds;
+- enter/hold threshold pairs around the 0.030/0.025 per-second defaults; and
+- confirmation/dwell pairs around the 0.40/0.40-second defaults; and
 - adaptive bounds: off versus on with the 20-second default window.
 
 These are test levels, not validated presets. Change one factor at a time before
@@ -383,7 +370,34 @@ recording met predeclared analysis gates. The analyzer always leaves
 `physiologicalAcceptanceEstablished` false: acceptance limits require repeated
 held-out participants and conditions, not a favorable correlation in one run.
 
-## Validation plan
+## Physical engineering validation and remaining validation plan
+
+To repeat the bounded timed-v1 engineering gate, wake and wear exactly one H10,
+remain still while breathing naturally through calibration, then deliberately
+include at least one complete inhale/hold/exhale sequence and run:
+
+```text
+cargo run -p polar-stream --example verify_h10_timed_breathing
+```
+
+The bounded 90-second verifier uses the production Windows input owner and the
+same `MetricEngine` timed API as the app. It retains no identifier or raw
+physiological values. Passing requires at least 30 source-time seconds, complete
+calibration, ready output, a non-flat waveform, all three phase values, at least
+1,000 strictly ordered renderer points within a bounded 4.5–5.5 ms nominal-200 Hz
+interval, and zero estimator late/gap damage. It also reports samples per BLE
+notification and effective source cadence so batching is evidence rather than an
+assumption.
+
+The 2026-08-26 Windows run passed with 170 frames and 6,120 accepted samples over
+30.035968212 source seconds: every frame contained 36 samples, 169 batches were
+anchor-interpolated, effective presentation cadence was 202.547103 Hz, and all
+3,688 measured presentation intervals were 4.934591–4.939678 ms. It reported zero
+late drops, gaps, order errors, or cadence errors; calibration completed, 103
+frames were ready, all three phase values appeared, confidence peaked at 0.968760,
+and normalized waveform span was 0.903095. No output transport was initialized.
+This is an engineering acceptance run only and does not establish physiological
+validity.
 
 Use a respiratory inductance plethysmography belt, airflow/capnography, or
 another justified reference sampled on a synchronizable clock. Evaluate quiet

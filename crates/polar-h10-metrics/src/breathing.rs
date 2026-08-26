@@ -6,15 +6,84 @@ use std::{
 use polar_h10_core::AccSample;
 use serde::{Deserialize, Serialize};
 
-use crate::MetricSample;
+use crate::{MetricSample, timed_breathing::TimedBreathingState};
 
 const SAMPLE_RATE_HZ: f64 = 200.0;
 const PHASE_REFERENCE_BATCH_SECONDS: f32 = 0.05;
+
+/// Versioned ACC waveform behavior. Missing values deserialize to the original
+/// implementation so persisted pre-upgrade settings keep their meaning.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BreathingVolumeMode {
+    LegacyV0,
+    TimedPcaV1,
+}
+
+/// Versioned respiratory-phase behavior.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BreathingStateMode {
+    LegacyV0,
+    HysteresisV1,
+}
+
+/// Timing evidence for one decoded PMD accelerometer notification.
+///
+/// Polar defines the frame timestamp as the newest sample in the batch. The
+/// processor interpolates ordinary advancing batches from the preceding frame
+/// anchor to this one. The first batch and batches following explicit or stale
+/// gaps use `sample_period_ns` for nominal backfill from this newest anchor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimedAccBatch {
+    pub newest_sensor_timestamp_ns: u64,
+    pub sample_period_ns: u64,
+    pub clock_revision: u64,
+    pub clock_reset: bool,
+    pub gap_before: bool,
+}
+
+/// Bounded cumulative and latest-frame evidence for the timed estimator.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BreathingDiagnostics {
+    pub config_generation: u64,
+    pub source_timestamp_ns: u64,
+    pub clock_revision: u64,
+    pub accepted_samples: u64,
+    pub late_samples_dropped: u64,
+    pub gap_count: u64,
+    pub clock_reset_count: u64,
+    pub lost_count: u64,
+    pub state_transition_count: u64,
+    pub phase_derivative_per_second: f32,
+    pub calibration_span_g: f32,
+    pub pca_dominance_01: f32,
+    pub pca_axis: [f32; 3],
+    pub latest_effective_sample_period_ns: u64,
+    pub latest_anchor_residual_ns: i64,
+    pub maximum_absolute_anchor_residual_ns: u64,
+    pub interpolated_batch_count: u64,
+    pub latest_gap: bool,
+    pub latest_clock_reset: bool,
+    pub latest_lost: bool,
+}
+
+/// A bounded, non-authoritative source-time waveform point for renderer-side
+/// interpolation. It is never used to classify canonical breathing state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BreathingWaveformPoint {
+    pub source_timestamp_ns: u64,
+    pub volume_01: f32,
+}
 
 /// Saved controls shared by the experimental accelerometer breathing outputs.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BreathingSettings {
+    #[serde(default = "legacy_volume_mode")]
+    pub volume_mode: BreathingVolumeMode,
+    #[serde(default = "legacy_state_mode")]
+    pub state_mode: BreathingStateMode,
     #[serde(default = "default_axes")]
     pub axes: [bool; 3],
     #[serde(default = "default_calibration_window_seconds")]
@@ -37,28 +106,54 @@ pub struct BreathingSettings {
     pub lower_quantile: f32,
     #[serde(default = "default_upper_quantile")]
     pub upper_quantile: f32,
+    #[serde(default = "default_volume_filter_tau_seconds")]
+    pub volume_filter_tau_seconds: f32,
+    #[serde(default = "default_phase_derivative_tau_seconds")]
+    pub phase_derivative_tau_seconds: f32,
+    #[serde(default = "default_phase_enter_threshold_per_second")]
+    pub phase_enter_threshold_per_second: f32,
+    #[serde(default = "default_phase_hold_threshold_per_second")]
+    pub phase_hold_threshold_per_second: f32,
+    #[serde(default = "default_phase_confirmation_seconds")]
+    pub phase_confirmation_seconds: f32,
+    #[serde(default = "default_phase_minimum_dwell_seconds")]
+    pub phase_minimum_dwell_seconds: f32,
 }
 
 impl Default for BreathingSettings {
     fn default() -> Self {
         Self {
+            volume_mode: BreathingVolumeMode::TimedPcaV1,
+            state_mode: BreathingStateMode::HysteresisV1,
             axes: default_axes(),
             calibration_window_seconds: default_calibration_window_seconds(),
             minimum_axis_range_g: default_minimum_axis_range_g(),
             smoothing_window_seconds: default_smoothing_window_seconds(),
             sensitivity: default_sensitivity(),
-            stale_timeout_seconds: default_stale_timeout_seconds(),
+            stale_timeout_seconds: default_timed_stale_timeout_seconds(),
             invert_direction: false,
-            adaptive_bounds: true,
+            adaptive_bounds: false,
             adaptive_window_seconds: default_adaptive_window_seconds(),
             lower_quantile: default_lower_quantile(),
             upper_quantile: default_upper_quantile(),
+            volume_filter_tau_seconds: default_volume_filter_tau_seconds(),
+            phase_derivative_tau_seconds: default_phase_derivative_tau_seconds(),
+            phase_enter_threshold_per_second: default_phase_enter_threshold_per_second(),
+            phase_hold_threshold_per_second: default_phase_hold_threshold_per_second(),
+            phase_confirmation_seconds: default_phase_confirmation_seconds(),
+            phase_minimum_dwell_seconds: default_phase_minimum_dwell_seconds(),
         }
     }
 }
 
 impl BreathingSettings {
     pub fn clamped(mut self) -> Self {
+        // Hysteresis-v1 is defined on the timed estimator's fixed calibration
+        // coordinate. A legacy waveform therefore retains its legacy state
+        // classifier instead of advertising a combination it cannot honor.
+        if self.volume_mode == BreathingVolumeMode::LegacyV0 {
+            self.state_mode = BreathingStateMode::LegacyV0;
+        }
         if self.axes.iter().filter(|enabled| **enabled).count() < 2 {
             self.axes = default_axes();
         }
@@ -77,8 +172,28 @@ impl BreathingSettings {
             self.lower_quantile = 0.05;
             self.upper_quantile = 0.95;
         }
+        self.volume_filter_tau_seconds =
+            finite_or(self.volume_filter_tau_seconds, 0.18).clamp(0.01, 5.0);
+        self.phase_derivative_tau_seconds =
+            finite_or(self.phase_derivative_tau_seconds, 0.40).clamp(0.01, 5.0);
+        self.phase_enter_threshold_per_second =
+            finite_or(self.phase_enter_threshold_per_second, 0.030).clamp(0.001, 5.0);
+        self.phase_hold_threshold_per_second =
+            finite_or(self.phase_hold_threshold_per_second, 0.025)
+                .clamp(0.0, self.phase_enter_threshold_per_second);
+        self.phase_confirmation_seconds =
+            finite_or(self.phase_confirmation_seconds, 0.40).clamp(0.0, 5.0);
+        self.phase_minimum_dwell_seconds =
+            finite_or(self.phase_minimum_dwell_seconds, 0.40).clamp(0.0, 5.0);
         self
     }
+}
+
+const fn legacy_volume_mode() -> BreathingVolumeMode {
+    BreathingVolumeMode::LegacyV0
+}
+const fn legacy_state_mode() -> BreathingStateMode {
+    BreathingStateMode::LegacyV0
 }
 
 const fn enabled() -> bool {
@@ -102,6 +217,9 @@ const fn default_sensitivity() -> f32 {
 const fn default_stale_timeout_seconds() -> f32 {
     3.0
 }
+const fn default_timed_stale_timeout_seconds() -> f32 {
+    0.50
+}
 const fn default_adaptive_window_seconds() -> f32 {
     20.0
 }
@@ -110,6 +228,24 @@ const fn default_lower_quantile() -> f32 {
 }
 const fn default_upper_quantile() -> f32 {
     0.95
+}
+const fn default_volume_filter_tau_seconds() -> f32 {
+    0.18
+}
+const fn default_phase_derivative_tau_seconds() -> f32 {
+    0.40
+}
+const fn default_phase_enter_threshold_per_second() -> f32 {
+    0.030
+}
+const fn default_phase_hold_threshold_per_second() -> f32 {
+    0.025
+}
+const fn default_phase_confirmation_seconds() -> f32 {
+    0.40
+}
+const fn default_phase_minimum_dwell_seconds() -> f32 {
+    0.40
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +322,9 @@ impl BreathingSnapshot {
 
 pub struct BreathingProcessor {
     settings: BreathingSettings,
+    timed: TimedBreathingState,
+    synthetic_newest_timestamp_ns: u64,
+    config_generation: u64,
     filtered: [f32; 3],
     has_filtered: bool,
     calibration: VecDeque<[f32; 3]>,
@@ -218,8 +357,12 @@ impl Default for BreathingProcessor {
 
 impl BreathingProcessor {
     pub fn new(settings: BreathingSettings) -> Self {
+        let settings = settings.clamped();
         Self {
-            settings: settings.clamped(),
+            settings,
+            timed: TimedBreathingState::new(settings, 0),
+            synthetic_newest_timestamp_ns: 0,
+            config_generation: 0,
             filtered: [0.0; 3],
             has_filtered: false,
             calibration: VecDeque::new(),
@@ -248,8 +391,38 @@ impl BreathingProcessor {
     pub fn apply_settings(&mut self, settings: BreathingSettings) {
         let settings = settings.clamped();
         if self.settings != settings {
-            *self = Self::new(settings);
+            let next_generation = self.config_generation.saturating_add(1);
+            if self.settings.volume_mode == BreathingVolumeMode::TimedPcaV1
+                && settings.volume_mode == BreathingVolumeMode::TimedPcaV1
+            {
+                self.timed.apply_settings(settings, next_generation);
+                self.settings = settings;
+                self.config_generation = next_generation;
+            } else {
+                *self = Self::new(settings);
+                self.config_generation = next_generation;
+                self.timed.set_config_generation(next_generation);
+            }
         }
+    }
+
+    pub fn diagnostics(&self) -> BreathingDiagnostics {
+        if self.settings.volume_mode == BreathingVolumeMode::TimedPcaV1 {
+            self.timed.diagnostics()
+        } else {
+            BreathingDiagnostics {
+                config_generation: self.config_generation,
+                calibration_span_g: self.calibration_span,
+                pca_axis: self.axis,
+                ..BreathingDiagnostics::default()
+            }
+        }
+    }
+
+    /// Drains renderer-only waveform points produced by the most recent timed
+    /// calls. Canonical metric and phase calculations never consume this queue.
+    pub fn take_presentation_points(&mut self) -> Vec<BreathingWaveformPoint> {
+        self.timed.take_presentation_points()
     }
 
     fn calibration_target(&self) -> usize {
@@ -267,6 +440,40 @@ impl BreathingProcessor {
     }
 
     pub fn push(&mut self, samples: &[AccSample]) -> Option<BreathingSnapshot> {
+        if self.settings.volume_mode == BreathingVolumeMode::TimedPcaV1 {
+            if samples.is_empty() {
+                return None;
+            }
+            let period_ns = (1_000_000_000.0 / SAMPLE_RATE_HZ) as u64;
+            self.synthetic_newest_timestamp_ns = self
+                .synthetic_newest_timestamp_ns
+                .saturating_add(period_ns.saturating_mul(samples.len() as u64));
+            return self.push_timed(
+                samples,
+                TimedAccBatch {
+                    newest_sensor_timestamp_ns: self.synthetic_newest_timestamp_ns,
+                    sample_period_ns: period_ns,
+                    clock_revision: 0,
+                    clock_reset: false,
+                    gap_before: false,
+                },
+            );
+        }
+        self.push_legacy(samples)
+    }
+
+    pub fn push_timed(
+        &mut self,
+        samples: &[AccSample],
+        timing: TimedAccBatch,
+    ) -> Option<BreathingSnapshot> {
+        if self.settings.volume_mode == BreathingVolumeMode::LegacyV0 {
+            return self.push_legacy(samples);
+        }
+        self.timed.push(samples, timing)
+    }
+
+    fn push_legacy(&mut self, samples: &[AccSample]) -> Option<BreathingSnapshot> {
         if samples.is_empty() {
             return None;
         }
@@ -593,6 +800,16 @@ fn periodicity_score(values: &VecDeque<(f64, f32)>) -> f32 {
 mod tests {
     use super::*;
 
+    fn legacy_settings() -> BreathingSettings {
+        BreathingSettings {
+            volume_mode: BreathingVolumeMode::LegacyV0,
+            state_mode: BreathingStateMode::LegacyV0,
+            stale_timeout_seconds: default_stale_timeout_seconds(),
+            adaptive_bounds: true,
+            ..BreathingSettings::default()
+        }
+    }
+
     fn clean_motion(index: usize) -> AccSample {
         let z = 1_000 + (25.0 * (index as f32 / 200.0 * std::f32::consts::TAU * 0.2).sin()) as i16;
         AccSample {
@@ -674,7 +891,7 @@ mod tests {
         let mut processor = BreathingProcessor::new(BreathingSettings {
             calibration_window_seconds: 1.0,
             adaptive_bounds: false,
-            ..BreathingSettings::default()
+            ..legacy_settings()
         });
         for index in 0..200 {
             processor.push(&[clean_motion(index)]);
@@ -728,7 +945,7 @@ mod tests {
             calibration_window_seconds: 5.0,
             adaptive_bounds: false,
             sensitivity: 1.0,
-            ..BreathingSettings::default()
+            ..legacy_settings()
         };
         let mut normal = BreathingProcessor::new(settings);
         let mut inverted = BreathingProcessor::new(BreathingSettings {
@@ -757,7 +974,7 @@ mod tests {
         let mut processor = BreathingProcessor::new(BreathingSettings {
             calibration_window_seconds: 1.0,
             adaptive_bounds: false,
-            ..BreathingSettings::default()
+            ..legacy_settings()
         });
         for index in 0..200 {
             processor.push(&[clean_motion(index)]);
@@ -790,5 +1007,59 @@ mod tests {
         assert_eq!(settings.axes, [true, true, false]);
         assert_eq!(settings.smoothing_window_seconds, 5.0);
         assert_eq!(settings.sensitivity, 0.0);
+    }
+
+    #[test]
+    fn pre_v1_settings_deserialize_with_legacy_behavior() {
+        let settings: BreathingSettings = serde_json::from_str(
+            r#"{
+                "axes": [true, false, true],
+                "calibrationWindowSeconds": 12.0,
+                "minimumAxisRangeG": 0.01,
+                "smoothingWindowSeconds": 0.75,
+                "sensitivity": 0.6,
+                "staleTimeoutSeconds": 3.0,
+                "invertDirection": false,
+                "adaptiveBounds": true,
+                "adaptiveWindowSeconds": 20.0,
+                "lowerQuantile": 0.05,
+                "upperQuantile": 0.95
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.volume_mode, BreathingVolumeMode::LegacyV0);
+        assert_eq!(settings.state_mode, BreathingStateMode::LegacyV0);
+        assert_eq!(settings.stale_timeout_seconds, 3.0);
+        assert!(settings.adaptive_bounds);
+    }
+
+    #[test]
+    fn new_defaults_serialize_versioned_modes_and_camel_case_fields() {
+        let value = serde_json::to_value(BreathingSettings::default()).unwrap();
+        assert_eq!(value["volumeMode"], "timed-pca-v1");
+        assert_eq!(value["stateMode"], "hysteresis-v1");
+        for (field, expected) in [
+            ("volumeFilterTauSeconds", 0.18),
+            ("phaseDerivativeTauSeconds", 0.40),
+            ("phaseEnterThresholdPerSecond", 0.030),
+            ("phaseHoldThresholdPerSecond", 0.025),
+            ("phaseConfirmationSeconds", 0.40),
+            ("phaseMinimumDwellSeconds", 0.40),
+        ] {
+            assert!((value[field].as_f64().unwrap() - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn legacy_volume_cannot_claim_the_timed_hysteresis_classifier() {
+        let settings = BreathingSettings {
+            volume_mode: BreathingVolumeMode::LegacyV0,
+            state_mode: BreathingStateMode::HysteresisV1,
+            ..BreathingSettings::default()
+        }
+        .clamped();
+
+        assert_eq!(settings.volume_mode, BreathingVolumeMode::LegacyV0);
+        assert_eq!(settings.state_mode, BreathingStateMode::LegacyV0);
     }
 }

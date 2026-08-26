@@ -10,7 +10,9 @@ use std::{
 };
 
 use polar_h10_core::AccSample;
-use polar_h10_metrics::{BreathingProcessor, BreathingSettings};
+use polar_h10_metrics::{
+    BreathingProcessor, BreathingSettings, BreathingStateMode, BreathingVolumeMode,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -1286,6 +1288,11 @@ fn validate_breathing_arguments(
     };
     Ok((
         BreathingSettings {
+            // Formula templates are a stable legacy contract. The new timed
+            // estimator is selected through the versioned output settings,
+            // not silently substituted into an existing expression.
+            volume_mode: BreathingVolumeMode::LegacyV0,
+            state_mode: BreathingStateMode::LegacyV0,
             axes,
             calibration_window_seconds: 12.0,
             minimum_axis_range_g: 0.01,
@@ -1297,6 +1304,7 @@ fn validate_breathing_arguments(
             adaptive_window_seconds: 20.0,
             lower_quantile: 0.05,
             upper_quantile: 0.95,
+            ..BreathingSettings::default()
         },
         normalize,
     ))
@@ -1435,7 +1443,7 @@ fn create_state(
         "breathing_magnitude" | "breathing_phase" => {
             let (settings, normalize) = validate_breathing_arguments(arguments, config)?;
             DspState::Breathing {
-                processor: BreathingProcessor::new(settings),
+                processor: Box::new(BreathingProcessor::new(settings)),
                 phase: name == "breathing_phase",
                 normalize,
             }
@@ -1486,7 +1494,7 @@ enum DspState {
         kind: RrMetricKind,
     },
     Breathing {
-        processor: BreathingProcessor,
+        processor: Box<BreathingProcessor>,
         phase: bool,
         normalize: bool,
     },

@@ -13,12 +13,19 @@ Last verified: 2026-08-26
   and record them to XDF. The launcher accepts no renderer-supplied executable,
   path, arguments, or configuration and does not enter acquisition queues. The
   bundle also carries the Qt runtime notice and checksum-pinned LGPL/GPL texts.
-- The existing `breathing_volume` compatibility stream now has a specialized
-  preliminary 1D visualizer in the canonical Tauri/Pages UI. Its newest 0–1
-  sample is a moving dot and its bounded recent history is a leftward trail;
-  rising/falling labels follow configured inhale/exhale polarity without
-  claiming lung volume. Deterministic desktop and responsive browser checks
-  cover the shared display path.
+- The ACC breathing family now has versioned `timed-pca-v1` waveform and
+  `hysteresis-v1` state defaults while missing saved mode fields deserialize as
+  `legacy-v0`. The timed estimator uses nominal first/gap timing and interpolates
+  ordinary batches between PMD newest-sample anchors, applies dt-aware filtering/PCA, differentiates a
+  fixed calibration coordinate, and uses independent confirmation and dwell.
+  A bounded renderer-only point stream supports fresh smoothing or an
+  intentional timestamp-faithful delay without entering LSL/OSC/CSV or state.
+  Host Rust and browser fixtures pass. A 2026-08-26 native Windows H10 run passed
+  6,120/6,120 accepted ACC samples over 30.035968212 source seconds in 170
+  36-sample frames, 202.547103 Hz effective presentation cadence, zero late/gap/
+  order/cadence errors, calibration/readiness, all three phases, and 0.903095
+  waveform span. This is engineering evidence, not physiological acceptance;
+  direct browser hardware qualification remains open.
 - Native BLE scan, connection, PMD ECG/ACC streaming, and HR/RR ingestion.
 - Windows uses a direct WinRT advertisement watcher for up to fifteen seconds,
   stopping early after the caller's exact H10 local-name target: one for the
@@ -183,10 +190,13 @@ Last verified: 2026-08-26
   quality/uncertainty, period, and gap flags as decimal nanosecond strings. The
   liblsl and Rusty LSL backends share this source-clock contract.
 - Each ACC-derived breathing snapshot uses the newest PMD sensor timestamp from
-  its accepted notification. Native LSL maps it through the same ACC clock
-  offset, native OSC/CSV retain the nanosecond value, and Chromium metric events
-  and browser CSV carry it directly. HR-only notifications remain host-timed
-  because the standard HR characteristic has no PMD device timestamp.
+  its accepted notification, while its estimator reconstructs and processes all
+  nominal-200 Hz samples using first/gap 5 ms backfill and ordinary frame-anchor
+  interpolation. Duplicate/backward
+  samples are dropped at an explicit watermark; a forward stale gap or clock
+  reset emits Lost evidence and resets state as applicable. Native LSL maps the
+  frame time through the ACC clock contract, native OSC/CSV retain their
+  existing time contract, and Chromium metric events carry PMD time directly.
 - An identifier-free offline Rust qualification tool accepts isolated schema-2
   native H10 ACC and GDX-RB Force (N) CSVs, reconstructs H10 notification
   batches, and replays them through the current `BreathingProcessor`. It maps
@@ -196,11 +206,12 @@ Last verified: 2026-08-26
   window stability, readiness/confidence, robust spans, and timing quality.
   Recording-quality status remains separate from physiological acceptance,
   which is always false until repeated held-out physical evidence exists.
-- Breathing readiness measures successive vectors on an independent all-axis
-  EMA path before applying its motion-quality threshold. This avoids treating
-  ordinary 200 Hz H10 sample noise as broadband body motion while retaining a
-  deterministic high-amplitude motion rejection gate; Rust and Chromium share
-  the implementation and noisy-clean/motion fixtures.
+- Timed breathing readiness measures successive vectors on an independent
+  all-axis dt-aware path. Readiness requires calibration, non-Lost input, and a
+  motion score of at least 0.35; confidence is range quality × motion quality ×
+  PCA dominance. The index is not a probability. Rust and Chromium share the
+  equations and batch-size, PCA-orientation, adaptive-bound, state-gate, and
+  damage fixtures.
 - A default-off, mutually exclusive Rusty LSL source backend is pinned to merge
   `8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd`. Pinned pylsl
   1.18.2/liblsl 1.17.7 broadly discovered and exactly matched independent
@@ -282,10 +293,11 @@ Last verified: 2026-08-26
 - Red ECG / blue ACC output-library modes. ACC mode includes raw motion and the
   complete experimental breathing/breathing-dynamics catalog; every choice is
   still added individually rather than through a checkbox list.
-- Shared post-add ACC breathing controls cover the signed projection, normalized
-  0–1 waveform, phase, calibration/range, readiness, and confidence outputs:
-  two or three axes (X + Z recommended), smoothing, phase sensitivity and
-  direction; the signed projection can also use the output normalization layer.
+- Shared post-add ACC breathing controls cover versioned waveform/state modes,
+  two or three axes (X + Z recommended), source-time filter tau, calibration,
+  range/quantiles, stale timeout, phase derivative/enter/hold/confirmation/dwell,
+  direction, optional adaptive output bounds, and separate presentation mode.
+  The signed projection can also use the output normalization layer.
 - A phase-only breathing circle with asymptotic size limits and pause inertia.
 - Public dedicated GitHub repository at `GeorgeFejer91/Polar-Stream`.
 - The legacy Mesmerism-derived `PolarH10` checkout is locally quarantined under
@@ -323,11 +335,12 @@ Last verified: 2026-08-26
   H10 from the public GitHub Pages site on 2026-08-14. This confirms the hosted
   chooser/GATT path, but not yet the timed CSV rates, loss, gaps, or reconnect
   acceptance criteria.
-- The browser adapter includes a JavaScript mirror of the complete ACC
-  breathing module, including causal baseline removal, normalized waveform,
-  phase, readiness, and confidence. Playwright validates the browser
-  chooser/GATT contract, commands, protocol edge cases, breathing calibration,
-  quality gating, and responsive UI with an emulated device.
+- The browser adapter includes a JavaScript mirror of timed PCA source-time
+  reconstruction, normalized waveform, fixed-span hysteretic phase, readiness,
+  confidence, bounded adaptation, and presentation points, plus legacy dispatch
+  for saved settings. Node fixtures cover notification-size invariance, source
+  damage, Y/Z PCA, quality, state gates, adaptation, and presenter bounds;
+  Playwright covers the shared chooser/GATT and interface contracts.
 - The Pages runtime is self-contained: browser H10/mock acquisition, supported
   metrics, and visualization run without a localhost companion, installed
   helper, or remote relay. The shared LSL/OSC toggles remain visible in browser
@@ -354,14 +367,10 @@ Last verified: 2026-08-26
   Web Bluetooth provenance, positive monotonic H10 time, raw streams, rates,
   loss, gaps, values, HR/RR, and recorder stop state. These tools prepare and
   evaluate a physical run; they do not replace one.
-- The ACC breathing add/adjust workflows expose axes, smoothing, sensitivity,
-  direction, calibration window/range, stale timeout, adaptive bounds/window,
-  and robust quantiles. `docs/acc-breathing-handoff.md` documents provenance,
-  exact formulas, current/upstream differences, parameters, and validation.
-- ACC breathing phase now thresholds normalized waveform velocity per second,
-  using notification sample count at the requested 200 Hz. A 50 ms reference
-  preserves the prior sensitivity scale for ten-sample batches while Rust and
-  Chromium invariance tests cover equivalent 50/150 ms slopes.
+- `docs/acc-breathing-handoff.md` documents the version/migration boundary,
+  PMD batch/source-time contract, exact timed equations, fixed-state versus
+  adaptive-output boundary, presentation modes, current/upstream differences,
+  parameters, diagnostics, and remaining physical/reference validation.
 
 ## Active branch context
 
