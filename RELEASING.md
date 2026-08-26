@@ -19,7 +19,11 @@ notice and checksum-pinned LGPL/GPL license texts are required bundle files.
 Each read-only matrix job builds its native installers with the exact Tauri CLI
 in `package-lock.json`, creates a real LSL outlet using the bundled runtime, and
 smoke-tests Polar Stream plus LabRecorder from the staged package itself
-(AppImage and DEB on Linux, MSI payload on Windows, DMG on macOS). It then
+(AppImage and DEB on Linux, MSI payload on Windows, DMG on macOS). The macOS
+gate also verifies that Polar Stream, the packaged liblsl runtime, LabRecorder,
+and LabRecorder's liblsl framework each contain native Apple Silicon and Intel
+slices. The mounted DMG is launched on both an Apple Silicon runner and a
+separate Intel runner before publication. The matrix then
 uploads workflow artifacts without a repository
 write token. Only the final publisher job has `contents: write`; it downloads
 the complete package set, verifies all nine required installer classes,

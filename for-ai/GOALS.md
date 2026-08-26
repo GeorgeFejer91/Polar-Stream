@@ -157,7 +157,7 @@ items into the dated history instead of silently deleting them.
   interpolated cadence, zero late/gap/order/cadence errors, calibration/readiness,
   all three phase values, and 0.903095 waveform span. No output transport was
   initialized and physiological acceptance remains false.
-- 2026-08-26: implemented an uncommitted host-qualified timed ACC breathing
+- 2026-08-26: implemented and host-qualified a timed ACC breathing
   candidate with source-time reconstruction, versioned legacy migration,
   fixed-span hysteretic state, bounded diagnostics/presentation points, and
   matching native/browser damage and invariance tests. Real-H10 validation is

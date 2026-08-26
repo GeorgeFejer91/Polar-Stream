@@ -2745,7 +2745,7 @@ dependencies = [
 
 [[package]]
 name = "polar-h10-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -2753,7 +2753,7 @@ dependencies = [
 
 [[package]]
 name = "polar-h10-input"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "btleplug",
  "futures-util",
@@ -2768,7 +2768,7 @@ dependencies = [
 
 [[package]]
 name = "polar-h10-math"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "polar-h10-core",
  "polar-h10-metrics",
@@ -2779,7 +2779,7 @@ dependencies = [
 
 [[package]]
 name = "polar-h10-metrics"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "polar-h10-core",
  "serde",
@@ -2788,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "polar-h10-output"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "libloading 0.9.0",
  "polar-h10-core",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "polar-stream"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "polar-h10-core",
  "polar-h10-input",
@@ -2823,7 +2823,7 @@ dependencies = [
 
 [[package]]
 name = "polar-stream-time"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "polling"
@@ -4429,7 +4429,7 @@ dependencies = [
 
 [[package]]
 name = "vernier-gdx-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "thiserror 2.0.20",
  "uuid",
@@ -4437,7 +4437,7 @@ dependencies = [
 
 [[package]]
 name = "vernier-gdx-input"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "btleplug",
  "futures-util",

@@ -408,8 +408,10 @@ Last verified: 2026-08-26
   release classes. On 2026-08-24 the Windows x64 NSIS install passed the real
   WebView button -> native IPC -> installed LabRecorder process chain, and the
   administratively extracted MSI launched both packaged processes. Linux,
-  macOS universal, and native ARM64 package evidence is produced by the next
-  tagged release matrix rather than inferred locally.
+  macOS universal, and native ARM64 package evidence is produced by tagged
+  release matrices rather than inferred locally. The macOS release gate verifies
+  universal slices for the app and both liblsl runtimes, checks the mounted app's
+  metadata/signature, and launches the exact DMG on Apple Silicon and Intel.
 - Both public ACC-derived respiration outputs are unvalidated and require
   comparison with a reference respiratory sensor before interpretation.
 - Windows and macOS public packages are currently unsigned/ad-hoc unless release

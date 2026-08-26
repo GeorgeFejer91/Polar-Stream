@@ -1,5 +1,21 @@
 # Decision log
 
+## 2026-08-26 — Run the universal Mac package on both native architectures
+
+Keep one `universal-apple-darwin` DMG for macOS 10.15 and later, but treat a
+successful universal build as insufficient package evidence. Before a release
+can publish, mount the exact staged DMG on both an Apple Silicon GitHub runner
+and a separate Intel runner, launch Polar Stream and the bundled LabRecorder,
+and require both processes to remain alive through their smoke windows.
+
+Inspect the mounted payload rather than intermediate build files. Polar Stream,
+the app-owned liblsl runtime, LabRecorder, and LabRecorder's liblsl framework
+must each contain `arm64` and `x86_64` slices. The app bundle must also pass its
+current ad-hoc signature verification and retain the Bluetooth usage description.
+This closes architecture drift and packaged-resource regressions; it does not
+replace physical BLE tests, sustained performance measurements, Developer ID
+signing, notarization, or clean-machine Gatekeeper acceptance.
+
 ## 2026-08-26 — Interpolate ordinary ACC batches between PMD source anchors
 
 A physical H10 delivered 36 samples per frame while consecutive newest-sample
