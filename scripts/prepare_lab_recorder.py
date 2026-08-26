@@ -236,6 +236,8 @@ def bundle_linux_dependencies(destination: Path) -> None:
             continue
         visited.add(resolved)
         for dependency in ldd_dependencies(binary):
+            if dependency.resolve() == resolved:
+                continue
             if dependency.name in LINUX_GLIBC_LIBRARIES:
                 continue
             existing = copied_by_name.get(dependency.name)

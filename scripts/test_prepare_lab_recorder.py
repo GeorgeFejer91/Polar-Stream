@@ -88,6 +88,28 @@ class PrepareLabRecorderTests(unittest.TestCase):
             with mock.patch.object(recorder.subprocess, "run", side_effect=fake_run):
                 self.assertEqual(recorder.qt_plugin_root(), Path(temporary))
 
+    def test_linux_dependency_walk_ignores_a_library_reporting_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / "bundle"
+            library = destination / "lib" / "libfixture.so"
+            executable = destination / "LabRecorder"
+            plugin_root = root / "plugins"
+            library.parent.mkdir(parents=True)
+            plugin_root.mkdir()
+            library.write_bytes(b"library")
+            executable.write_bytes(b"executable")
+
+            with (
+                mock.patch.object(recorder, "qt_plugin_root", return_value=plugin_root),
+                mock.patch.object(
+                    recorder,
+                    "ldd_dependencies",
+                    side_effect=lambda binary: {binary},
+                ),
+            ):
+                recorder.bundle_linux_dependencies(destination)
+
 
 if __name__ == "__main__":
     unittest.main()
