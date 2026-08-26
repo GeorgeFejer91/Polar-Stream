@@ -1,5 +1,19 @@
 # Decision log
 
+## 2026-08-27 — Let linuxdeploy resolve the isolated LabRecorder runtime
+
+The Linux package keeps LabRecorder and its pinned Qt/liblsl dependencies under
+the app resource tree rather than adding them to the Polar Stream process-wide
+runtime. During AppImage construction, however, Tauri's `linuxdeploy` inspects
+packaged ELF resources and must resolve those dependencies. Run only the Linux
+Tauri bundle step with the staged LabRecorder `lib` directory first on
+`LD_LIBRARY_PATH`, followed by the app-owned liblsl resource directory.
+
+This is a build-time discovery path, not a runtime merge. Exact-package smoke
+tests must continue launching LabRecorder with its isolated `LD_LIBRARY_PATH`
+and Qt plugin paths. Keep verbose Linux bundler output enabled so future
+dependency failures expose the child tool's actual diagnostic.
+
 ## 2026-08-26 — Run the universal Mac package on both native architectures
 
 Keep one `universal-apple-darwin` DMG for macOS 10.15 and later, but treat a

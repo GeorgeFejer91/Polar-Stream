@@ -31,12 +31,19 @@ generates `SHA256SUMS.txt`, creates or updates a draft release, verifies the
 uploaded assets, and then publishes. This prevents `latest` from ever pointing
 at a partial platform release.
 
+The Linux Tauri bundling step exposes the staged LabRecorder `lib` directory
+through `LD_LIBRARY_PATH`. `linuxdeploy` inspects every packaged ELF resource,
+so it must be able to resolve LabRecorder's pinned liblsl and Qt runtime while
+constructing the AppImage even though Polar Stream launches LabRecorder with an
+isolated runtime environment later. Keep verbose Tauri logging enabled for this
+step so a failed child bundler remains diagnosable from the Actions log.
+
 All reusable GitHub Actions are pinned to full commit SHAs. Review dependency
 updates deliberately rather than replacing these pins with floating major tags.
 
-The private repository's latest Release is its authenticated download page.
-The branded static page under `download/` is optional because GitHub only
-serves Pages from private repositories on plans that include that feature.
+The public repository's latest Release page and its stable
+`releases/latest/download/...` asset URLs are the canonical native downloads.
+GitHub Pages remains the browser demo rather than a second package host.
 
 ## Signing
 

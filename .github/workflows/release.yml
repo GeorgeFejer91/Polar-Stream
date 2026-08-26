@@ -126,7 +126,14 @@ jobs:
           esac
           cargo run -p polar-h10-output --example verify_lsl --locked -- "$library"
           cargo run -p polar-h10-output --example verify_mixed_lsl --locked -- "$library"
-      - name: Build installers with the repository-pinned Tauri CLI
+      - name: Build Linux installers with staged LabRecorder libraries discoverable
+        if: runner.os == 'Linux'
+        working-directory: apps/polar-stream
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/apps/polar-stream/resources/lab-recorder/lib:${{ github.workspace }}/apps/polar-stream/resources
+        run: npx --no-install tauri build --verbose --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Build Windows and macOS installers with the repository-pinned Tauri CLI
+        if: runner.os != 'Linux'
         working-directory: apps/polar-stream
         run: npx --no-install tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
       - name: Stage deterministic release assets
