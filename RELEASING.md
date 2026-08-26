@@ -4,10 +4,13 @@ The release workflow builds on native GitHub-hosted x64 and ARM64 runners. It
 does not cross-compile GUI packages. liblsl 1.17.7 is downloaded from its
 upstream release and accepted only when its pinned SHA-256 checksum matches.
 The official LabRecorder 1.17.0 is pinned to upstream release v1.17.1. Published
-x64/universal archives are checksum-verified; native ARM64 jobs build its exact
-source and liblsl commits. The staged recorder includes its Qt/liblsl runtime
-and the Polar Stream profile that disables remote control. Its reviewed Qt
-notice and checksum-pinned LGPL/GPL license texts are required bundle files.
+Windows x64 and macOS universal archives are checksum-verified; both native
+Linux jobs and Windows ARM64 build its exact source and liblsl commits. Building
+LabRecorder against the native Ubuntu runner's Qt version prevents linuxdeploy
+from coalescing two incompatible Qt ABI versions inside one AppImage. The staged
+recorder includes its Qt/liblsl runtime and the Polar Stream profile that
+disables remote control. Its reviewed Qt notice and checksum-pinned LGPL/GPL
+license texts are required bundle files.
 
 ## Publish a version
 

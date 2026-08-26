@@ -1,6 +1,6 @@
 # Current state
 
-Last verified: 2026-08-26
+Last verified: 2026-08-27
 
 ## Implemented
 

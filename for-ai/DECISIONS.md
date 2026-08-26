@@ -14,6 +14,13 @@ tests must continue launching LabRecorder with its isolated `LD_LIBRARY_PATH`
 and Qt plugin paths. Keep verbose Linux bundler output enabled so future
 dependency failures expose the child tool's actual diagnostic.
 
+Build LabRecorder from the pinned source and liblsl commits on both native
+Linux runners. The upstream x64 archive uses Qt 6.8 while Ubuntu 22.04 and
+Tauri's GTK bundler use Qt 6.2; linuxdeploy coalesces libraries with the same
+SONAME, which made the exact AppImage's recorder fail its Qt symbol-version
+check. A native source build gives the isolated recorder and AppImage bundler
+one compatible Qt ABI without weakening the pinned-source boundary.
+
 ## 2026-08-26 — Run the universal Mac package on both native architectures
 
 Keep one `universal-apple-darwin` DMG for macOS 10.15 and later, but treat a

@@ -40,7 +40,7 @@ class PrepareLabRecorderTests(unittest.TestCase):
         self.assertEqual(recorder.PLATFORM_ARCHES["linux"], {"x86_64", "aarch64"})
         self.assertEqual(recorder.PLATFORM_ARCHES["macos"], {"universal"})
         self.assertIn(("windows", "x86_64"), recorder.ARCHIVES)
-        self.assertIn(("linux", "x86_64"), recorder.ARCHIVES)
+        self.assertNotIn(("linux", "x86_64"), recorder.ARCHIVES)
         self.assertIn(("macos", "universal"), recorder.ARCHIVES)
 
     def test_packaged_profile_disables_remote_control(self) -> None:
@@ -57,7 +57,7 @@ class PrepareLabRecorderTests(unittest.TestCase):
             "QT-LICENSE-GPL-3.0.txt",
         })
 
-    def test_linux_release_archive_may_have_one_nested_distribution_root(self) -> None:
+    def test_linux_install_may_have_one_nested_distribution_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             install = root / "release"

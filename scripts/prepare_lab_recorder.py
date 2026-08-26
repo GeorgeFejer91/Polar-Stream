@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Prepare a pinned, self-contained LabRecorder resource bundle.
 
-Official release archives are used where upstream publishes a matching native
-artifact. ARM64 Windows/Linux jobs build the same immutable upstream source and
-liblsl revisions, then pass the install tree through the same staging checks.
+Official release archives are used where their native runtime remains isolated
+from the platform bundler. Both Linux jobs and Windows ARM64 build the same
+immutable upstream source and liblsl revisions, then pass the install tree
+through the same staging checks.
 """
 
 from __future__ import annotations
@@ -58,10 +59,6 @@ ARCHIVES = {
     ("windows", "x86_64"): (
         "LabRecorder-1.17.0-Win_amd64.zip",
         "01bde1d9af07d29de1a8363c967cc1eeaf524915f2db76552484f7becdb161ed",
-    ),
-    ("linux", "x86_64"): (
-        "LabRecorder-1.17.0-jammy_amd64.tar.gz",
-        "83a9d3f1e77b3406dc38ce9fbdc5876360105279d268de73c17e5846a4cd6389",
     ),
     ("macos", "universal"): (
         "LabRecorder-1.17.0-macOS_universal-signed.tar.gz",
