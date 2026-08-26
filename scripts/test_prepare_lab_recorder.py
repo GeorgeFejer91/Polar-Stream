@@ -8,6 +8,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 import prepare_lab_recorder as recorder
@@ -76,6 +77,16 @@ class PrepareLabRecorderTests(unittest.TestCase):
                 recorder.bundle_linux_dependencies = original_bundle
 
             self.assertEqual((destination / "LabRecorder").read_bytes(), b"fixture")
+
+    def test_ubuntu_qtpaths_location_is_used_when_it_is_not_on_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            def fake_run(command: list[str], **_kwargs: object) -> object:
+                if command[0] != "/usr/lib/qt6/bin/qtpaths6":
+                    raise FileNotFoundError(command[0])
+                return type("Result", (), {"stdout": temporary + "\n"})()
+
+            with mock.patch.object(recorder.subprocess, "run", side_effect=fake_run):
+                self.assertEqual(recorder.qt_plugin_root(), Path(temporary))
 
 
 if __name__ == "__main__":

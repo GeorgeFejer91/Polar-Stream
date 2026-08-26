@@ -171,7 +171,7 @@ def stage_windows_install(install_root: Path, destination: Path) -> None:
 
 
 def qt_plugin_root() -> Path:
-    commands = (["qtpaths6"], ["qtpaths"])
+    commands = (["qtpaths6"], ["qtpaths"], ["/usr/lib/qt6/bin/qtpaths6"])
     for command in commands:
         try:
             result = subprocess.run(
