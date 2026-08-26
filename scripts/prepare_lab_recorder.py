@@ -252,13 +252,17 @@ def bundle_linux_dependencies(destination: Path) -> None:
 
 
 def stage_linux_install(install_root: Path, destination: Path) -> None:
-    executable_candidates = [
-        install_root / "bin" / "LabRecorder",
-        install_root / "LabRecorder",
-    ]
-    executable = next((path for path in executable_candidates if path.is_file()), None)
-    if executable is None:
-        raise RuntimeError("Linux LabRecorder install does not contain LabRecorder")
+    executable_candidates = sorted(
+        path
+        for path in install_root.rglob("LabRecorder")
+        if path.is_file() and (path.parent == install_root or path.parent.name == "bin")
+    )
+    if len(executable_candidates) != 1:
+        raise RuntimeError(
+            "Linux LabRecorder install must contain exactly one LabRecorder executable; "
+            f"found {len(executable_candidates)}"
+        )
+    executable = executable_candidates[0]
     shutil.copy2(executable, destination / "LabRecorder")
     os.chmod(destination / "LabRecorder", 0o755)
 

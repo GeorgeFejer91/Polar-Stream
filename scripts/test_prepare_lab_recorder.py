@@ -55,6 +55,28 @@ class PrepareLabRecorderTests(unittest.TestCase):
             "QT-LICENSE-GPL-3.0.txt",
         })
 
+    def test_linux_release_archive_may_have_one_nested_distribution_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install = root / "release"
+            executable = install / "LabRecorder-1.17.0-jammy_amd64" / "bin" / "LabRecorder"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"fixture")
+            library = executable.parent.parent / "lib" / "liblsl.so"
+            library.parent.mkdir()
+            library.write_bytes(b"library fixture")
+            destination = root / "destination"
+            destination.mkdir()
+
+            original_bundle = recorder.bundle_linux_dependencies
+            recorder.bundle_linux_dependencies = lambda _destination: None
+            try:
+                recorder.stage_linux_install(install, destination)
+            finally:
+                recorder.bundle_linux_dependencies = original_bundle
+
+            self.assertEqual((destination / "LabRecorder").read_bytes(), b"fixture")
+
 
 if __name__ == "__main__":
     unittest.main()
