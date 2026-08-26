@@ -5,7 +5,7 @@
 //! and teardown. Other platforms retain the cross-platform `btleplug` path.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::OsStr,
     future::IntoFuture,
     marker::PhantomData,
@@ -25,6 +25,7 @@ use polar_h10_core::{
     PmdControlResponse, PmdFrame, decode_heart_rate, decode_pmd, decode_pmd_control_response,
     request_settings_command, start_accelerometer_command, start_ecg_command, stop_command,
 };
+use polar_stream_time::monotonic_now_ns;
 use tokio::sync::{mpsc, oneshot, watch};
 use windows::{
     Devices::{
@@ -324,10 +325,18 @@ impl ScanAccumulator {
         }
     }
 
+    #[cfg(test)]
     fn exact_name_candidate_count(&self) -> usize {
+        self.exact_name_candidate_count_excluding(&HashSet::new())
+    }
+
+    fn exact_name_candidate_count_excluding(&self, excluded_addresses: &HashSet<u64>) -> usize {
         self.devices
-            .values()
-            .filter(|device| device.name.as_deref().is_some_and(is_polar_h10_name))
+            .iter()
+            .filter(|(address, device)| {
+                !excluded_addresses.contains(address)
+                    && device.name.as_deref().is_some_and(is_polar_h10_name)
+            })
             .count()
     }
 
@@ -525,13 +534,15 @@ impl Drop for AdvertisementWatcherGuard {
 
 pub(super) async fn scan_for_exact_h10s(
     minimum_exact_h10s: usize,
+    excluded_addresses: HashSet<u64>,
 ) -> Result<Vec<DeviceSummary>, String> {
     if minimum_exact_h10s == 0 || minimum_exact_h10s > MAX_SCANNED_DEVICES {
         return Err("Windows WinRT scan target is outside its device bound".into());
     }
-    let mut batch = tokio::task::spawn_blocking(move || scan_blocking(minimum_exact_h10s))
-        .await
-        .map_err(|error| format!("Windows WinRT scan worker failed: {error}"))??;
+    let mut batch =
+        tokio::task::spawn_blocking(move || scan_blocking(minimum_exact_h10s, excluded_addresses))
+            .await
+            .map_err(|error| format!("Windows WinRT scan worker failed: {error}"))??;
     if batch.overflowed {
         report_scan_predicates(&batch);
         return Err(format!(
@@ -544,7 +555,10 @@ pub(super) async fn scan_for_exact_h10s(
     Ok(devices)
 }
 
-fn scan_blocking(minimum_exact_h10s: usize) -> Result<ScanBatch, String> {
+fn scan_blocking(
+    minimum_exact_h10s: usize,
+    excluded_addresses: HashSet<u64>,
+) -> Result<ScanBatch, String> {
     let diagnostics_enabled = std::env::var_os(SCAN_DIAGNOSTICS_ENV).is_some();
     let watcher = BluetoothLEAdvertisementWatcher::new()
         .map_err(|error| stage_error("scan initialization", error))?;
@@ -628,7 +642,7 @@ fn scan_blocking(minimum_exact_h10s: usize) -> Result<ScanBatch, String> {
         let exact_name_observed = observations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .exact_name_candidate_count();
+            .exact_name_candidate_count_excluding(&excluded_addresses);
         if exact_name_observed >= minimum_exact_h10s {
             break;
         }
@@ -1148,7 +1162,14 @@ fn sync_attach_handler(
         })();
         match bytes {
             Ok(value) => {
-                if tx.try_send(RawNotification { source, value }).is_err() {
+                if tx
+                    .try_send(RawNotification {
+                        source,
+                        host_receive_timestamp_ns: monotonic_now_ns(),
+                        value,
+                    })
+                    .is_err()
+                {
                     callback_state.record_fault();
                 }
             }
@@ -2086,6 +2107,7 @@ impl NotificationDiagnostics {
 #[derive(Debug)]
 struct RawNotification {
     source: NotificationSource,
+    host_receive_timestamp_ns: u64,
     value: Vec<u8>,
 }
 
@@ -2881,6 +2903,7 @@ impl WinrtSession {
                                     let bytes = buffer_to_vec(&value)?;
                                     Ok::<_, windows::core::Error>(RawNotification {
                                         source,
+                                        host_receive_timestamp_ns: monotonic_now_ns(),
                                         value: bytes,
                                     })
                                 })() {
@@ -2907,6 +2930,7 @@ impl WinrtSession {
                                         &callback_diagnostics,
                                         RawNotification {
                                             source,
+                                            host_receive_timestamp_ns: monotonic_now_ns(),
                                             value: bytes,
                                         },
                                     );
@@ -3813,6 +3837,7 @@ fn decode_notification(raw: RawNotification) -> Option<InputEvent> {
                 microvolts,
             }) => InputEvent::Ecg {
                 sensor_timestamp_ns,
+                host_receive_timestamp_ns: raw.host_receive_timestamp_ns,
                 microvolts,
             },
             Ok(PmdFrame::Accelerometer {
@@ -3820,6 +3845,7 @@ fn decode_notification(raw: RawNotification) -> Option<InputEvent> {
                 samples,
             }) => InputEvent::Accelerometer {
                 sensor_timestamp_ns,
+                host_receive_timestamp_ns: raw.host_receive_timestamp_ns,
                 samples,
             },
             Err(error) => InputEvent::Error(format!("Skipped malformed PMD frame: {error}")),
@@ -3827,6 +3853,7 @@ fn decode_notification(raw: RawNotification) -> Option<InputEvent> {
         NotificationSource::HeartRate => {
             let frame = decode_heart_rate(&raw.value);
             Some(InputEvent::HeartRate {
+                host_receive_timestamp_ns: raw.host_receive_timestamp_ns,
                 beats_per_minute: frame.beats_per_minute,
                 rr_intervals_ms: frame.rr_intervals_ms,
             })
@@ -4395,6 +4422,26 @@ mod tests {
     }
 
     #[test]
+    fn active_h10s_do_not_satisfy_the_new_candidate_scan_target() {
+        let mut scan = ScanAccumulator::new(false);
+        scan.record(
+            11,
+            -40,
+            evidence(Some("Polar H10 ACTIVE"), true, false, false),
+        );
+        scan.record(22, -45, evidence(Some("Polar H10 NEW"), true, false, false));
+        assert_eq!(scan.exact_name_candidate_count(), 2);
+        assert_eq!(
+            scan.exact_name_candidate_count_excluding(&HashSet::from([11])),
+            1
+        );
+        assert_eq!(
+            scan.exact_name_candidate_count_excluding(&HashSet::from([11, 22])),
+            0
+        );
+    }
+
+    #[test]
     fn scan_accumulator_rejects_weak_shapes_and_coalesces_known_packets() {
         let mut scan = ScanAccumulator::new(true);
         scan.record(1, -20, evidence(Some("Unrelated"), true, true, false));
@@ -4678,6 +4725,7 @@ mod tests {
             &diagnostics,
             RawNotification {
                 source: NotificationSource::PmdData,
+                host_receive_timestamp_ns: 1,
                 value: vec![1],
             },
         );
@@ -4697,6 +4745,7 @@ mod tests {
             probe_tx
                 .try_send(ProbeCallbackMessage::Notification(RawNotification {
                     source: NotificationSource::PmdData,
+                    host_receive_timestamp_ns: 1,
                     value: vec![1, 2, 3],
                 }))
                 .is_ok()
@@ -4729,6 +4778,7 @@ mod tests {
     fn ecg_event() -> InputEvent {
         InputEvent::Ecg {
             sensor_timestamp_ns: 10,
+            host_receive_timestamp_ns: 11,
             microvolts: vec![1, -1],
         }
     }
@@ -4736,6 +4786,7 @@ mod tests {
     fn acc_event() -> InputEvent {
         InputEvent::Accelerometer {
             sensor_timestamp_ns: 20,
+            host_receive_timestamp_ns: 21,
             samples: vec![AccSample {
                 x_mg: 1,
                 y_mg: -2,
@@ -4786,6 +4837,7 @@ mod tests {
         let error = inbox
             .observe(RawNotification {
                 source: NotificationSource::PmdData,
+                host_receive_timestamp_ns: 1,
                 value: vec![ECG_MEASUREMENT],
             })
             .unwrap_err();
@@ -4801,6 +4853,7 @@ mod tests {
         let error = inbox
             .observe(RawNotification {
                 source: NotificationSource::PmdData,
+                host_receive_timestamp_ns: 1,
                 value: valid_ecg,
             })
             .unwrap_err();
@@ -4824,12 +4877,14 @@ mod tests {
         assert!(
             decode_notification(RawNotification {
                 source: NotificationSource::PmdControl,
+                host_receive_timestamp_ns: 1,
                 value: vec![0x02, 0x00],
             })
             .is_none()
         );
         let event = decode_notification(RawNotification {
             source: NotificationSource::PmdData,
+            host_receive_timestamp_ns: 1,
             value: vec![ECG_MEASUREMENT],
         })
         .expect("malformed PMD becomes an observable error");
@@ -4846,6 +4901,7 @@ mod tests {
     fn control_response(expected: ExpectedControlResponse, error_code: u8) -> RawNotification {
         RawNotification {
             source: NotificationSource::PmdControl,
+            host_receive_timestamp_ns: 1,
             value: vec![
                 polar_h10_core::PMD_RESPONSE_FRAME,
                 expected.opcode,
@@ -4949,6 +5005,7 @@ mod tests {
             run(
                 Some(RawNotification {
                     source: NotificationSource::PmdControl,
+                    host_receive_timestamp_ns: 1,
                     value: vec![0xf0, PMD_START_STREAM_OPCODE],
                 }),
                 false
@@ -5010,6 +5067,7 @@ mod tests {
         assert!(
             run(RawNotification {
                 source: NotificationSource::PmdData,
+                host_receive_timestamp_ns: 1,
                 value: ecg,
             })
             .await
@@ -5034,6 +5092,7 @@ mod tests {
             &diagnostics,
             RawNotification {
                 source: NotificationSource::PmdControl,
+                host_receive_timestamp_ns: 1,
                 value: vec![1],
             },
         );
@@ -5043,6 +5102,7 @@ mod tests {
             &diagnostics,
             RawNotification {
                 source: NotificationSource::PmdControl,
+                host_receive_timestamp_ns: 1,
                 value: vec![2],
             },
         );
@@ -5081,6 +5141,7 @@ mod tests {
             assert!(
                 !gate
                     .push(InputEvent::HeartRate {
+                        host_receive_timestamp_ns: 1,
                         beats_per_minute: 60,
                         rr_intervals_ms: vec![1_000.0],
                     })
@@ -5089,6 +5150,7 @@ mod tests {
         }
         assert!(
             gate.push(InputEvent::HeartRate {
+                host_receive_timestamp_ns: 1,
                 beats_per_minute: 60,
                 rr_intervals_ms: vec![1_000.0],
             })
@@ -5104,6 +5166,7 @@ mod tests {
             !gate
                 .push(InputEvent::Ecg {
                     sensor_timestamp_ns: 1,
+                    host_receive_timestamp_ns: 2,
                     microvolts: Vec::new(),
                 })
                 .unwrap()
@@ -5112,6 +5175,7 @@ mod tests {
             !gate
                 .push(InputEvent::Accelerometer {
                     sensor_timestamp_ns: 2,
+                    host_receive_timestamp_ns: 3,
                     samples: Vec::new(),
                 })
                 .unwrap()

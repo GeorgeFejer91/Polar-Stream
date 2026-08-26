@@ -1,0 +1,10 @@
+[package]
+name = "polar-stream-time"
+description = "Process-wide monotonic timing and bounded source-clock mapping for Polar Stream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

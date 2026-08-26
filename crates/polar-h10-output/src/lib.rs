@@ -32,6 +32,7 @@ use osc::{OSC_TARGET, OscPublisher};
 use polar_h10_core::AccSample;
 use polar_h10_math::{CompiledFormula, FormulaFrame, MAX_TOTAL_STATE_SAMPLES};
 pub use polar_h10_math::{FormulaError, FormulaRuntimeState, FormulaValidation, validate_formula};
+use polar_stream_time::SourceClockMapper;
 #[cfg(feature = "rusty-lsl-backend")]
 use rusty_lsl::RustyLslPublisher as LslPublisher;
 use serde::Serialize;
@@ -46,7 +47,7 @@ pub const VERNIER_RAW_DIAGNOSTIC_CHANNELS: usize = 7;
 
 #[derive(Default)]
 struct SensorClockMap {
-    local_minus_sensor_seconds: Option<f64>,
+    mapper: SourceClockMapper,
 }
 
 impl SensorClockMap {
@@ -54,11 +55,17 @@ impl SensorClockMap {
         if sensor_timestamp_ns == 0 {
             return local_now;
         }
-        let sensor_seconds = sensor_timestamp_ns as f64 / 1_000_000_000.0;
-        let offset = *self
-            .local_minus_sensor_seconds
-            .get_or_insert(local_now - sensor_seconds);
-        sensor_seconds + offset
+        let local_now_ns = if local_now.is_finite() && local_now > 0.0 {
+            (local_now * 1_000_000_000.0)
+                .round()
+                .clamp(0.0, u64::MAX as f64) as u64
+        } else {
+            0
+        };
+        self.mapper
+            .observe_and_map(sensor_timestamp_ns, local_now_ns)
+            .mapped_time_ns as f64
+            / 1_000_000_000.0
     }
 }
 

@@ -45,13 +45,33 @@ struct OutletEntry {
     id: PersistentFloat32OutletId,
     channels: usize,
     rate_hz: f64,
-    sensor_clock: crate::SensorClockMap,
+    last_newest_timestamp: Option<f64>,
+}
+
+impl OutletEntry {
+    fn monotonic_newest(
+        &mut self,
+        candidate: f64,
+        record_count: usize,
+        explicit_period_seconds: Option<f64>,
+    ) -> f64 {
+        let period = explicit_period_seconds
+            .filter(|period| period.is_finite() && *period > 0.0)
+            .or_else(|| (self.rate_hz > 0.0).then_some(1.0 / self.rate_hz))
+            .unwrap_or(f64::EPSILON);
+        let newest = self.last_newest_timestamp.map_or(candidate, |previous| {
+            candidate.max(previous + period * record_count.max(1) as f64)
+        });
+        self.last_newest_timestamp = Some(newest);
+        newest
+    }
 }
 
 pub(crate) struct RustyLslPublisher {
     admission: Option<RuntimeActivationAdmission>,
     registry: Option<PersistentFloat32OutletRegistry>,
     outlets: HashMap<String, OutletEntry>,
+    source_clock: crate::SensorClockMap,
     status: String,
     values: Vec<f32>,
     timestamps: Vec<RawSourceTimestamp>,
@@ -78,6 +98,7 @@ impl RustyLslPublisher {
                 admission: Some(admission),
                 registry: None,
                 outlets: HashMap::new(),
+                source_clock: crate::SensorClockMap::default(),
                 status: format!(
                     "Optional Rusty LSL backend on {advertised_ipv4} ({})",
                     short_revision()
@@ -98,6 +119,7 @@ impl RustyLslPublisher {
             admission: None,
             registry: None,
             outlets: HashMap::new(),
+            source_clock: crate::SensorClockMap::default(),
             status: message,
             values: Vec::with_capacity(MAX_RECORDS_PER_CHUNK * 3),
             timestamps: Vec::with_capacity(MAX_RECORDS_PER_CHUNK),
@@ -270,7 +292,7 @@ impl RustyLslPublisher {
                 id,
                 channels,
                 rate_hz,
-                sensor_clock: crate::SensorClockMap::default(),
+                last_newest_timestamp: None,
             },
         );
         self.refresh_status();
@@ -477,15 +499,14 @@ impl RustyLslPublisher {
         }
         self.timestamps.clear();
         let local_now = persistent_float32_local_clock();
-        let newest = match sensor_timestamp_ns {
-            Some(sensor_timestamp_ns) => self
-                .outlets
-                .get_mut(id)
-                .expect("outlet entry disappeared while publishing")
-                .sensor_clock
-                .map_newest(sensor_timestamp_ns, local_now),
-            None => local_now,
-        };
+        let candidate_newest = sensor_timestamp_ns.map_or(local_now, |source_timestamp_ns| {
+            self.source_clock.map_newest(source_timestamp_ns, local_now)
+        });
+        let newest = self
+            .outlets
+            .get_mut(id)
+            .expect("outlet entry disappeared while publishing")
+            .monotonic_newest(candidate_newest, records, sample_period_seconds);
         for index in 0..records {
             let backfill = if let Some(period) = sample_period_seconds {
                 (records - index - 1) as f64 * period

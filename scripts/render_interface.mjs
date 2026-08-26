@@ -235,7 +235,7 @@ try {
   assert.notEqual(multipleSources.forceValue, "—");
   assert.match(multipleSources.breathingValue, /^(?:0\.\d{3}|1\.000)$/);
   assert.equal(multipleSources.selectedVisual, "vernier_breathing");
-  assert.deepEqual(multipleSources.visualOptions, ["raw_force", "vernier_breathing"]);
+  assert.deepEqual(multipleSources.visualOptions, ["raw_force", "vernier_breathing", "compare_force_acc", "compare_breathing"]);
   assert.equal(multipleSources.deviceProfile, "vernier");
   assert.match(multipleSources.deviceProfileTitle, /respiration belt/i);
   assert.deepEqual(multipleSources.rawCardVisibility, { ecg: false, acc: false, force: true, breathing: true });
@@ -244,13 +244,15 @@ try {
   assert.equal(multipleSources.protocolCardCount, 2);
   assert.match(multipleSources.streamName, /_source-2_rawForce$/);
   assert.deepEqual(multipleSources.scanAction, {
-    label: "Devices live",
-    disabled: true,
-    caption: "Both protocols publish concurrently",
+    label: "Add another sensor",
+    disabled: false,
+    caption: "All active streams continue while discovery runs",
   });
   assert.equal(multipleSources.polarSwitch.deviceProfile, "polar");
   assert.ok(multipleSources.polarSwitch.visualOptions.includes("raw_ecg"));
   assert.ok(multipleSources.polarSwitch.visualOptions.includes("raw_acc"));
+  assert.ok(multipleSources.polarSwitch.visualOptions.includes("compare_force_acc"));
+  assert.ok(multipleSources.polarSwitch.visualOptions.includes("compare_breathing"));
   assert.ok(!multipleSources.polarSwitch.visualOptions.includes("raw_force"));
   assert.ok(!multipleSources.polarSwitch.visualOptions.includes("vernier_breathing"));
   assert.ok(multipleSources.polarSwitch.outputLabels.includes("Raw ECG"));
@@ -272,6 +274,23 @@ try {
   assert.equal(recolored.outputPanelMarked, true);
   assert.equal(recolored.visualPanelMarked, true);
   await page.screenshot({ path: join(output, "multiple-colored-sources.png"), fullPage: true });
+
+  const comparison = await page.evaluate(() => window.PolarInterfaceRenderer.render("multi-source-comparison"));
+  assert.equal(comparison.selectedVisual, "compare_force_acc");
+  assert.ok(comparison.visualOptions.includes("compare_force_acc"));
+  assert.equal(comparison.visualMode, "time-aligned-comparison");
+  assert.equal(comparison.composite, "force-acc");
+  assert.match(comparison.currentLabel, /^Force .* N · ACC .* \/ .* \/ .* mg$/);
+  assert.match(comparison.canvasLabel, /time-aligned comparison/i);
+  assert.match(comparison.chartClass, /stacked-axes/);
+  assert.deepEqual(comparison.legendLabels, ["Belt force · N", "Polar ACC · X\/Y\/Z mg"]);
+  const comparisonCanvas = await inspectCanvas(page);
+  assert.ok(comparisonCanvas.width > 500 && comparisonCanvas.height > 150, `time-aligned comparison did not span the canvas: ${JSON.stringify(comparisonCanvas)}`);
+  const comparisonTraces = await inspectStackedCanvas(page);
+  assert.ok(comparisonTraces.every(({ count }) => count > 40), `comparison ACC lanes were not drawn: ${JSON.stringify(comparisonTraces)}`);
+  const comparisonScreenshot = join(output, "multi-source-comparison.png");
+  await page.screenshot({ path: comparisonScreenshot, fullPage: true });
+  assert.ok((await stat(comparisonScreenshot)).size > 20_000, "comparison screenshot was unexpectedly empty");
 
   const library = await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));
   assert.equal(library.dialogOpen, true, "metric library did not open in the renderer");
@@ -322,7 +341,7 @@ try {
   await page.screenshot({ path: previewScreenshot, fullPage: true });
   assert.ok((await stat(previewScreenshot)).size > 20_000, "metric library screenshot was unexpectedly empty");
 
-  process.stdout.write(`Validated stacked raw ACC, ${targets.length} classifier renders, ${library.previewCount} concise clicked-metric previews with reviewed sources, saved controls, and one explicit live-only Go Direct signal in ${output}\n`);
+  process.stdout.write(`Validated stacked raw ACC, time-aligned mixed-source comparison, ${targets.length} classifier renders, ${library.previewCount} concise clicked-metric previews with reviewed sources, saved controls, and one explicit live-only Go Direct signal in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

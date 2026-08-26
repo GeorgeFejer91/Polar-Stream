@@ -14,3 +14,4 @@ serde.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 vernier-gdx-core = { path = "../vernier-gdx-core" }
+polar-stream-time = { path = "../polar-stream-time" }

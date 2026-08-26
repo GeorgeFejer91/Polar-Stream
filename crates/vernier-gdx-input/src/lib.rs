@@ -17,6 +17,7 @@ use btleplug::{
     platform::{Manager, Peripheral},
 };
 use futures_util::{Stream, StreamExt};
+use polar_stream_time::monotonic_now_ns;
 use serde::Serialize;
 use tokio::sync::{Mutex, mpsc, watch};
 use vernier_gdx_core::{
@@ -30,6 +31,7 @@ use vernier_gdx_core::{
 const BLE_TIMEOUT: Duration = Duration::from_secs(6);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
 const SCAN_DURATION: Duration = Duration::from_secs(6);
+const DEVICE_CACHE_TTL: Duration = Duration::from_secs(45);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 const PERIPHERAL_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const EVENT_CAPACITY: usize = 256;
@@ -114,8 +116,14 @@ struct ActiveSession {
     finished: watch::Receiver<bool>,
 }
 
+struct DiscoveredDevice {
+    peripheral: Peripheral,
+    summary: DeviceSummary,
+    seen_at: Instant,
+}
+
 pub struct InputSessionPool {
-    devices: Mutex<HashMap<String, Peripheral>>,
+    devices: Mutex<HashMap<String, DiscoveredDevice>>,
     sessions: Mutex<HashMap<String, ActiveSession>>,
     operation_gate: Mutex<()>,
     max_sessions: usize,
@@ -140,9 +148,13 @@ impl InputSessionPool {
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
         let _operation = self.operation_gate.lock().await;
         self.prune_finished_sessions().await;
-        if !self.sessions.lock().await.is_empty() {
-            return Err("Disconnect all Go Direct sessions before scanning again.".into());
-        }
+        let active_ids = self
+            .sessions
+            .lock()
+            .await
+            .values()
+            .map(|session| session.device_id.clone())
+            .collect::<Vec<_>>();
         let manager = timed("Bluetooth initialization", Manager::new()).await?;
         let adapters = timed("Bluetooth adapter enumeration", manager.adapters()).await?;
         let adapter = adapters
@@ -164,8 +176,8 @@ impl InputSessionPool {
         let peripherals = peripherals?;
         stop?;
 
-        let mut found = Vec::new();
-        let mut devices = HashMap::new();
+        let mut observed = Vec::new();
+        let seen_at = Instant::now();
         for peripheral in peripherals {
             let Ok(Some(properties)) =
                 timed("Bluetooth property read", peripheral.properties()).await
@@ -180,7 +192,7 @@ impl InputSessionPool {
             };
             let id = peripheral.id().to_string();
             let model = classify_device_model(&name, "", "");
-            found.push(DeviceSummary {
+            let summary = DeviceSummary {
                 id: id.clone(),
                 name,
                 rssi: properties.rssi,
@@ -188,16 +200,35 @@ impl InputSessionPool {
                 model_name: model.label(),
                 respiration_belt_candidate: model == DeviceModel::RespirationBelt,
                 adapter_info: adapter_info.clone(),
-            });
-            devices.insert(id, peripheral);
+            };
+            observed.push((id, peripheral, summary));
         }
+        let mut devices = self.devices.lock().await;
+        devices.retain(|id, device| {
+            active_ids.contains(id)
+                || seen_at.saturating_duration_since(device.seen_at) <= DEVICE_CACHE_TTL
+        });
+        for (id, peripheral, summary) in observed {
+            devices.insert(
+                id,
+                DiscoveredDevice {
+                    peripheral,
+                    summary,
+                    seen_at,
+                },
+            );
+        }
+        let mut found = devices
+            .iter()
+            .filter(|(id, _)| !active_ids.contains(id))
+            .map(|(_, device)| device.summary.clone())
+            .collect::<Vec<_>>();
         found.sort_by(|left, right| {
             right
                 .rssi
                 .cmp(&left.rssi)
                 .then_with(|| left.name.cmp(&right.name))
         });
-        *self.devices.lock().await = devices;
         Ok(found)
     }
 
@@ -218,7 +249,7 @@ impl InputSessionPool {
             .lock()
             .await
             .get(device_id)
-            .cloned()
+            .map(|device| device.peripheral.clone())
             .ok_or_else(|| "That Go Direct sensor is not in the latest scan.".to_string())?;
         {
             let sessions = self.sessions.lock().await;
@@ -437,7 +468,6 @@ async fn run_connected_session(
     write_command(peripheral, &command, &start).await?;
     wait_for_response(&mut notifications, &mut accumulator, &start).await?;
 
-    let origin = Instant::now();
     let mut sequence = 0_u64;
     let mut notifications_seen = 0_u64;
     let mut samples_seen = 0_u64;
@@ -469,7 +499,7 @@ async fn run_connected_session(
                 }
                 notifications_seen += 1;
                 let received_at = Instant::now();
-                let host_receive_timestamp_ns = received_at.duration_since(origin).as_nanos() as u64;
+                let host_receive_timestamp_ns = monotonic_now_ns();
                 let frames = match accumulator.push(&notification.value) {
                     Ok(frames) => frames,
                     Err(error) => {

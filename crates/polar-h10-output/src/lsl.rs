@@ -141,7 +141,26 @@ impl LslApi {
 struct LslOutlet {
     handle: Outlet,
     rate_hz: f64,
-    sensor_clock: crate::SensorClockMap,
+    last_newest_timestamp: Option<f64>,
+}
+
+impl LslOutlet {
+    fn monotonic_newest(
+        &mut self,
+        candidate: f64,
+        record_count: usize,
+        explicit_period_seconds: Option<f64>,
+    ) -> f64 {
+        let period = explicit_period_seconds
+            .filter(|period| period.is_finite() && *period > 0.0)
+            .or_else(|| (self.rate_hz > 0.0).then_some(1.0 / self.rate_hz))
+            .unwrap_or(f64::EPSILON);
+        let newest = self.last_newest_timestamp.map_or(candidate, |previous| {
+            candidate.max(previous + period * record_count.max(1) as f64)
+        });
+        self.last_newest_timestamp = Some(newest);
+        newest
+    }
 }
 
 unsafe impl Send for LslOutlet {}
@@ -149,6 +168,7 @@ unsafe impl Send for LslOutlet {}
 pub(crate) struct LslPublisher {
     api: Option<LslApi>,
     outlets: HashMap<String, LslOutlet>,
+    source_clock: crate::SensorClockMap,
     status: String,
     scratch: Vec<f32>,
     scratch_double: Vec<f64>,
@@ -160,6 +180,7 @@ impl LslPublisher {
             Ok(api) => Self {
                 api: Some(api),
                 outlets: HashMap::new(),
+                source_clock: crate::SensorClockMap::default(),
                 status: "Ready".into(),
                 scratch: Vec::with_capacity(512),
                 scratch_double: Vec::with_capacity(512),
@@ -167,6 +188,7 @@ impl LslPublisher {
             Err(error) => Self {
                 api: None,
                 outlets: HashMap::new(),
+                source_clock: crate::SensorClockMap::default(),
                 status: error,
                 scratch: Vec::with_capacity(512),
                 scratch_double: Vec::with_capacity(512),
@@ -232,7 +254,7 @@ impl LslPublisher {
             LslOutlet {
                 handle: outlet,
                 rate_hz: spec.rate_hz,
-                sensor_clock: crate::SensorClockMap::default(),
+                last_newest_timestamp: None,
             },
         );
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
@@ -276,7 +298,7 @@ impl LslPublisher {
             LslOutlet {
                 handle: outlet,
                 rate_hz: formula.source.rate_hz(),
-                sensor_clock: crate::SensorClockMap::default(),
+                last_newest_timestamp: None,
             },
         );
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
@@ -353,7 +375,7 @@ impl LslPublisher {
             LslOutlet {
                 handle: outlet,
                 rate_hz: 0.0,
-                sensor_clock: crate::SensorClockMap::default(),
+                last_newest_timestamp: None,
             },
         );
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
@@ -395,7 +417,7 @@ impl LslPublisher {
             LslOutlet {
                 handle: outlet,
                 rate_hz: 0.0,
-                sensor_clock: crate::SensorClockMap::default(),
+                last_newest_timestamp: None,
             },
         );
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
@@ -435,9 +457,12 @@ impl LslPublisher {
             return;
         }
         let local_now = unsafe { (api.local_clock)() };
-        let newest = outlet
-            .sensor_clock
+        let newest = self
+            .source_clock
             .map_newest(host_receive_timestamp_ns, local_now);
+        let period_seconds =
+            (sample_period_us > 0).then_some(f64::from(sample_period_us) / 1_000_000.0);
+        let newest = outlet.monotonic_newest(newest, row_count, period_seconds);
         for (row, values) in self.scratch_double.chunks_exact(channels).enumerate() {
             let backfill = if sample_period_us > 0 {
                 (row_count - row - 1) as f64 * f64::from(sample_period_us) / 1_000_000.0
@@ -496,10 +521,10 @@ impl LslPublisher {
             return;
         }
         let local_now = unsafe { (api.local_clock)() };
-        let newest = outlet
-            .sensor_clock
-            .map_newest(newest_timestamp_ns, local_now);
         let count = self.scratch.len();
+        let period_seconds = f64::from(sample_period_us) / 1_000_000.0;
+        let newest = self.source_clock.map_newest(newest_timestamp_ns, local_now);
+        let newest = outlet.monotonic_newest(newest, count, Some(period_seconds));
         for (index, value) in self.scratch.iter().enumerate() {
             let backfill = (count - index - 1) as f64 * f64::from(sample_period_us) / 1_000_000.0;
             let result = unsafe { (api.push_sample)(outlet.handle, value, newest - backfill, 1) };
@@ -541,11 +566,11 @@ impl LslPublisher {
         // SAFETY: Function pointers come from the retained library, the buffer
         // lives through each call, and its length is a channel-count multiple.
         let local_now = unsafe { (api.local_clock)() };
+        let sample_count = self.scratch.len() / channels;
         let newest = sensor_timestamp_ns.map_or(local_now, |sensor_timestamp_ns| {
-            outlet
-                .sensor_clock
-                .map_newest(sensor_timestamp_ns, local_now)
+            self.source_clock.map_newest(sensor_timestamp_ns, local_now)
         });
+        let newest = outlet.monotonic_newest(newest, sample_count, None);
         let result = if let Some(push_chunk) = api.push_chunk {
             unsafe {
                 push_chunk(
@@ -557,7 +582,6 @@ impl LslPublisher {
                 )
             }
         } else {
-            let sample_count = self.scratch.len() / channels;
             let mut result = 0;
             for (index, values) in self.scratch.chunks_exact(channels).enumerate() {
                 let backfill = if outlet.rate_hz > 0.0 {

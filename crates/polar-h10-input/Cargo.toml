@@ -11,6 +11,7 @@ repository.workspace = true
 btleplug = "0.12"
 futures-util.workspace = true
 polar-h10-core = { path = "../polar-h10-core" }
+polar-stream-time = { path = "../polar-stream-time" }
 serde.workspace = true
 tokio.workspace = true
 uuid.workspace = true

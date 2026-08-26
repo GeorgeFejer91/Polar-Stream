@@ -30,9 +30,10 @@ Polar H10
    │ BLE notifications
    ▼
 polar-h10-input
-   │ typed InputEvent values
+   │ typed InputEvent values + earliest host receipt
    ▼
 apps/polar-stream (thin coordinator)
+   ├────────► polar-stream-time ─────► per-source common-clock mapping
    ├────────► polar-h10-metrics
    │                    │ scalar MetricSample values
    │                    ▼
@@ -50,10 +51,13 @@ apps/polar-stream (thin coordinator)
 
 Vernier Go Direct follows the same coordinator boundary through its independent
 input session and source-owned output router. Native Polar and Vernier sessions
-do not replace one another: after the first connects, discovery invokes only
-the missing protocol pool while the live pool continues feeding its router.
-The renderer's selected source controls only which profile and buffers are
-visible; it is never an acquisition or publication switch.
+do not replace one another. Either protocol pool can refresh its incremental
+candidate cache while existing sessions remain live; active device identities
+are excluded from results and naturally completed owners are pruned. The
+renderer-selected source controls only which profile and ordinary buffers are
+visible; it is never an acquisition or publication switch. Mixed-source
+comparison presets read both source-owned temporal rings without merging or
+republishing raw data.
 
 Rules enforced by the crate graph:
 
@@ -200,13 +204,13 @@ outlets initialize, before BLE selection or source-frame readiness. It then
 awaits source and consumer thresholds as separate gates. This receiver-first
 order is verifier orchestration, not an application buffering or publication
 policy.
-The two-H10 qualifier uses one bounded `InputSessionPool`: a single shared scan
-snapshot admits exactly two distinct devices into stable, non-identifying
+The two-H10 qualifier uses one bounded `InputSessionPool`: a shared incremental
+candidate registry admits exactly two distinct devices into stable, non-identifying
 slots, while each slot owns a separate `InputManager`, Windows session owner,
 event receiver, and ECG/ACC outlet keys. One two-session output coordinator
 owns the process's Rusty discovery registry and all four persistent outlets, so
 the fixed discovery port is bound exactly once. Connection and cleanup
-transitions are serialized, scanning is rejected while a session is active,
+transitions are serialized, scanning excludes already active H10 identities,
 and `disconnect_all` drains every admitted slot before returning. This is a
 native qualification surface; it does not change the single-sensor desktop UI
 or give the browser runtime native BLE or LSL authority.
@@ -431,17 +435,28 @@ formula name and therefore remain separately discoverable on LSL, OSC, and CSV.
 5. Cross the WebView boundary through a small bounded display-only queue. If the
    renderer stalls, it may skip visual frames instead of applying backpressure
    to acquisition or publication.
-6. Store chart values in fixed-size typed ring buffers.
-7. Request a frame only when data, layout, or controls change, capped at 30 Hz;
+6. Capture host receipt with one process-wide monotonic clock at the earliest
+   safe notification boundary. Preserve the raw device timestamp and map each
+   physical source clock through one drift-constrained affine mapper shared by
+   all of that source's outlets.
+7. Store values, mapped timestamps, and gap flags in rate-aware bounded typed
+   rings. Draw by common time, decimate to temporal extrema per pixel, and keep
+   incompatible physical units on separate axes.
+8. Request a frame only when data, layout, or controls change, capped at 30 Hz;
    stop requesting frames when idle or hidden.
-8. Never block input on an animation frame.
+9. Never block input on an animation frame. Renderer/channel loss detaches only
+   presentation; a replacement renderer reattaches to active source endpoints.
 
-Output reconfiguration is separately serialized so overlapping UI changes
-cannot let an older asynchronous OSC setup overwrite a newer configuration.
-That lifecycle lock is never taken by the publication hot path.
+Output reconfiguration is separately serialized and transactional across all
+source routers so overlapping UI changes cannot let an older asynchronous OSC
+setup overwrite a newer configuration or leave only a prefix of sources
+updated. New source insertion uses the same lifecycle lock. That lock is never
+taken by the publication hot path.
 
 This keeps visualization work proportional to display pixels and refresh rate,
-not to the lifetime of the recording.
+not to the lifetime of the recording. The complete timing, comparison,
+PsychoPy boundary, and physical qualification contract is in
+[`docs/latency-multi-source-architecture.md`](../../docs/latency-multi-source-architecture.md).
 
 ## Background interface renderer
 

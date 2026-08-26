@@ -140,6 +140,22 @@
       label: "Vernier breathing waveform", unit: "0–1", rate: 10, color: "#168259",
       deviceProfile: "vernier", automatic: true, breathingTrail: true,
     },
+    compare_force_acc: {
+      label: "Compare · Force + ACC", unit: "shared time", rate: 200,
+      composite: "force-acc", automatic: true,
+      legend: [
+        { label: "Belt force · N", color: "#00c2ff" },
+        { label: "Polar ACC · X/Y/Z mg", color: "#3b78aa" },
+      ],
+    },
+    compare_breathing: {
+      label: "Compare · Belt + ACC breathing", unit: "0–1", rate: 20,
+      composite: "breathing-overlay", automatic: true,
+      legend: [
+        { label: "Vernier belt", color: "#00c2ff" },
+        { label: "Polar ACC estimate", color: "#ffb000" },
+      ],
+    },
     heart_rate: { label: "Heart rate", unit: "bpm", rate: 1, color: "#d85151" },
     rr_interval: { label: "RR interval", unit: "ms", rate: 2, color: "#6c62a8" },
     acc_magnitude: { label: "3D acceleration magnitude", unit: "g", rate: 200, color: "#3b78aa" },
@@ -237,23 +253,53 @@
     };
   }
 
+  const MAX_TEMPORAL_BUFFER_SAMPLES = 131_072;
+  const MAX_TEMPORAL_WINDOW_SECONDS = 600;
+
   class RingBuffer {
-    constructor(capacity = 4096) {
+    constructor(capacity = 4096, nominalRate = 1) {
       this.values = new Float32Array(capacity);
+      this.timestamps = new Float64Array(capacity);
+      this.flags = new Uint8Array(capacity);
       this.capacity = capacity;
+      this.nominalRate = Math.max(0.001, Number(nominalRate) || 1);
       this.length = 0;
       this.cursor = 0;
+      this.lastTimestamp = null;
     }
 
-    push(value) {
+    push(value, timestampSeconds = null, gapBefore = false) {
       if (!Number.isFinite(value)) return;
+      let timestamp = Number(timestampSeconds);
+      if (!Number.isFinite(timestamp)) {
+        timestamp = this.lastTimestamp == null
+          ? performance.now() / 1000
+          : this.lastTimestamp + 1 / this.nominalRate;
+      }
+      if (this.lastTimestamp != null && timestamp <= this.lastTimestamp) {
+        timestamp = this.lastTimestamp + Math.min(1 / this.nominalRate, 0.000_001);
+      }
       this.values[this.cursor] = value;
+      this.timestamps[this.cursor] = timestamp;
+      this.flags[this.cursor] = gapBefore ? 1 : 0;
+      this.lastTimestamp = timestamp;
       this.cursor = (this.cursor + 1) % this.capacity;
       this.length = Math.min(this.length + 1, this.capacity);
     }
 
-    pushMany(values) {
-      for (const value of values) this.push(Number(value));
+    pushMany(values, timing = null) {
+      const source = Array.from(values || []);
+      if (!source.length) return;
+      const mappedNewest = Number(timing?.mappedHostTimestampNs) / 1_000_000_000;
+      const configuredPeriod = Number(timing?.samplePeriodNs) / 1_000_000_000;
+      const period = Number.isFinite(configuredPeriod) && configuredPeriod > 0
+        ? configuredPeriod
+        : 1 / this.nominalRate;
+      const newest = Number.isFinite(mappedNewest) ? mappedNewest : null;
+      for (let index = 0; index < source.length; index += 1) {
+        const timestamp = newest == null ? null : newest - (source.length - index - 1) * period;
+        this.push(Number(source[index]), timestamp, Boolean(timing?.gapBefore && index === 0));
+      }
     }
 
     tailSize(count) {
@@ -265,13 +311,40 @@
       return this.values[(start + index) % this.capacity];
     }
 
+    tailTimestamp(index, size) {
+      const start = (this.cursor - size + this.capacity) % this.capacity;
+      return this.timestamps[(start + index) % this.capacity];
+    }
+
+    tailGapBefore(index, size) {
+      const start = (this.cursor - size + this.capacity) % this.capacity;
+      return this.flags[(start + index) % this.capacity] !== 0;
+    }
+
+    tailWindowSize(seconds, endTimestamp = this.latestTimestamp()) {
+      if (!this.length || !Number.isFinite(endTimestamp)) return 0;
+      const cutoff = endTimestamp - Math.max(0, Number(seconds) || 0);
+      let count = 0;
+      while (count < this.length) {
+        const index = (this.cursor - count - 1 + this.capacity) % this.capacity;
+        if (this.timestamps[index] < cutoff) break;
+        count += 1;
+      }
+      return count;
+    }
+
     latest() {
       return this.length ? this.values[(this.cursor - 1 + this.capacity) % this.capacity] : null;
+    }
+
+    latestTimestamp() {
+      return this.length ? this.timestamps[(this.cursor - 1 + this.capacity) % this.capacity] : null;
     }
 
     clear() {
       this.length = 0;
       this.cursor = 0;
+      this.lastTimestamp = null;
     }
   }
 
@@ -337,11 +410,33 @@
     return sorted[low] + (sorted[high] - sorted[low]) * (position - low);
   }
 
-  const bufferIds = new Set(Object.entries(visualDefinitions).flatMap(([id, definition]) => (
-    [id, ...(definition.channels?.map((channel) => channel.buffer) || [])]
-  )));
+  function bufferRate(id) {
+    if (visualDefinitions[id]) return Number(visualDefinitions[id].rate) || 1;
+    const parent = Object.values(visualDefinitions).find((definition) => (
+      definition.channels?.some((channel) => channel.buffer === id)
+    ));
+    return Number(parent?.rate) || 1;
+  }
+
+  function createTemporalBuffer(id) {
+    const rate = bufferRate(id);
+    const capacity = Math.min(
+      MAX_TEMPORAL_BUFFER_SAMPLES,
+      Math.max(4096, Math.ceil(rate * MAX_TEMPORAL_WINDOW_SECONDS) + 2),
+    );
+    return new RingBuffer(capacity, rate);
+  }
+
+  function timingNewestSeconds(timing) {
+    const timestamp = Number(timing?.mappedHostTimestampNs) / 1_000_000_000;
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  const eagerBufferIds = Object.freeze([
+    "raw_ecg", "acc_x", "acc_y", "acc_z", "raw_force", "vernier_breathing",
+  ]);
   function createBufferBank() {
-    return Object.fromEntries([...bufferIds].map((id) => [id, new RingBuffer()]));
+    return Object.fromEntries(eagerBufferIds.map((id) => [id, createTemporalBuffer(id)]));
   }
   const sourceBuffers = new Map();
   const vernierDisplayProcessors = new Map();
@@ -451,16 +546,16 @@
     const sources = [...app.activeSources.values()];
     const polarActive = sources.some((source) => source.inputKind === "polarH10");
     const vernierActive = sources.some((source) => source.inputKind === "vernierGoDirect");
-    elements["scan-button"].disabled = polarActive && vernierActive;
+    elements["scan-button"].disabled = false;
     elements["scan-button"].querySelector("span").textContent = polarActive && vernierActive
-      ? "Devices live"
+      ? "Add another sensor"
       : polarActive
         ? "Add Vernier"
         : vernierActive
           ? "Add Polar H10"
           : "Search devices";
     elements["scan-caption"].textContent = polarActive && vernierActive
-      ? "Both protocols publish concurrently"
+      ? "All active streams continue while discovery runs"
       : polarActive || vernierActive
         ? "The connected source keeps streaming during discovery"
         : "Supported Polar + Vernier Bluetooth protocols";
@@ -481,7 +576,7 @@
   }
 
   function visualMatchesDeviceProfile(definition, profile = selectedDeviceProfile()) {
-    return (definition?.deviceProfile || "polar") === profile.id;
+    return !definition?.composite && (definition?.deviceProfile || "polar") === profile.id;
   }
 
   function automaticVernierStreamName(suffix, value = app.streamName) {
@@ -849,6 +944,13 @@
     renderMetricFilters();
     renderOutputs();
     installInteractions();
+    if (isNative) {
+      try {
+        await runtime.attachActiveSources((event) => handleNativeEvent(event));
+      } catch (error) {
+        toast(`Live sources could not be reattached. ${runtime.formatError(error)}`, true);
+      }
+    }
     if (runtime.isBrowser && browserSession) browserSession.subscribe(renderBrowserRecorder);
     if (audioDataLink) audioDataLink.subscribe(renderAudioOutput);
     resizeCanvas();
@@ -1418,7 +1520,7 @@
     const previousBuffers = buffers;
     if (source) buffers = buffersForSource(source.id);
     audioDataLink?.capture(event);
-    ingestFormulaBatch(event.formulas);
+    ingestFormulaBatch(event.formulas, event.timing);
     switch (event.kind) {
       case "status":
         setTopStatus(event.message, "working");
@@ -1429,22 +1531,28 @@
         updateConnection(event, device);
         break;
       case "ecg":
-        ingestEcg(event.microvolts || []);
+        ingestEcg(event.microvolts || [], event.timing);
         break;
       case "accelerometer":
-        ingestAccelerometer(event.samples || []);
+        ingestAccelerometer(event.samples || [], event.timing);
         break;
       case "metrics":
         ingestMetrics(event);
         break;
       case "force": {
         const values = event.values || [];
-        ensureBuffer("raw_force").pushMany(values);
+        const samplePeriodUs = event.samplePeriodUs || source?.samplePeriodUs || 100_000;
+        const timing = event.timing || { samplePeriodNs: String(samplePeriodUs * 1000) };
+        ensureBuffer("raw_force").pushMany(values, timing);
         if (source?.id) {
-          const processor = vernierDisplayProcessors.get(source.id) || new VernierBreathingDisplayProcessor();
-          vernierDisplayProcessors.set(source.id, processor);
-          const samplePeriodUs = event.samplePeriodUs || source.samplePeriodUs || 100_000;
-          ensureBuffer("vernier_breathing").pushMany(processor.push(values, samplePeriodUs));
+          const breathingValues = Array.isArray(event.breathingValues)
+            ? event.breathingValues
+            : (() => {
+                const processor = vernierDisplayProcessors.get(source.id) || new VernierBreathingDisplayProcessor();
+                vernierDisplayProcessors.set(source.id, processor);
+                return processor.push(values, samplePeriodUs);
+              })();
+          ensureBuffer("vernier_breathing").pushMany(breathingValues, timing);
           if (visualDefinitions.vernier_breathing) {
             visualDefinitions.vernier_breathing.rate = 1_000_000 / Math.max(1, samplePeriodUs);
           }
@@ -1746,12 +1854,12 @@
     elements["connection-metric-2-value"].textContent = isVernier ? String(source.sensorNumber ?? 1) : "200 Hz";
   }
 
-  function ingestFormulaBatch(batch) {
+  function ingestFormulaBatch(batch, timing = null) {
     if (!batch) return;
     for (const series of batch.series || []) {
       const formula = app.customFormulas.find((candidate) => candidate.id === series.formulaId);
       if (!formula) continue;
-      ensureBuffer(`formula:${formula.id}`).pushMany(series.values || []);
+      ensureBuffer(`formula:${formula.id}`).pushMany(series.values || [], timing);
     }
     for (const fault of batch.faults || []) {
       const key = `${fault.formulaId}:${fault.code}`;
@@ -1923,23 +2031,31 @@
     elements["audio-detail"].classList.toggle("warning", Boolean(status.error));
   }
 
-  function ingestEcg(values) {
-    buffers.raw_ecg.pushMany(values);
+  function ingestEcg(values, timing = null) {
+    buffers.raw_ecg.pushMany(values, timing);
     app.sampleCount += values.length;
     markTelemetryDirty();
   }
 
-  function ingestAccelerometer(samples) {
+  function ingestAccelerometer(samples, timing = null) {
     if (!samples.length) return;
+    const xValues = [];
+    const yValues = [];
+    const zValues = [];
+    const magnitudes = [];
     for (const sample of samples) {
       const x = Number(sample.xMg ?? sample.x_mg ?? 0);
       const y = Number(sample.yMg ?? sample.y_mg ?? 0);
       const z = Number(sample.zMg ?? sample.z_mg ?? 0);
-      buffers.acc_x.push(x);
-      buffers.acc_y.push(y);
-      buffers.acc_z.push(z);
-      ensureBuffer("acc_magnitude").push(visualValue("acc_magnitude", Math.hypot(x, y, z) / 1000));
+      xValues.push(x);
+      yValues.push(y);
+      zValues.push(z);
+      magnitudes.push(visualValue("acc_magnitude", Math.hypot(x, y, z) / 1000));
     }
+    buffers.acc_x.pushMany(xValues, timing);
+    buffers.acc_y.pushMany(yValues, timing);
+    buffers.acc_z.pushMany(zValues, timing);
+    ensureBuffer("acc_magnitude").pushMany(magnitudes, timing);
     app.sampleCount += samples.length;
     markTelemetryDirty();
   }
@@ -1950,19 +2066,20 @@
         // ACC magnitude is already calculated while unpacking raw axes above;
         // avoid drawing every native value twice.
         if (metric.id !== "acc_magnitude") {
-          ensureBuffer(metric.id).push(visualValue(metric.id, Number(metric.value)));
+          ensureBuffer(metric.id).push(visualValue(metric.id, Number(metric.value)), timingNewestSeconds(event.timing));
         }
       }
       markTelemetryDirty();
       return;
     }
     // Backward compatibility for early v0.1 event payloads.
-    ensureBuffer("heart_rate").push(visualValue("heart_rate", event.heartRateBpm ?? event.heart_rate_bpm));
+    const timestamp = timingNewestSeconds(event.timing);
+    ensureBuffer("heart_rate").push(visualValue("heart_rate", event.heartRateBpm ?? event.heart_rate_bpm), timestamp);
     for (const value of event.rrIntervalsMs ?? event.rr_intervals_ms ?? []) {
-      ensureBuffer("rr_interval").push(visualValue("rr_interval", value));
+      ensureBuffer("rr_interval").push(visualValue("rr_interval", value), timestamp);
     }
     const rmssd = event.rmssdMs ?? event.rmssd_ms;
-    if (rmssd != null) ensureBuffer("rmssd").push(visualValue("rmssd", rmssd));
+    if (rmssd != null) ensureBuffer("rmssd").push(visualValue("rmssd", rmssd), timestamp);
     markTelemetryDirty();
   }
 
@@ -2000,12 +2117,11 @@
           symmetric: metric.id === "breathing_phase" || /^ecg_(mean|sd)$/.test(metric.id),
         };
       }
-      ensureBuffer(metric.id);
     }
   }
 
   function ensureBuffer(id) {
-    if (!buffers[id]) buffers[id] = new RingBuffer();
+    if (!buffers[id]) buffers[id] = createTemporalBuffer(id);
     return buffers[id];
   }
 
@@ -3181,6 +3297,12 @@
       if (!enabled) continue;
       choices.push({ id, definition });
     }
+    const activeProfiles = new Set([...app.activeSources.values()].map((source) => deviceProfileForSource(source).id));
+    if (activeProfiles.has("polar") && activeProfiles.has("vernier")) {
+      for (const id of ["compare_force_acc", "compare_breathing"]) {
+        choices.push({ id, definition: visualDefinitions[id] });
+      }
+    }
     elements["visual-source"].replaceChildren(...choices.map(({ id, definition }) => {
       const option = document.createElement("option");
       option.value = id;
@@ -3199,6 +3321,7 @@
 
   function updateVisualLabels() {
     const definition = visualDefinitions[app.selectedVisual];
+    const composite = Boolean(definition?.composite);
     const breathingTrail = Boolean(definition?.breathingTrail || app.selectedVisual === "breathing_volume");
     const custom = Boolean(definition?.formulaId);
     const options = custom
@@ -3212,18 +3335,21 @@
       : normalized
         ? options.normalization === "session" ? "0–1 whole run" : `0–1 / ${options.windowSeconds}s`
         : "Original scale";
-    elements["adjust-visual"].disabled = !definition || custom || Boolean(definition.automatic && !definition.adjustable);
+    elements["adjust-visual"].disabled = !definition || composite || custom || Boolean(definition.automatic && !definition.adjustable);
+    elements["adjust-visual"].hidden = composite;
     elements["chart-shell"].classList.toggle("phase-visual", app.selectedVisual === "breathing_phase");
     elements["chart-shell"].classList.toggle("breathing-trail-visual", breathingTrail);
-    elements["chart-shell"].classList.toggle("stacked-axes", Boolean(definition?.channels));
-    elements["visual-current"].classList.toggle("stacked-value", Boolean(definition?.channels));
+    elements["chart-shell"].classList.toggle("stacked-axes", Boolean(definition?.channels || composite));
+    elements["visual-current"].classList.toggle("stacked-value", Boolean(definition?.channels || composite));
     elements["signal-canvas"].setAttribute(
       "aria-label",
       breathingTrail
         ? app.selectedVisual === "vernier_breathing"
           ? "Live Vernier respiration-belt waveform from 0 to 1. The newest sample is a moving dot and recent samples form a leftward trail; increasing belt force and inhalation move upward."
           : "Preliminary one-dimensional ACC breathing waveform. The newest sample is a moving dot and recent samples form a leftward trail; rising follows the configured inhale direction."
-        : definition?.channels
+        : composite
+          ? "Time-aligned comparison of independent Bluetooth sources on a shared host-monotonic time axis"
+          : definition?.channels
           ? "Live raw accelerometer X, Y, and Z signals in three stacked plots"
           : `Live ${definition?.label || "selected Polar H10"} signal`,
     );
@@ -3233,7 +3359,7 @@
       delete elements["signal-canvas"].dataset.latestY01;
       delete elements["signal-canvas"].dataset.trailPoints;
     }
-    const legendItems = definition?.channels || (definition ? [{
+    const legendItems = definition?.legend || definition?.channels || (definition ? [{
       label: breathingTrail ? `${definition.label} · dot = latest` : definition.label,
       color: selectedSourceColor(definition.color),
     }] : []);
@@ -3429,6 +3555,10 @@
     }
 
     const options = metricOptionFor(optionIdForVisual(app.selectedVisual));
+    if (definition.composite) {
+      drawCompositeSignal(context, canvas, definition, options);
+      return;
+    }
     if (definition.channels) {
       drawStackedSignal(context, canvas, definition, options);
       return;
@@ -3445,8 +3575,8 @@
       return;
     }
 
-    const visibleCount = Math.max(10, Math.ceil(definition.rate * options.displayWindowSeconds));
-    const valueCount = buffer.tailSize(visibleCount);
+    const temporal = temporalWindow(buffer, options.displayWindowSeconds);
+    const valueCount = temporal.count;
     const normalized = options.normalization !== "none";
     elements["chart-empty"].hidden = valueCount > 1;
     elements["visual-current"].textContent = formatValue(buffer.latest(), normalized ? 3 : definition.unit === "g" ? 3 : definition.unit === "bpm" ? 0 : 1);
@@ -3457,8 +3587,9 @@
 
     let min = Infinity;
     let max = -Infinity;
-    for (let index = 0; index < valueCount; index += 1) {
-      const value = buffer.tailValue(index, valueCount);
+    const points = temporalEnvelopePoints(buffer, temporal, canvas.width);
+    for (const point of points) {
+      const value = point.value;
       if (value < min) min = value;
       if (value > max) max = value;
     }
@@ -3486,17 +3617,74 @@
     const range = max - min || 1;
     context.clearRect(0, 0, width, height);
     context.beginPath();
-    for (let index = 0; index < valueCount; index += 1) {
-      const value = buffer.tailValue(index, valueCount);
-      const x = padX + (index / (valueCount - 1)) * drawWidth;
+    let pathStarted = false;
+    for (const point of points) {
+      const value = point.value;
+      const x = padX + ((point.timestamp - temporal.start) / temporal.duration) * drawWidth;
       const y = padY + (1 - (value - min) / range) * drawHeight;
-      if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      if (!pathStarted || point.gapBefore) context.moveTo(x, y); else context.lineTo(x, y);
+      pathStarted = true;
     }
     context.strokeStyle = selectedSourceColor(definition.color);
     context.lineWidth = Math.max(1.4, (window.devicePixelRatio || 1) * 0.9);
     context.lineJoin = "round";
     context.lineCap = "round";
     context.stroke();
+  }
+
+  function temporalWindow(buffer, displayWindowSeconds, commonEnd = null) {
+    const seconds = Math.max(0.1, Number(displayWindowSeconds) || 5);
+    const latest = Number(buffer?.latestTimestamp());
+    const end = Number.isFinite(commonEnd) ? commonEnd : latest;
+    if (!buffer || !Number.isFinite(end) || !Number.isFinite(latest)) {
+      return { count: 0, start: 0, end: 0, duration: seconds };
+    }
+    return {
+      count: buffer.tailWindowSize(seconds, end),
+      start: end - seconds,
+      end,
+      duration: seconds,
+    };
+  }
+
+  function temporalEnvelopePoints(buffer, temporal, pixelWidth) {
+    if (!buffer || temporal.count < 1) return [];
+    const columns = Math.max(1, Math.floor(pixelWidth));
+    const buckets = new Map();
+    for (let index = 0; index < temporal.count; index += 1) {
+      const timestamp = buffer.tailTimestamp(index, temporal.count);
+      if (timestamp < temporal.start || timestamp > temporal.end) continue;
+      const value = buffer.tailValue(index, temporal.count);
+      const column = Math.max(0, Math.min(columns - 1, Math.floor(
+        ((timestamp - temporal.start) / temporal.duration) * columns,
+      )));
+      const gapBefore = buffer.tailGapBefore(index, temporal.count);
+      const existing = buckets.get(column);
+      if (!existing) {
+        buckets.set(column, {
+          first: { timestamp, value, gapBefore },
+          min: { timestamp, value, gapBefore },
+          max: { timestamp, value, gapBefore },
+          gapBefore,
+        });
+      } else {
+        if (value < existing.min.value) existing.min = { timestamp, value, gapBefore };
+        if (value > existing.max.value) existing.max = { timestamp, value, gapBefore };
+        existing.gapBefore ||= gapBefore;
+      }
+    }
+    const points = [];
+    for (const bucket of buckets.values()) {
+      const extrema = bucket.min.timestamp <= bucket.max.timestamp
+        ? [bucket.min, bucket.max]
+        : [bucket.max, bucket.min];
+      if (bucket.min.timestamp === bucket.max.timestamp) extrema.length = 1;
+      extrema.forEach((point, index) => points.push({
+        ...point,
+        gapBefore: Boolean((index === 0 && bucket.gapBefore) || point.gapBefore),
+      }));
+    }
+    return points;
   }
 
   function colorWithAlpha(color, alpha) {
@@ -3506,10 +3694,11 @@
   }
 
   function drawBreathingTrail(context, canvas, buffer, definition, options) {
-    const visibleCount = Math.max(10, Math.ceil(definition.rate * options.displayWindowSeconds));
-    const valueCount = buffer.tailSize(visibleCount);
+    const temporal = temporalWindow(buffer, options.displayWindowSeconds);
+    const dataPoints = temporalEnvelopePoints(buffer, temporal, canvas.width);
+    const valueCount = temporal.count;
     const latest = Number(buffer.latest());
-    const hasData = valueCount > 1 && Number.isFinite(latest);
+    const hasData = dataPoints.length > 1 && Number.isFinite(latest);
     elements["chart-empty"].hidden = hasData;
     elements["visual-current"].textContent = Number.isFinite(latest) ? formatValue(latest, 3) : "—";
     elements["y-max"].textContent = "";
@@ -3533,17 +3722,22 @@
     const drawWidth = width - padLeft - padRight;
     const drawHeight = height - padY * 2;
     const sourceColor = selectedSourceColor(definition.color);
-    const point = (index) => {
-      const value = Math.max(0, Math.min(1, Number(buffer.tailValue(index, valueCount)) || 0));
+    const point = (sample) => {
+      const value = Math.max(0, Math.min(1, Number(sample.value) || 0));
       return {
-        x: padLeft + (index / (valueCount - 1)) * drawWidth,
+        x: padLeft + ((sample.timestamp - temporal.start) / temporal.duration) * drawWidth,
         y: padY + (1 - value) * drawHeight,
         value,
+        gapBefore: sample.gapBefore,
       };
     };
-    const latestPoint = point(valueCount - 1);
-    const trendLookback = Math.min(5, valueCount - 1);
-    const trend = latestPoint.value - point(valueCount - 1 - trendLookback).value;
+    const latestPoint = point({
+      value: latest,
+      timestamp: buffer.latestTimestamp(),
+      gapBefore: false,
+    });
+    const trendSampleCount = Math.min(6, buffer.length);
+    const trend = latestPoint.value - Number(buffer.tailValue(0, trendSampleCount));
     const direction = trend > 0.002 ? "inhale" : trend < -0.002 ? "exhale" : "pause";
     canvas.dataset.breathDirection = direction;
     canvas.dataset.latestY01 = latestPoint.value.toFixed(4);
@@ -3568,9 +3762,11 @@
     context.setLineDash([]);
 
     context.beginPath();
-    for (let index = 0; index < valueCount; index += 1) {
-      const current = point(index);
-      if (index === 0) context.moveTo(current.x, current.y); else context.lineTo(current.x, current.y);
+    let pathStarted = false;
+    for (const sample of dataPoints) {
+      const current = point(sample);
+      if (!pathStarted || current.gapBefore) context.moveTo(current.x, current.y); else context.lineTo(current.x, current.y);
+      pathStarted = true;
     }
     const trailGradient = context.createLinearGradient(padLeft, 0, width - padRight, 0);
     trailGradient.addColorStop(0, colorWithAlpha(sourceColor, 0.10));
@@ -3607,11 +3803,17 @@
   }
 
   function drawStackedSignal(context, canvas, definition, options) {
-    const visibleCount = Math.max(10, Math.ceil(definition.rate * options.displayWindowSeconds));
+    const commonEnd = Math.max(...definition.channels.map((channel) => (
+      Number(buffers[channel.buffer]?.latestTimestamp()) || 0
+    )));
     const series = definition.channels.map((channel) => ({
       ...channel,
       buffer: buffers[channel.buffer],
-      valueCount: buffers[channel.buffer].tailSize(visibleCount),
+      temporal: temporalWindow(buffers[channel.buffer], options.displayWindowSeconds, commonEnd),
+    })).map((channel) => ({
+      ...channel,
+      valueCount: channel.temporal.count,
+      points: temporalEnvelopePoints(channel.buffer, channel.temporal, canvas.width),
     }));
     const hasData = series.some(({ valueCount }) => valueCount > 1);
     elements["chart-empty"].hidden = hasData;
@@ -3637,7 +3839,7 @@
     context.lineJoin = "round";
     context.lineCap = "round";
 
-    series.forEach(({ label, color, symmetric, buffer, valueCount }, seriesIndex) => {
+    series.forEach(({ label, color, symmetric, buffer, valueCount, temporal, points }, seriesIndex) => {
       const laneTop = padY + seriesIndex * (laneHeight + laneGap);
       const laneBottom = laneTop + laneHeight;
       if (seriesIndex > 0) {
@@ -3657,8 +3859,8 @@
 
       let min = Infinity;
       let max = -Infinity;
-      for (let index = 0; index < valueCount; index += 1) {
-        const value = buffer.tailValue(index, valueCount);
+      for (const point of points) {
+        const value = point.value;
         if (value < min) min = value;
         if (value > max) max = value;
       }
@@ -3682,15 +3884,140 @@
 
       const range = max - min || 1;
       context.beginPath();
-      for (let index = 0; index < valueCount; index += 1) {
-        const x = padLeft + (index / (valueCount - 1)) * drawWidth;
-        const y = laneTop + (1 - (buffer.tailValue(index, valueCount) - min) / range) * laneHeight;
-        if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      let pathStarted = false;
+      for (const point of points) {
+        const x = padLeft + ((point.timestamp - temporal.start) / temporal.duration) * drawWidth;
+        const y = laneTop + (1 - (point.value - min) / range) * laneHeight;
+        if (!pathStarted || point.gapBefore) context.moveTo(x, y); else context.lineTo(x, y);
+        pathStarted = true;
       }
       context.strokeStyle = color;
       context.lineWidth = Math.max(1.4, pixelRatio * 0.9);
       context.stroke();
     });
+  }
+
+  function activeSourceForProfile(profileId) {
+    const selected = app.activeSources.get(app.selectedSourceId);
+    if (deviceProfileForSource(selected).id === profileId) return selected;
+    return [...app.activeSources.values()].find((source) => deviceProfileForSource(source).id === profileId) || null;
+  }
+
+  function drawCompositeSignal(context, canvas, definition, options) {
+    const polarSource = activeSourceForProfile("polar");
+    const vernierSource = activeSourceForProfile("vernier");
+    const polarBuffers = polarSource ? buffersForSource(polarSource.id) : null;
+    const vernierBuffers = vernierSource ? buffersForSource(vernierSource.id) : null;
+    const polarColor = polarSource?.color || "#ffb000";
+    const vernierColor = vernierSource?.color || "#00c2ff";
+    const lanes = definition.composite === "breathing-overlay"
+      ? [{
+          label: "RELATIVE BREATHING · 0–1",
+          fixedRange: [0, 1],
+          series: [
+            { label: "Belt", color: vernierColor, buffer: vernierBuffers?.vernier_breathing },
+            { label: "ACC", color: polarColor, buffer: polarBuffers?.breathing_volume },
+          ],
+        }]
+      : [
+          { label: "BELT FORCE · N", series: [{ label: "Force", color: vernierColor, buffer: vernierBuffers?.raw_force }] },
+          { label: "POLAR ACC X · mg", symmetric: true, series: [{ label: "X", color: "#3b78aa", buffer: polarBuffers?.acc_x }] },
+          { label: "POLAR ACC Y · mg", symmetric: true, series: [{ label: "Y", color: "#168259", buffer: polarBuffers?.acc_y }] },
+          { label: "POLAR ACC Z · mg", symmetric: true, series: [{ label: "Z", color: "#a66d19", buffer: polarBuffers?.acc_z }] },
+        ];
+    const allSeries = lanes.flatMap((lane) => lane.series).filter((series) => series.buffer);
+    const commonEnd = Math.max(0, ...allSeries.map((series) => Number(series.buffer.latestTimestamp()) || 0));
+    const seconds = options.displayWindowSeconds;
+    for (const series of allSeries) {
+      series.temporal = temporalWindow(series.buffer, seconds, commonEnd);
+      series.points = temporalEnvelopePoints(series.buffer, series.temporal, canvas.width);
+    }
+    const hasData = allSeries.some((series) => series.temporal.count > 1);
+    elements["chart-empty"].hidden = hasData;
+    elements["visual-current"].textContent = definition.composite === "breathing-overlay"
+      ? `Belt ${formatValue(vernierBuffers?.vernier_breathing?.latest(), 3)} · ACC ${formatValue(polarBuffers?.breathing_volume?.latest(), 3)}`
+      : `Force ${formatValue(vernierBuffers?.raw_force?.latest(), 2)} N · ACC ${formatValue(polarBuffers?.acc_x?.latest(), 0)} / ${formatValue(polarBuffers?.acc_y?.latest(), 0)} / ${formatValue(polarBuffers?.acc_z?.latest(), 0)} mg`;
+    elements["y-max"].textContent = "";
+    elements["y-min"].textContent = "";
+
+    const width = canvas.width;
+    const height = canvas.height;
+    context.clearRect(0, 0, width, height);
+    canvas.dataset.visualMode = "time-aligned-comparison";
+    canvas.dataset.composite = definition.composite;
+    if (!hasData) return;
+
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const padLeft = Math.max(Math.round(width * 0.13), Math.round(92 * pixelRatio));
+    const padRight = Math.round(width * 0.035);
+    const padTop = Math.round(height * 0.035);
+    const padBottom = Math.max(Math.round(height * 0.08), Math.round(28 * pixelRatio));
+    const laneGap = Math.round(9 * pixelRatio);
+    const laneHeight = (height - padTop - padBottom - laneGap * (lanes.length - 1)) / lanes.length;
+    const drawWidth = width - padLeft - padRight;
+    context.save();
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    context.textBaseline = "middle";
+
+    lanes.forEach((lane, laneIndex) => {
+      const laneTop = padTop + laneIndex * (laneHeight + laneGap);
+      const laneBottom = laneTop + laneHeight;
+      const values = lane.series.flatMap((series) => series.points || []).map((point) => point.value);
+      if (!values.length) return;
+      let min = lane.fixedRange?.[0] ?? Math.min(...values);
+      let max = lane.fixedRange?.[1] ?? Math.max(...values);
+      if (!lane.fixedRange && lane.symmetric) {
+        const extent = Math.max(Math.abs(min), Math.abs(max), 1) * 1.08;
+        min = -extent;
+        max = extent;
+      } else if (!lane.fixedRange) {
+        const padding = Math.max((max - min) * 0.1, Math.abs(max) * 0.02, 0.01);
+        min -= padding;
+        max += padding;
+      }
+      const range = max - min || 1;
+
+      if (laneIndex > 0) {
+        const separatorY = laneTop - laneGap / 2;
+        context.beginPath();
+        context.moveTo(padLeft, separatorY);
+        context.lineTo(width - padRight, separatorY);
+        context.strokeStyle = "rgba(81, 103, 91, 0.18)";
+        context.lineWidth = Math.max(1, pixelRatio * 0.6);
+        context.stroke();
+      }
+      context.fillStyle = "#52645a";
+      context.font = `700 ${Math.round(8 * pixelRatio)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+      context.textAlign = "left";
+      context.fillText(lane.label, Math.round(8 * pixelRatio), laneTop + laneHeight / 2);
+      context.fillStyle = "#85928a";
+      context.textAlign = "right";
+      context.fillText(shortAxis(max), padLeft - Math.round(7 * pixelRatio), laneTop + Math.round(7 * pixelRatio));
+      context.fillText(shortAxis(min), padLeft - Math.round(7 * pixelRatio), laneBottom - Math.round(7 * pixelRatio));
+
+      for (const series of lane.series) {
+        if (!series.points?.length) continue;
+        context.beginPath();
+        let pathStarted = false;
+        for (const point of series.points) {
+          const x = padLeft + ((point.timestamp - (commonEnd - seconds)) / seconds) * drawWidth;
+          const y = laneTop + (1 - (point.value - min) / range) * laneHeight;
+          if (!pathStarted || point.gapBefore) context.moveTo(x, y); else context.lineTo(x, y);
+          pathStarted = true;
+        }
+        context.strokeStyle = series.color;
+        context.lineWidth = Math.max(1.5, pixelRatio);
+        context.stroke();
+      }
+    });
+    context.fillStyle = "#85928a";
+    context.font = `${Math.round(8 * pixelRatio)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    context.textAlign = "left";
+    context.fillText(`−${Number(seconds).toFixed(seconds < 10 ? 1 : 0)} s`, padLeft, height - Math.round(8 * pixelRatio));
+    context.textAlign = "right";
+    context.fillText("NOW · HOST MONOTONIC", width - padRight, height - Math.round(8 * pixelRatio));
+    context.restore();
   }
 
   function resetPhaseMotion(level = 0.5, velocity = 0) {
@@ -3904,6 +4231,66 @@
         polarSwitch,
       };
     }
+    if (name === "multi-source-comparison") {
+      await renderInterfaceScenario("multiple-colored-sources");
+      const polarSource = app.activeSources.get("source-1");
+      const vernierSource = app.activeSources.get("source-2");
+      const commonNewestNs = 30_000_000_000;
+      handleNativeEvent({
+        kind: "accelerometer",
+        source: polarSource,
+        timing: {
+          hostReceiveTimestampNs: String(commonNewestNs + 8_000_000),
+          mappedHostTimestampNs: String(commonNewestNs),
+          samplePeriodNs: "5000000",
+          clockQuality: "locked",
+          clockUncertaintyNs: "1800000",
+          gapBefore: false,
+        },
+        samples: Array.from({ length: 800 }, (_, index) => ({
+          xMg: Math.round(Math.sin(index / 17) * 105),
+          yMg: Math.round(Math.cos(index / 23) * 75 + 25),
+          zMg: Math.round(Math.sin(index / 31) * 130 - 35),
+        })),
+      });
+      const forceValues = Array.from({ length: 40 }, (_, index) => 3.1 + Math.sin(index / 5) * 0.48);
+      handleNativeEvent({
+        kind: "force",
+        source: vernierSource,
+        samplePeriodUs: 100000,
+        timing: {
+          hostReceiveTimestampNs: String(commonNewestNs + 11_000_000),
+          mappedHostTimestampNs: String(commonNewestNs),
+          samplePeriodNs: "100000000",
+          clockQuality: "arrival",
+          clockUncertaintyNs: "0",
+          gapBefore: false,
+        },
+        values: forceValues,
+        breathingValues: forceValues.map((value) => normalizeVernierForce(value, 2.6, 3.6)),
+      });
+      selectSource("source-2");
+      app.selectedVisual = "compare_force_acc";
+      rebuildVisualOptions();
+      elements["visual-source"].value = app.selectedVisual;
+      updateVisualLabels();
+      resizeCanvas();
+      drawSignal();
+      await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+      resizeCanvas();
+      drawSignal();
+      return {
+        scenario: name,
+        selectedVisual: app.selectedVisual,
+        visualOptions: [...elements["visual-source"].options].map((option) => option.value),
+        visualMode: elements["signal-canvas"].dataset.visualMode,
+        composite: elements["signal-canvas"].dataset.composite,
+        currentLabel: elements["visual-current"].textContent,
+        canvasLabel: elements["signal-canvas"].getAttribute("aria-label"),
+        chartClass: elements["chart-shell"].className,
+        legendLabels: [...elements["visual-legend"].querySelectorAll(".legend-item")].map((item) => item.textContent.trim()),
+      };
+    }
     if (name === "metric-library-previews") {
       if (app.activeSources.has("source-1")) selectSource("source-1");
       await Promise.all([ensureMetricPreviews(), ensurePreviewRecording()]);
@@ -4042,6 +4429,7 @@
         "breathing-waveform-trail",
         "raw-accelerometer-stacked",
         "multiple-colored-sources",
+        "multi-source-comparison",
         "metric-library-previews",
       ]),
       ready: () => initialization,

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/polar-stream",
+    "crates/polar-stream-time",
     "crates/polar-h10-core",
     "crates/polar-h10-input",
     "crates/polar-h10-math",

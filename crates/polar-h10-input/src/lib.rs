@@ -3,7 +3,11 @@
 //! This crate emits decoded input events. It has no dependency on Tauri, LSL,
 //! OSC, charts, or any application state outside the Bluetooth connection.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +32,8 @@ use polar_h10_core::{
     ACC_MEASUREMENT, ECG_MEASUREMENT, PmdFrame, decode_heart_rate, decode_pmd,
     start_accelerometer_command, start_ecg_command, stop_command,
 };
+#[cfg(not(target_os = "windows"))]
+use polar_stream_time::monotonic_now_ns;
 use serde::Serialize;
 use tokio::sync::{Mutex, mpsc, watch};
 use uuid::Uuid;
@@ -46,6 +52,7 @@ const SCAN_DURATION: Duration = Duration::from_secs(4);
 const PROPERTY_SWEEP_TIMEOUT: Duration = Duration::from_secs(4);
 #[cfg(not(target_os = "windows"))]
 const PROPERTY_READ_CONCURRENCY: usize = 16;
+const DEVICE_CACHE_TTL: Duration = Duration::from_secs(45);
 
 #[cfg(target_os = "windows")]
 type ScannedDevice = String;
@@ -72,13 +79,16 @@ pub enum InputEvent {
     },
     Ecg {
         sensor_timestamp_ns: u64,
+        host_receive_timestamp_ns: u64,
         microvolts: Vec<i32>,
     },
     Accelerometer {
         sensor_timestamp_ns: u64,
+        host_receive_timestamp_ns: u64,
         samples: Vec<AccSample>,
     },
     HeartRate {
+        host_receive_timestamp_ns: u64,
         beats_per_minute: u16,
         rr_intervals_ms: Vec<f32>,
     },
@@ -113,6 +123,11 @@ struct PooledInputSession {
     manager: Arc<InputManager>,
 }
 
+struct CachedDeviceSummary {
+    summary: DeviceSummary,
+    seen_at: Instant,
+}
+
 /// Owns a bounded set of independent sensor sessions that share one discovery
 /// snapshot. Each admitted device still runs through its own [`InputManager`]
 /// and platform connection owner.
@@ -123,6 +138,7 @@ struct PooledInputSession {
 /// be observed.
 pub struct InputSessionPool {
     discovery: Arc<InputManager>,
+    candidates: Mutex<HashMap<String, CachedDeviceSummary>>,
     sessions: Mutex<HashMap<String, PooledInputSession>>,
     operation_gate: Mutex<()>,
     max_sessions: usize,
@@ -139,23 +155,58 @@ impl InputSessionPool {
     pub fn with_max_sessions(max_sessions: usize) -> Self {
         Self {
             discovery: Arc::new(InputManager::new()),
+            candidates: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             operation_gate: Mutex::new(()),
             max_sessions: max_sessions.clamp(1, 8),
         }
     }
 
-    /// Refresh the shared device snapshot. Active sessions must be disconnected
-    /// first so discovery cannot replace their selection authority.
+    /// Refresh the shared candidate registry without disturbing active session
+    /// owners. The ordinary add-device workflow seeks one new H10, so Windows
+    /// can stop as soon as one non-active exact-name candidate is observed.
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
         let _operation = self.operation_gate.lock().await;
-        if !self.sessions.lock().await.is_empty() {
-            return Err("Disconnect all sensor sessions before scanning again.".into());
-        }
+        self.prune_finished_sessions().await;
+        let active_device_ids = self
+            .sessions
+            .lock()
+            .await
+            .values()
+            .map(|session| session.device_id.clone())
+            .collect::<Vec<_>>();
         #[cfg(target_os = "windows")]
-        return self.discovery.scan_for_exact_h10s(self.max_sessions).await;
+        let found = self
+            .discovery
+            .scan_for_exact_h10s(1, &active_device_ids)
+            .await?;
         #[cfg(not(target_os = "windows"))]
-        self.discovery.scan().await
+        let found = self.discovery.scan().await?;
+
+        let seen_at = Instant::now();
+        let mut candidates = self.candidates.lock().await;
+        candidates.retain(|id, candidate| {
+            active_device_ids.contains(id)
+                || seen_at.saturating_duration_since(candidate.seen_at) <= DEVICE_CACHE_TTL
+        });
+        for summary in found {
+            candidates.insert(summary.id.clone(), CachedDeviceSummary { summary, seen_at });
+        }
+        let mut available = candidates
+            .iter()
+            .filter(|(id, _)| !active_device_ids.contains(id))
+            .map(|(_, candidate)| candidate.summary.clone())
+            .collect::<Vec<_>>();
+        let retained_ids = candidates.keys().cloned().collect::<Vec<_>>();
+        drop(candidates);
+        self.discovery.retain_devices(&retained_ids).await;
+        available.sort_by(|left, right| {
+            right
+                .rssi
+                .cmp(&left.rssi)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(available)
     }
 
     /// Connect one exact device from the latest shared scan under a stable,
@@ -167,6 +218,7 @@ impl InputSessionPool {
     ) -> Result<mpsc::Receiver<InputEvent>, String> {
         validate_session_slot(slot)?;
         let _operation = self.operation_gate.lock().await;
+        self.prune_finished_sessions().await;
 
         let scanned_device = self
             .discovery
@@ -247,7 +299,31 @@ impl InputSessionPool {
     }
 
     pub async fn active_session_count(&self) -> usize {
+        self.prune_finished_sessions().await;
         self.sessions.lock().await.len()
+    }
+
+    async fn prune_finished_sessions(&self) {
+        let sessions = self
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .map(|(slot, session)| (slot.clone(), session.manager.clone()))
+            .collect::<Vec<_>>();
+        let mut finished = Vec::new();
+        for (slot, manager) in sessions {
+            if !manager.is_active().await {
+                finished.push(slot);
+            }
+        }
+        if finished.is_empty() {
+            return;
+        }
+        self.sessions
+            .lock()
+            .await
+            .retain(|slot, _| !finished.contains(slot));
     }
 }
 
@@ -307,20 +383,26 @@ impl InputManager {
 
     #[cfg(target_os = "windows")]
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
-        self.scan_for_exact_h10s(1).await
+        self.scan_for_exact_h10s(1, &[]).await
     }
 
     #[cfg(target_os = "windows")]
     async fn scan_for_exact_h10s(
         &self,
         minimum_exact_h10s: usize,
+        excluded_device_ids: &[String],
     ) -> Result<Vec<DeviceSummary>, String> {
-        let found = windows_backend::scan_for_exact_h10s(minimum_exact_h10s).await?;
-        let next_devices = found
+        let excluded_addresses = excluded_device_ids
+            .iter()
+            .filter_map(|device_id| parse_bluetooth_address(device_id))
+            .collect();
+        let found =
+            windows_backend::scan_for_exact_h10s(minimum_exact_h10s, excluded_addresses).await?;
+        let next_devices: HashMap<String, String> = found
             .iter()
             .map(|device| (device.id.clone(), device.name.clone()))
             .collect();
-        *self.devices.lock().await = next_devices;
+        self.devices.lock().await.extend(next_devices);
         Ok(found)
     }
 
@@ -398,7 +480,7 @@ impl InputManager {
         // Peripheral property reads can wait on the operating-system Bluetooth
         // service. Publish the completed snapshot under one short lock instead
         // of blocking connect/disconnect while those reads are in flight.
-        *self.devices.lock().await = next_devices;
+        self.devices.lock().await.extend(next_devices);
         found.sort_by(|left, right| {
             right
                 .rssi
@@ -587,19 +669,29 @@ impl InputManager {
                         }
                         notification = notifications.next() => {
                             let Some(notification) = notification else { break };
+                            let host_receive_timestamp_ns = monotonic_now_ns();
                             let event = if notification.uuid == PMD_DATA {
                                 match decode_pmd(&notification.value) {
                                     Ok(PmdFrame::Ecg { sensor_timestamp_ns, microvolts }) => {
-                                        InputEvent::Ecg { sensor_timestamp_ns, microvolts }
+                                        InputEvent::Ecg {
+                                            sensor_timestamp_ns,
+                                            host_receive_timestamp_ns,
+                                            microvolts,
+                                        }
                                     }
                                     Ok(PmdFrame::Accelerometer { sensor_timestamp_ns, samples }) => {
-                                        InputEvent::Accelerometer { sensor_timestamp_ns, samples }
+                                        InputEvent::Accelerometer {
+                                            sensor_timestamp_ns,
+                                            host_receive_timestamp_ns,
+                                            samples,
+                                        }
                                     }
                                     Err(error) => InputEvent::Error(format!("Skipped malformed PMD frame: {error}")),
                                 }
                             } else if notification.uuid == HEART_RATE_MEASUREMENT {
                                 let frame = decode_heart_rate(&notification.value);
                                 InputEvent::HeartRate {
+                                    host_receive_timestamp_ns,
                                     beats_per_minute: frame.beats_per_minute,
                                     rr_intervals_ms: frame.rr_intervals_ms,
                                 }
@@ -682,6 +774,17 @@ impl InputManager {
             }
         }
         Ok(())
+    }
+
+    async fn is_active(&self) -> bool {
+        self.active.lock().await.is_some()
+    }
+
+    async fn retain_devices(&self, retained_ids: &[String]) {
+        self.devices
+            .lock()
+            .await
+            .retain(|id, _| retained_ids.contains(id));
     }
 
     #[cfg(target_os = "windows")]
@@ -801,7 +904,7 @@ mod tests {
             }
         }
 
-        assert_eq!(pool.active_session_count().await, 2);
+        assert_eq!(pool.sessions.lock().await.len(), 2);
         pool.disconnect_all().await.unwrap();
         assert_eq!(pool.active_session_count().await, 0);
     }

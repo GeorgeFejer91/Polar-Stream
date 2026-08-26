@@ -173,10 +173,10 @@ The native Rust application owns a typed, schema-versioned preferences file in
 the operating system's application-config directory. Each accepted output
 configuration is flushed through a sibling temporary file before replacement;
 the last successfully connected sensor ID and name are saved independently.
-On the next launch, Polar Stream applies the name immediately and scans
-automatically for that sensor. It prefers an exact device-ID match, falls back
-to a single unambiguous name match, and otherwise leaves all scan results
-available for manual selection. A failed connection never replaces the
+On the next launch, Polar Stream applies the saved output configuration but
+waits for an explicit Search action before Bluetooth discovery. Unexpected
+Vernier-link recovery may run a saved-device-only scan while the established
+session policy remains active. A failed connection never replaces the
 remembered sensor. The browser demo uses local storage and never writes the
 native file; the recorded preview input is not remembered as a physical sensor. On the
 first upgraded launch only, the native app accepts

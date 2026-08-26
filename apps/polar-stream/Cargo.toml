@@ -33,12 +33,13 @@ polar-h10-core = { path = "../../crates/polar-h10-core" }
 polar-h10-input = { path = "../../crates/polar-h10-input" }
 polar-h10-metrics = { path = "../../crates/polar-h10-metrics" }
 polar-h10-output = { path = "../../crates/polar-h10-output", default-features = false }
+polar-stream-time = { path = "../../crates/polar-stream-time" }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.11", features = [] }
 tauri-plugin-opener = "2.5"
 tokio.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 vernier-gdx-core = { path = "../../crates/vernier-gdx-core" }
 vernier-gdx-input = { path = "../../crates/vernier-gdx-input" }
 

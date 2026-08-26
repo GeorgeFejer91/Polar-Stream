@@ -1,5 +1,38 @@
 # Decision log
 
+## 2026-08-26 — Make source clocks, renderer lifetime, and live discovery independent
+
+This supersedes the 2026-08-24 rule that only the missing protocol may be
+scanned and that discovery is disabled after one Polar and one Vernier source
+are active. Keep each active BLE owner authoritative while either protocol pool
+refreshes a 45-second incremental candidate registry. Exclude connected device
+identities, prune completed owners, and on Windows stop an H10 refresh after one
+new exact-name candidate. Treat scan-during-stream as a physically open
+adapter/driver qualification, not as a latency-free operation.
+
+Use one process-wide monotonic host epoch. Capture receipt at the earliest safe
+notification boundary, retain raw device time, and use one bounded affine map
+per physical clock across that source's streams and LSL outlets. Devices without
+a source clock remain explicitly arrival-timed. Carry source/receipt/mapped
+times, period, mapping revision/quality/uncertainty, and gap/reset evidence in
+the native display envelope; serialize nanoseconds as decimal strings at the
+JavaScript boundary.
+
+The WebView is a replaceable observer. Renderer channel loss must detach only
+display delivery; reload reattaches to active endpoints and receives connection
+snapshots. Store mapped time and gap flags in bounded per-source typed rings,
+draw with time/pixel extrema, and expose mixed force+ACC lanes plus a relative
+belt+ACC breathing overlay without merging or republishing raw sources. Keep
+incompatible units on separate vertical scales.
+
+Serialize and transactionally roll back multi-router output reconfiguration,
+configure newly connected routers under that same lifecycle lock, retain source
+task handles, and perform bounded disconnect/join/reset on explicit disconnect
+and application exit. These changes preserve the authoritative order of raw
+publication before derived/display work. They do not make a WebView a
+PsychoPy-grade stimulus renderer, prove hard real-time behavior, or close the
+physical multi-device latency/synchronization gates.
+
 ## 2026-08-24 — Bundle LabRecorder as an isolated downstream application
 
 Ship the pinned official LabRecorder inside every native Polar Stream package

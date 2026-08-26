@@ -81,10 +81,12 @@ async fn capture(manager: &Arc<InputManager>) -> Result<serde_json::Value, Strin
             InputEvent::Ecg {
                 sensor_timestamp_ns,
                 microvolts,
+                ..
             } => ecg.observe(sensor_timestamp_ns, microvolts.len()),
             InputEvent::Accelerometer {
                 sensor_timestamp_ns,
                 samples,
+                ..
             } => {
                 acc.observe(sensor_timestamp_ns, samples.len());
                 for sample in samples {

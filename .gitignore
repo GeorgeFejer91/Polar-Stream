@@ -68,6 +68,7 @@ apps/polar-stream/gen/
 
 ## Local preview and publish scratch
 /artifacts/
+/debug.log
 /src/PolarH10.App.Package/AppPackages/
 /src/PolarH10.App.Package/*.pfx
 

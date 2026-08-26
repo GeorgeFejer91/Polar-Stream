@@ -1,6 +1,6 @@
 # Current state
 
-Last verified: 2026-08-24
+Last verified: 2026-08-26
 
 ## Implemented
 
@@ -92,8 +92,9 @@ Last verified: 2026-08-24
   owns an independent `InputManager`, Windows session owner, event receiver,
   and ECG/ACC outlet keys. One two-session output coordinator owns the single
   Rusty discovery registry and all four persistent outlets, so the fixed
-  discovery port binds once. Session transitions serialize, a new scan rejects
-  while any slot is active, and cleanup drains every slot. A same-epoch Windows
+  discovery port binds once. Session transitions serialize, a new scan excludes
+  active device identities without stopping their owners, and cleanup drains
+  every slot. A same-epoch Windows
   run from exact source `2b7bdf0c8f0a567d8ad4a18dcbb24a78928f9197`
   passed repaired-reference discovery/acquisition, both Polar Stream sessions,
   four distinct pinned official inlets, 130/200 Hz bands, zero estimated
@@ -102,10 +103,11 @@ Last verified: 2026-08-24
 - The ordinary application now admits up to eight mixed Polar H10 and Vernier
   Go Direct sources. Each source owns an independent input session, decoder,
   event receiver, metric engine, and output router; shared maps and mutexes are
-  lifecycle-only. Stable source slots add unique stream-name suffixes and map
+  lifecycle-only. Presentation slots add stable stream-name suffixes and map
   to a fixed eight-color palette propagated through connected widgets, raw/output
-  cards, and visualizers. UI circular buffers are per source, so selecting a
-  device cannot mix samples from another device.
+  cards, and visualizers; internal source instance IDs are non-reused UUIDs.
+  UI temporal buffers are per source, so selecting a device cannot mix samples
+  from another device.
   Saved output configuration is transport-free: formula validation uses a
   destination-disabled router and only connected source routers may create
   LSL/OSC/CSV endpoints, preventing empty legacy unsuffixed streams.
@@ -113,10 +115,12 @@ Last verified: 2026-08-24
   cannot add its complete scan window ahead of the other; connection remains a
   user selection. A saved-device-only scan is reserved for an unexpected active
   Vernier link drop; application startup waits for explicit Search.
-  Once either family is active, the native scan action targets only the missing
-  family and leaves the connected input session/output router live. With one
-  Polar and one Vernier source active, source selection remains display-only;
-  both routers continue publishing concurrently. A pinned official pylsl
+  Either family can refresh its 45-second candidate registry while same-family
+  and mixed-family sessions remain live. Active device IDs are excluded,
+  completed owners are pruned, and the Windows H10 scan stops after one new
+  exact-name candidate instead of waiting for total capacity. With one Polar
+  and one Vernier source active, source selection remains display-only and both
+  routers continue publishing concurrently. A pinned official pylsl
   1.18.2/liblsl 1.17.7 synthetic gate resolves exact ECG, ACC, rawVernier, and
   vernierBreathing inlets, receives advancing rows from all four, and requires
   at least 1.5 seconds of overlapping LSL time.
@@ -170,10 +174,14 @@ Last verified: 2026-08-24
   1.18.2/liblsl 1.17.7 synthetic consumer gate verifies descriptors, metadata,
   sparse/exact values, formats, bounds, and advancing timestamps.
 - Immediate raw LSL/OSC publication with canonical names.
-- Raw ECG and ACC LSL chunks preserve H10 sensor-time spacing through separate
-  first-frame offsets into the local LSL clock. This prevents setup-buffered
-  notification bursts from overlapping while never publishing raw device-clock
-  values directly. The liblsl and Rusty LSL backends share this contract.
+- `polar-stream-time` supplies one process-wide monotonic host epoch. H10 and
+  Go Direct capture receipt at the earliest safe notification boundary. Each
+  H10 source owns one bounded, drift-constrained affine map shared by its
+  ECG/ACC and LSL outlets; outlet-local monotonic clamps prevent chunk overlap.
+  Go Direct remains explicitly arrival-timed with period-based batch backfill.
+  Tauri timing envelopes preserve raw/mapped/receipt times, mapping revision,
+  quality/uncertainty, period, and gap flags as decimal nanosecond strings. The
+  liblsl and Rusty LSL backends share this source-clock contract.
 - Each ACC-derived breathing snapshot uses the newest PMD sensor timestamp from
   its accepted notification. Native LSL maps it through the same ACC clock
   offset, native OSC/CSV retain the nanosecond value, and Chromium metric events
@@ -260,6 +268,15 @@ Last verified: 2026-08-24
   independent LSL/OSC/CSV outputs with per-formula warm-up/fault health.
 - Cross-platform release workflows and branded application icons.
 - Low-latency renderer scheduling capped at 30 Hz and paused while hidden.
+  Values, mapped timestamps, and gaps live in rate-aware bounded typed rings;
+  Canvas plots use time/pixel extrema rather than sample-index paths. Mixed
+  Polar/Vernier sessions expose force+ACC stacked lanes and belt+ACC breathing
+  overlays on one host-time axis. Renderer reload replaces only the display
+  channel and replays connection state; it cannot stop native acquisition.
+- Output configuration updates are serialized and transactional across all
+  active routers, and source connection uses the same configuration lifecycle
+  lock. Explicit disconnect and app exit retain task handles and perform bounded
+  join/reset cleanup.
 - One raw accelerometer visualizer with stacked, independently scaled X/Y/Z
   lanes on the active development branch.
 - Red ECG / blue ACC output-library modes. ACC mode includes raw motion and the

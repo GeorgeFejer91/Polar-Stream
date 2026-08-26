@@ -268,6 +268,17 @@
       if (result?.id) nativeSources.add(result.id);
       return result;
     },
+    async attachActiveSources(onEvent) {
+      if (!isNative) return [];
+      const events = new core.Channel();
+      events.onmessage = onEvent;
+      const sources = await invoke("attach_active_sources", { events });
+      for (const source of sources || []) {
+        if (source?.id) nativeSources.add(source.id);
+      }
+      if (nativeSources.size) activeInput = "native";
+      return sources || [];
+    },
     async disconnectDevice(sourceId = null) {
       if (activeInput === "mock") {
         stopDemo({ notify: true });

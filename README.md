@@ -83,11 +83,14 @@ native LSL outlets.
 
 In the installed app, connecting one sensor changes the discovery action to
 **Add Vernier** or **Add Polar H10**. The connected source keeps acquiring and
-publishing while only the missing protocol family is scanned. Once both are
-connected, their source-specific output routers remain live together: Polar
-ECG/ACC and Vernier raw/breathing outlets can be recorded on the same LSL
-clock. Selecting a source changes only the visible controls and chart; it never
-stops or switches the other source's acquisition or publication.
+publishing while either protocol candidate cache is refreshed. Once both are
+connected, **Add another sensor** can find another non-active Polar or Vernier
+device without replacing either live owner. Their source-specific output
+routers remain live together: Polar ECG/ACC and Vernier raw/breathing outlets
+can be recorded on the same LSL clock. Selecting a source changes ordinary
+controls and charts only; mixed-source presets can show belt force beside Polar
+ACC or overlay the two relative breathing waveforms on their mapped host-time
+axis without stopping, merging, or republishing either raw source.
 
 Input discovery is deliberately separate from connection state. **Search
 devices** lists supported candidates as classified rows—Polar H10 for ECG or a
@@ -284,6 +287,10 @@ limitation, and proposed reference-validation protocol are in the
 The [Go Direct and multi-source handoff](docs/vernier-go-direct-handoff.md)
 documents the native/browser protocol paths, timing contract, source identity,
 and remaining hardware gates.
+The [latency and multi-source architecture](docs/latency-multi-source-architecture.md)
+documents shared clock mapping, scanning during live sessions, renderer
+reattachment, composite panels, graceful shutdown, PsychoPy integration, and
+the physical qualification matrix.
 The [optional Rusty LSL backend guide](docs/rusty-lsl-backend.md) records the
 separate default-off transport, interoperability evidence, and remaining
 device/licensing gates.
