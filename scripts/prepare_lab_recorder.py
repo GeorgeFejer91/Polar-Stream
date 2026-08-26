@@ -188,9 +188,19 @@ def qt_plugin_root() -> Path:
     raise RuntimeError("Qt 6 plugin directory was not found; install qt6-base-dev first")
 
 
-def ldd_dependencies(binary: Path) -> set[Path]:
+def ldd_dependencies(binary: Path, library_path: Path | None = None) -> set[Path]:
+    environment = os.environ.copy()
+    if library_path is not None:
+        existing_path = environment.get("LD_LIBRARY_PATH")
+        environment["LD_LIBRARY_PATH"] = str(library_path)
+        if existing_path:
+            environment["LD_LIBRARY_PATH"] += os.pathsep + existing_path
     result = subprocess.run(
-        ["ldd", str(binary)], check=True, capture_output=True, text=True
+        ["ldd", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
     )
     dependencies: set[Path] = set()
     for line in result.stdout.splitlines():
@@ -235,7 +245,7 @@ def bundle_linux_dependencies(destination: Path) -> None:
         if resolved in visited:
             continue
         visited.add(resolved)
-        for dependency in ldd_dependencies(binary):
+        for dependency in ldd_dependencies(binary, library_destination):
             if dependency.resolve() == resolved:
                 continue
             if dependency.name in LINUX_GLIBC_LIBRARIES:

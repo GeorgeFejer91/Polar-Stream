@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -105,7 +106,7 @@ class PrepareLabRecorderTests(unittest.TestCase):
                 mock.patch.object(
                     recorder,
                     "ldd_dependencies",
-                    side_effect=lambda binary: {binary},
+                    side_effect=lambda binary, _library_path: {binary},
                 ),
             ):
                 recorder.bundle_linux_dependencies(destination)
@@ -126,7 +127,7 @@ class PrepareLabRecorderTests(unittest.TestCase):
             system_dependency.write_bytes(b"runtime")
             executable.write_bytes(b"executable")
 
-            def dependencies(binary: Path) -> set[Path]:
+            def dependencies(binary: Path, _library_path: Path) -> set[Path]:
                 if binary.name == "libfixture.so":
                     return {system_dependency}
                 return {staged_dependency}
@@ -138,6 +139,24 @@ class PrepareLabRecorderTests(unittest.TestCase):
                 recorder.bundle_linux_dependencies(destination)
 
             self.assertEqual(staged_dependency.read_bytes(), b"runtime")
+
+    def test_linux_dependency_walk_searches_the_staged_library_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "LabRecorder"
+            library_path = root / "lib"
+            binary.write_bytes(b"fixture")
+            library_path.mkdir()
+            completed = type("Result", (), {"stdout": ""})()
+
+            with mock.patch.object(recorder.subprocess, "run", return_value=completed) as run:
+                recorder.ldd_dependencies(binary, library_path)
+
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual(
+                environment["LD_LIBRARY_PATH"].split(os.pathsep)[0],
+                str(library_path),
+            )
 
 
 if __name__ == "__main__":
