@@ -5,6 +5,75 @@ pub use polar_h10_metrics::MetricDefinition as MetricSpec;
 use polar_h10_metrics::{BreathingSettings, METRIC_CATALOG};
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcePaletteColors {
+    pub primary: String,
+    pub secondary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcePalette {
+    pub id: String,
+    pub light: SourcePaletteColors,
+    pub dark: SourcePaletteColors,
+}
+
+const SOURCE_PALETTE_VALUES: [(&str, &str, &str, &str, &str); 8] = [
+    ("ocean", "#176B9E", "#2AA8B8", "#7CCBFF", "#72E4EA"),
+    ("sunset", "#B83E35", "#C96815", "#FF8E84", "#FFB366"),
+    ("meadow", "#4E7B27", "#168267", "#A8DA6D", "#70DDB1"),
+    ("solar", "#8A6810", "#B58713", "#FFD166", "#FFE99A"),
+    ("orchid", "#6D55A3", "#A64476", "#C4AEFF", "#FF9BC5"),
+    ("lagoon", "#14796F", "#447E9C", "#67E0D0", "#A9D7F5"),
+    ("ember", "#A64925", "#B9445E", "#FF9A70", "#FF94AD"),
+    ("iris", "#4F63A3", "#7C6AB3", "#9FB3FF", "#CFB8FF"),
+];
+
+pub fn source_palette_catalog() -> Vec<SourcePalette> {
+    SOURCE_PALETTE_VALUES
+        .iter()
+        .map(
+            |(id, light_primary, light_secondary, dark_primary, dark_secondary)| SourcePalette {
+                id: (*id).into(),
+                light: SourcePaletteColors {
+                    primary: (*light_primary).into(),
+                    secondary: (*light_secondary).into(),
+                },
+                dark: SourcePaletteColors {
+                    primary: (*dark_primary).into(),
+                    secondary: (*dark_secondary).into(),
+                },
+            },
+        )
+        .collect()
+}
+
+pub fn source_palette(id: &str) -> Option<SourcePalette> {
+    source_palette_catalog()
+        .into_iter()
+        .find(|palette| palette.id == id)
+}
+
+impl SourcePalette {
+    fn validated(self) -> Result<Self, String> {
+        source_palette(&self.id)
+            .filter(|canonical| canonical == &self)
+            .ok_or_else(|| format!("Unknown or modified source palette: {}", self.id))
+    }
+
+    pub(crate) fn metadata_fields(&self) -> [(&'static str, &str); 5] {
+        [
+            ("id", self.id.as_str()),
+            ("light_primary", self.light.primary.as_str()),
+            ("light_secondary", self.light.secondary.as_str()),
+            ("dark_primary", self.dark.primary.as_str()),
+            ("dark_secondary", self.dark.secondary.as_str()),
+        ]
+    }
+}
+
 const BREATHING_OUTPUT_IDS: [&str; 7] = [
     "breathing_phase",
     "acc_breathing_magnitude",
@@ -25,6 +94,8 @@ pub struct OutputConfig {
     pub csv_enabled: bool,
     #[serde(default)]
     pub audio_enabled: bool,
+    #[serde(default)]
+    pub source_palette: Option<SourcePalette>,
     pub outputs: Vec<String>,
     #[serde(default)]
     pub metric_options: HashMap<String, MetricOutputOptions>,
@@ -40,6 +111,7 @@ impl Default for OutputConfig {
             osc_enabled: false,
             csv_enabled: false,
             audio_enabled: false,
+            source_palette: None,
             outputs: vec!["raw_ecg".into(), "raw_acc".into(), "raw_force".into()],
             metric_options: HashMap::new(),
             custom_formulas: Vec::new(),
@@ -100,6 +172,10 @@ impl OutputConfig {
 
     pub fn normalized(mut self) -> Result<Self, String> {
         self.stream_name = normalize_stream_base(&self.stream_name)?;
+        self.source_palette = self
+            .source_palette
+            .map(SourcePalette::validated)
+            .transpose()?;
         self.outputs.sort();
         self.outputs.dedup();
         self.outputs.retain(|id| MetricSpec::for_id(id).is_some());
@@ -341,6 +417,100 @@ pub fn custom_output_stream_name(base_name: &str, formula: &CustomFormulaConfig)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn relative_luminance(color: &str) -> f64 {
+        let channel = |offset| {
+            let value = u8::from_str_radix(&color[offset..offset + 2], 16).unwrap() as f64 / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
+    }
+
+    fn contrast_ratio(foreground: &str, background: &str) -> f64 {
+        let foreground = relative_luminance(foreground);
+        let background = relative_luminance(background);
+        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+    }
+
+    #[test]
+    fn source_palette_catalog_is_unique_and_canonical() {
+        let palettes = source_palette_catalog();
+        assert_eq!(palettes.len(), 8);
+        let ids = palettes
+            .iter()
+            .map(|palette| palette.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), palettes.len());
+        for palette in palettes {
+            for color in [
+                palette.light.primary,
+                palette.light.secondary,
+                palette.dark.primary,
+                palette.dark.secondary,
+            ] {
+                assert_eq!(color.len(), 7);
+                assert!(color.starts_with('#'));
+                assert!(color[1..].bytes().all(|byte| byte.is_ascii_hexdigit()));
+            }
+        }
+    }
+
+    #[test]
+    fn source_palettes_remain_visible_on_their_theme_foundations() {
+        for palette in source_palette_catalog() {
+            assert!(contrast_ratio(&palette.light.primary, "#FFFFFF") >= 4.5);
+            assert!(contrast_ratio(&palette.light.secondary, "#FFFFFF") >= 2.75);
+            assert!(contrast_ratio(&palette.dark.primary, "#090B0A") >= 7.0);
+            assert!(contrast_ratio(&palette.dark.secondary, "#090B0A") >= 7.0);
+        }
+    }
+
+    #[test]
+    fn source_palette_metadata_contract_is_complete_and_stable() {
+        let palette = source_palette("ocean").unwrap();
+        assert_eq!(
+            palette.metadata_fields(),
+            [
+                ("id", "ocean"),
+                ("light_primary", "#176B9E"),
+                ("light_secondary", "#2AA8B8"),
+                ("dark_primary", "#7CCBFF"),
+                ("dark_secondary", "#72E4EA"),
+            ]
+        );
+    }
+
+    #[test]
+    fn breathing_display_names_change_without_changing_public_ids_or_suffixes() {
+        let normalized = MetricSpec::for_id("breathing_volume").unwrap();
+        assert_eq!(normalized.id, "breathing_volume");
+        assert_eq!(normalized.suffix(), "breathingVolume");
+        assert_eq!(normalized.label, "ACC breathing magnitude (0–1)");
+        let projection = MetricSpec::for_id("acc_breathing_magnitude").unwrap();
+        assert_eq!(projection.id, "acc_breathing_magnitude");
+        assert_eq!(projection.suffix(), "accBreathingMagnitude");
+        assert_eq!(projection.label, "ACC breathing projection (g)");
+    }
+
+    #[test]
+    fn output_config_rejects_modified_palette_values() {
+        let mut palette = source_palette("ocean").unwrap();
+        palette.dark.primary = "#000000".into();
+        let config = OutputConfig {
+            source_palette: Some(palette),
+            ..OutputConfig::default()
+        };
+        assert!(
+            config
+                .validated()
+                .unwrap_err()
+                .contains("modified source palette")
+        );
+    }
 
     #[test]
     fn defaults_to_all_supported_raw_streams() {

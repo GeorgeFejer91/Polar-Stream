@@ -166,10 +166,11 @@ lung volume, airflow, or a clinical measurement.
 ## Multi-device and color routing
 
 The application admits at most eight simultaneous sources. A source receives a
-stable slot (`source-1` through `source-8`) and the corresponding palette color:
-
-`#00c2ff`, `#ffb000`, `#ff5c8a`, `#7bd88f`, `#b392f0`, `#ff7b54`,
-`#58d6c7`, `#e5d85c`.
+stable slot (`source-1` through `source-8`) and one unique remembered
+`SourcePalette`: ocean, sunset, meadow, solar, orchid, lagoon, ember, or iris.
+Each ID contains primary/secondary colors for both light and dark themes. The
+complete definition is exported in LSL and CSV metadata; the legacy source
+`color` field remains the light-primary alias.
 
 Each native source owns its input receiver, protocol state, metric engine, and
 output router. The shared maps and configuration mutex are lifecycle-only; raw
@@ -179,9 +180,10 @@ prevents an H10 from advertising an empty force outlet and prevents a Go Direct
 device from advertising empty ECG/ACC or H10-derived outlets.
 
 The UI keeps a separate circular buffer bank per source. Selecting a source
-switches the values and visualizer without mixing samples. Its color marks the
-source chip, raw cards, output cards, and visualizer frame/trace. ACC retains its
-X/Y/Z axis colors inside the source-colored visualizer boundary.
+switches the values and visualizer without mixing samples. Its pair marks the
+source chip, raw cards, output cards, legend, and visualizer frame/trace. Raw
+ACC uses primary, secondary, and their midpoint for X/Y/Z while retaining the
+source pair in its frame and legend.
 
 Chromium can hold several Go Direct sessions, up to the same eight-source
 bound. Web Bluetooth requires a fresh user-triggered chooser for each new

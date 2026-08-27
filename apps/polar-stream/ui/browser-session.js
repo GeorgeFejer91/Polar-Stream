@@ -1,14 +1,16 @@
 (() => {
   "use strict";
 
-  const SCHEMA_VERSION = 1;
-  const RECORDING_SCHEMA_VERSION = 2;
+  const SCHEMA_VERSION = 2;
+  const RECORDING_SCHEMA_VERSION = 3;
   const DEFAULT_MAX_ROWS = 300_000;
   const CHANNEL_NAME = "polar-stream-live-v1";
   const CSV_COLUMNS = [
     "host_timestamp_ms",
     "relative_time_s",
     "sensor_timestamp_ns",
+    "source_id",
+    "source_palette_id",
     "stream",
     "sample_index",
     "x_mg",
@@ -92,6 +94,7 @@
       this.startedAtMs = null;
       this.stoppedAtMs = null;
       this.source = null;
+      this.sourcePalettes = new Map();
       this.rowCount = 0;
       this.chunks = [];
       this.pendingLines = [];
@@ -132,7 +135,7 @@
       for (const listener of this.listeners) listener(snapshot);
     }
 
-    start({ deviceName = "Browser input", inputKind = "browser" } = {}) {
+    start({ deviceName = "Browser input", inputKind = "browser", source = null } = {}) {
       if (this.state === "recording") return this.snapshot();
       if (this.rowCount > 0) {
         throw new Error("Export or discard the previous browser recording before starting another.");
@@ -141,7 +144,13 @@
       this.stopReason = null;
       this.startedAtMs = this.now();
       this.stoppedAtMs = null;
-      this.source = { deviceName: String(deviceName), inputKind: String(inputKind) };
+      this.source = {
+        deviceName: String(deviceName),
+        inputKind: String(inputKind),
+        id: String(source?.id || "browser-source"),
+        palette: source?.palette || null,
+      };
+      this.rememberSource(this.source);
       this.notify();
       return this.snapshot();
     }
@@ -179,9 +188,18 @@
       return true;
     }
 
+    rememberSource(source) {
+      const id = String(source?.id || this.source?.id || "browser-source");
+      const palette = source?.palette || this.source?.palette;
+      if (!palette?.id) return { id, paletteId: "" };
+      this.sourcePalettes.set(id, structuredClone(palette));
+      return { id, paletteId: String(palette.id) };
+    }
+
     capture(event, hostTimestampMs = this.now()) {
       if (this.state !== "recording" || !event || typeof event !== "object") return;
       const elapsed = Math.max(0, (hostTimestampMs - this.startedAtMs) / 1000);
+      const source = this.rememberSource(event.source || this.source);
       if (event.kind === "ecg") {
         const values = Array.isArray(event.microvolts) ? event.microvolts : [];
         for (let index = 0; index < values.length; index += 1) {
@@ -189,7 +207,7 @@
           if (!this.append([
             sampleHost.toFixed(3),
             Math.max(0, elapsed - (values.length - 1 - index) / 130).toFixed(6),
-            sensorTimestamp(event.sensorTimestampNs, index, values.length, 130),
+            sensorTimestamp(event.sensorTimestampNs, index, values.length, 130), source.id, source.paletteId,
             "raw_ecg", index, "", "", "", finite(values[index]), units.raw_ecg,
           ])) break;
         }
@@ -206,7 +224,7 @@
           const relative = Math.max(0, elapsed - (samples.length - 1 - index) / 200).toFixed(6);
           const deviceTime = sensorTimestamp(event.sensorTimestampNs, index, samples.length, 200);
           if (!this.append([
-            sampleHost.toFixed(3), relative, deviceTime, "raw_acc", index,
+            sampleHost.toFixed(3), relative, deviceTime, source.id, source.paletteId, "raw_acc", index,
             x, y, z, "", units.raw_acc,
           ])) break;
         }
@@ -221,7 +239,7 @@
           if (!this.append([
             (hostTimestampMs - offsetSeconds * 1000).toFixed(3),
             Math.max(0, elapsed - offsetSeconds).toFixed(6),
-            sensorTimestamp(event.hostReceiveTimestampNs, index, values.length, rateHz),
+            sensorTimestamp(event.hostReceiveTimestampNs, index, values.length, rateHz), source.id, source.paletteId,
             stream, index, "", "", "", finite(values[index]), units.raw_force,
           ])) break;
         }
@@ -233,7 +251,7 @@
           if (!metric) continue;
           if (!this.append([
             hostTimestampMs.toFixed(3), elapsed.toFixed(6),
-            sensorTimestamp(event.sensorTimestampNs, 0, 1, 1), metric.id, index,
+            sensorTimestamp(event.sensorTimestampNs, 0, 1, 1), source.id, source.paletteId, metric.id, index,
             "", "", "", finite(metric.value), this.config.metricUnits[metric.id] || units[metric.id] || "",
           ])) break;
         }
@@ -243,6 +261,9 @@
     header() {
       const started = new Date(this.startedAtMs || this.now()).toISOString();
       const stopped = this.stoppedAtMs ? new Date(this.stoppedAtMs).toISOString() : "";
+      const paletteHeaders = [...this.sourcePalettes.entries()].map(([sourceId, palette]) => (
+        `# source_palette,${csvCell(sourceId)},${csvCell(palette.id)},${palette.light.primary},${palette.light.secondary},${palette.dark.primary},${palette.dark.secondary}\n`
+      ));
       return [
         "# Polar Stream browser recording\n",
         `# schema_version,${RECORDING_SCHEMA_VERSION}\n`,
@@ -250,6 +271,8 @@
         `# stopped_at_utc,${csvCell(stopped)}\n`,
         `# source,${csvCell(this.source?.deviceName || "Browser input")}\n`,
         `# input_kind,${csvCell(this.source?.inputKind || "browser")}\n`,
+        "# source_palette_columns,source_id,palette_id,light_primary,light_secondary,dark_primary,dark_secondary\n",
+        ...paletteHeaders,
         `# configured_outputs,${csvCell(this.config.outputs.join("|"))}\n`,
         `# stop_reason,${csvCell(this.stopReason || "export")}\n`,
         "# scope,All received raw ECG, ACC, and Go Direct force plus every metric event produced in this browser session.\n",

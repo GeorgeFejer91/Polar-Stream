@@ -8,9 +8,10 @@ use libloading::Library;
 use polar_h10_core::AccSample;
 
 use crate::{
-    CustomFormulaConfig, MetricSpec, VERNIER_BREATHING_OUTLET_KEY, VERNIER_RAW_OUTLET_KEY,
-    VernierStreamSchema, custom_output_stream_name, encode_vernier_raw_rows, output_stream_name,
-    vernier_breathing_stream_name, vernier_raw_stream_name,
+    CustomFormulaConfig, MetricSpec, SourcePalette, VERNIER_BREATHING_OUTLET_KEY,
+    VERNIER_RAW_OUTLET_KEY, VernierStreamSchema, custom_output_stream_name,
+    encode_vernier_raw_rows, output_stream_name, vernier_breathing_stream_name,
+    vernier_raw_stream_name,
 };
 use vernier_gdx_core::{SampleEncoding, SensorSamples};
 
@@ -211,7 +212,12 @@ impl LslPublisher {
         }
     }
 
-    pub(crate) fn add_outlet(&mut self, base_name: &str, spec: MetricSpec) {
+    pub(crate) fn add_outlet_with_palette(
+        &mut self,
+        base_name: &str,
+        spec: MetricSpec,
+        palette: Option<&SourcePalette>,
+    ) {
         let Some(api) = &self.api else { return };
         let Some(output_name) = output_stream_name(base_name, spec.id) else {
             return;
@@ -241,7 +247,7 @@ impl LslPublisher {
             self.status = format!("Could not create {} stream", spec.label);
             return;
         }
-        append_stream_metadata(api, info, spec);
+        append_stream_metadata(api, info, spec, palette);
         // SAFETY: info is live; create_outlet copies its metadata.
         let outlet = unsafe { (api.create_outlet)(info, 0, 360) };
         unsafe { (api.destroy_streaminfo)(info) };
@@ -260,7 +266,12 @@ impl LslPublisher {
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
     }
 
-    pub(crate) fn add_custom_outlet(&mut self, base_name: &str, formula: &CustomFormulaConfig) {
+    pub(crate) fn add_custom_outlet_with_palette(
+        &mut self,
+        base_name: &str,
+        formula: &CustomFormulaConfig,
+        palette: Option<&SourcePalette>,
+    ) {
         let Some(api) = &self.api else { return };
         let output_name = custom_output_stream_name(base_name, formula);
         let Ok(name) = CString::new(output_name.as_str()) else {
@@ -286,7 +297,7 @@ impl LslPublisher {
             self.status = format!("Could not create {} stream", formula.name);
             return;
         }
-        append_custom_metadata(api, info, formula);
+        append_custom_metadata(api, info, formula, palette);
         let outlet = unsafe { (api.create_outlet)(info, 0, 360) };
         unsafe { (api.destroy_streaminfo)(info) };
         if outlet.is_null() {
@@ -304,11 +315,16 @@ impl LslPublisher {
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
     }
 
-    pub(crate) fn add_vernier_outlets(&mut self, base_name: &str, schema: &VernierStreamSchema) {
-        self.add_vernier_raw_outlet(base_name, schema);
+    pub(crate) fn add_vernier_outlets(
+        &mut self,
+        base_name: &str,
+        schema: &VernierStreamSchema,
+        palette: Option<&SourcePalette>,
+    ) {
+        self.add_vernier_raw_outlet(base_name, schema, palette);
         let raw_ready = self.outlets.contains_key(VERNIER_RAW_OUTLET_KEY);
         let raw_status = self.status.clone();
-        self.add_vernier_breathing_outlet(base_name, schema);
+        self.add_vernier_breathing_outlet(base_name, schema, palette);
         let breathing_ready = self.outlets.contains_key(VERNIER_BREATHING_OUTLET_KEY);
         let breathing_status = self.status.clone();
         if raw_ready && breathing_ready {
@@ -334,7 +350,12 @@ impl LslPublisher {
         );
     }
 
-    fn add_vernier_raw_outlet(&mut self, base_name: &str, schema: &VernierStreamSchema) {
+    fn add_vernier_raw_outlet(
+        &mut self,
+        base_name: &str,
+        schema: &VernierStreamSchema,
+        palette: Option<&SourcePalette>,
+    ) {
         let Some(api) = &self.api else { return };
         let output_name = vernier_raw_stream_name(base_name);
         let (Ok(name), Ok(stream_type), Ok(source)) = (
@@ -363,7 +384,7 @@ impl LslPublisher {
             self.status = "Could not create aggregate Vernier raw stream".into();
             return;
         }
-        append_vernier_raw_metadata(api, info, schema);
+        append_vernier_raw_metadata(api, info, schema, palette);
         let outlet = unsafe { (api.create_outlet)(info, 0, 360) };
         unsafe { (api.destroy_streaminfo)(info) };
         if outlet.is_null() {
@@ -381,7 +402,12 @@ impl LslPublisher {
         self.status = format!("Publishing {} stream(s)", self.outlets.len());
     }
 
-    fn add_vernier_breathing_outlet(&mut self, base_name: &str, schema: &VernierStreamSchema) {
+    fn add_vernier_breathing_outlet(
+        &mut self,
+        base_name: &str,
+        schema: &VernierStreamSchema,
+        palette: Option<&SourcePalette>,
+    ) {
         let Some(api) = &self.api else { return };
         let output_name = vernier_breathing_stream_name(base_name);
         let (Ok(name), Ok(stream_type), Ok(source)) = (
@@ -405,7 +431,7 @@ impl LslPublisher {
             self.status = "Could not create Vernier breathing stream".into();
             return;
         }
-        append_vernier_breathing_metadata(api, info, schema);
+        append_vernier_breathing_metadata(api, info, schema, palette);
         let outlet = unsafe { (api.create_outlet)(info, 0, 360) };
         unsafe { (api.destroy_streaminfo)(info) };
         if outlet.is_null() {
@@ -604,7 +630,12 @@ impl LslPublisher {
     }
 }
 
-fn append_stream_metadata(api: &LslApi, info: StreamInfo, spec: MetricSpec) {
+fn append_stream_metadata(
+    api: &LslApi,
+    info: StreamInfo,
+    spec: MetricSpec,
+    palette: Option<&SourcePalette>,
+) {
     let (Some(get_description), Some(append_child), Some(append_child_value)) = (
         api.get_description,
         api.append_child,
@@ -636,6 +667,7 @@ fn append_stream_metadata(api: &LslApi, info: StreamInfo, spec: MetricSpec) {
         "application",
         "Polar Stream",
     );
+    append_source_palette(append_child, append_child_value, description, palette);
 
     let Ok(channels_name) = CString::new("channels") else {
         return;
@@ -658,7 +690,12 @@ fn append_stream_metadata(api: &LslApi, info: StreamInfo, spec: MetricSpec) {
     }
 }
 
-fn append_vernier_raw_metadata(api: &LslApi, info: StreamInfo, schema: &VernierStreamSchema) {
+fn append_vernier_raw_metadata(
+    api: &LslApi,
+    info: StreamInfo,
+    schema: &VernierStreamSchema,
+    palette: Option<&SourcePalette>,
+) {
     let (Some(get_description), Some(append_child), Some(append_child_value)) = (
         api.get_description,
         api.append_child,
@@ -683,6 +720,7 @@ fn append_vernier_raw_metadata(api: &LslApi, info: StreamInfo, schema: &VernierS
         "application",
         "Polar Stream",
     );
+    append_source_palette(append_child, append_child_value, description, palette);
     append_value(
         append_child_value,
         description,
@@ -796,7 +834,12 @@ fn append_vernier_raw_metadata(api: &LslApi, info: StreamInfo, schema: &VernierS
     }
 }
 
-fn append_vernier_breathing_metadata(api: &LslApi, info: StreamInfo, schema: &VernierStreamSchema) {
+fn append_vernier_breathing_metadata(
+    api: &LslApi,
+    info: StreamInfo,
+    schema: &VernierStreamSchema,
+    palette: Option<&SourcePalette>,
+) {
     let (Some(get_description), Some(append_child), Some(append_child_value)) = (
         api.get_description,
         api.append_child,
@@ -821,6 +864,7 @@ fn append_vernier_breathing_metadata(api: &LslApi, info: StreamInfo, schema: &Ve
         "application",
         "Polar Stream",
     );
+    append_source_palette(append_child, append_child_value, description, palette);
     append_value(
         append_child_value,
         description,
@@ -899,7 +943,12 @@ fn append_vernier_channel(
     }
 }
 
-fn append_custom_metadata(api: &LslApi, info: StreamInfo, formula: &CustomFormulaConfig) {
+fn append_custom_metadata(
+    api: &LslApi,
+    info: StreamInfo,
+    formula: &CustomFormulaConfig,
+    palette: Option<&SourcePalette>,
+) {
     let (Some(get_description), Some(append_child), Some(append_child_value)) = (
         api.get_description,
         api.append_child,
@@ -919,6 +968,7 @@ fn append_custom_metadata(api: &LslApi, info: StreamInfo, formula: &CustomFormul
         "application",
         "Polar Stream",
     );
+    append_source_palette(append_child, append_child_value, description, palette);
 
     let Ok(channels_name) = CString::new("channels") else {
         return;
@@ -954,6 +1004,25 @@ fn append_custom_metadata(api: &LslApi, info: StreamInfo, formula: &CustomFormul
         &format!("{:?}", formula.source),
     );
     append_value(append_child_value, processing, "formula_id", &formula.id);
+}
+
+fn append_source_palette(
+    append_child: AppendChild,
+    append_child_value: AppendChildValue,
+    description: XmlElement,
+    palette: Option<&SourcePalette>,
+) {
+    let Some(palette) = palette else { return };
+    let Ok(name) = CString::new("source_palette") else {
+        return;
+    };
+    let node = unsafe { append_child(description, name.as_ptr()) };
+    if node.is_null() {
+        return;
+    }
+    for (field, value) in palette.metadata_fields() {
+        append_value(append_child_value, node, field, value);
+    }
 }
 
 fn append_value(append_child_value: AppendChildValue, parent: XmlElement, name: &str, value: &str) {

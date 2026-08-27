@@ -2797,6 +2797,7 @@ dependencies = [
  "polar-stream-time",
  "rusty-lsl",
  "serde",
+ "serde_json",
  "tokio",
  "vernier-gdx-core",
 ]

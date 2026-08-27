@@ -23,7 +23,8 @@ use polar_h10_metrics::{
     metric_formula_definition,
 };
 use polar_h10_output::{
-    CustomFormulaConfig, FormulaError, FormulaPublishBatch, FormulaValidation, validate_formula,
+    CustomFormulaConfig, FormulaError, FormulaPublishBatch, FormulaValidation, SourcePalette,
+    source_palette, source_palette_catalog, validate_formula,
 };
 use polar_h10_output::{MetricValue, OutputConfig, OutputHealth, OutputRouter};
 use polar_stream_time::{ClockMapping, SourceClockMapper, monotonic_now_ns};
@@ -125,9 +126,6 @@ impl AppState {
 }
 
 const MAX_INPUT_SOURCES: usize = 8;
-const SOURCE_COLORS: [&str; MAX_INPUT_SOURCES] = [
-    "#00c2ff", "#ffb000", "#ff5c8a", "#7bd88f", "#b392f0", "#ff7b54", "#58d6c7", "#e5d85c",
-];
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -142,8 +140,16 @@ struct SourceDescriptor {
     id: String,
     slot: String,
     label: String,
-    color: &'static str,
+    color: String,
+    palette: SourcePalette,
     input_kind: InputKind,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourcePaletteUpdate {
+    source: SourceDescriptor,
+    health: OutputHealth,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -635,6 +641,7 @@ struct Bootstrap {
     has_saved_preferences: bool,
     platform: &'static str,
     metric_catalog: Vec<MetricDescriptor>,
+    source_palettes: Vec<SourcePalette>,
     lab_recorder: LabRecorderCapability,
 }
 
@@ -671,6 +678,7 @@ fn get_bootstrap(state: State<'_, AppState>) -> Bootstrap {
                 }
             })
             .collect(),
+        source_palettes: source_palette_catalog(),
         lab_recorder: LabRecorderInstallation::capability(state.lab_recorder.as_ref()),
     }
 }
@@ -680,6 +688,8 @@ fn get_bootstrap(state: State<'_, AppState>) -> Bootstrap {
 struct LegacyPreferences {
     output_config: Option<OutputConfig>,
     last_device: Option<SavedDevice>,
+    #[serde(default)]
+    device_palettes: HashMap<String, String>,
 }
 
 #[tauri::command]
@@ -696,9 +706,16 @@ async fn migrate_legacy_preferences(
         .transpose()
         .map_err(|message| CommandError::new("LEGACY_PREFERENCES_INVALID", message, false))?;
     let last_device = legacy.last_device.map(validate_saved_device).transpose()?;
+    let device_palettes = legacy
+        .device_palettes
+        .into_iter()
+        .filter(|(device_id, palette_id)| {
+            !device_id.is_empty() && device_id.len() <= 512 && source_palette(palette_id).is_some()
+        })
+        .collect();
     state
         .preferences
-        .migrate_legacy(output_config, last_device)
+        .migrate_legacy(output_config, last_device, device_palettes)
         .await
         .map_err(|message| CommandError::new("PREFERENCES_WRITE_FAILED", message, true))
 }
@@ -712,6 +729,26 @@ fn validate_saved_device(device: SavedDevice) -> CommandResult<SavedDevice> {
         ));
     }
     Ok(device)
+}
+
+#[tauri::command]
+async fn save_device_palette(
+    state: State<'_, AppState>,
+    device_id: String,
+    palette_id: String,
+) -> CommandResult<()> {
+    if device_id.is_empty() || device_id.len() > 512 || source_palette(&palette_id).is_none() {
+        return Err(CommandError::new(
+            "SOURCE_PALETTE_PREFERENCE_INVALID",
+            "The device identity or source palette is invalid.",
+            false,
+        ));
+    }
+    state
+        .preferences
+        .save_device_palette(device_id, palette_id)
+        .await
+        .map_err(|message| CommandError::new("PREFERENCES_WRITE_FAILED", message, true))
 }
 
 #[tauri::command]
@@ -840,11 +877,12 @@ async fn attach_active_sources(
 async fn connect_device(
     state: State<'_, AppState>,
     device_id: String,
+    palette_id: Option<String>,
     events: Channel<AppEvent>,
 ) -> CommandResult<SourceDescriptor> {
     let _configuration = state.input_configuration.lock().await;
     let (input_kind, raw_device_id) = parse_device_id(&device_id)?;
-    let source = allocate_source(&state.active_sources, input_kind).await?;
+    let source = allocate_source(&state.active_sources, input_kind, palette_id.as_deref()).await?;
     let mut input_events = match input_kind {
         InputKind::PolarH10 => DeviceEventReceiver::Polar(
             state
@@ -1470,6 +1508,100 @@ async fn disconnect_device(state: State<'_, AppState>, source_id: String) -> Com
     Ok(())
 }
 
+#[tauri::command]
+async fn update_source_palette(
+    state: State<'_, AppState>,
+    source_id: String,
+    palette_id: String,
+) -> CommandResult<SourcePaletteUpdate> {
+    let _input_configuration = state.input_configuration.lock().await;
+    let _output_configuration = state.output_configuration.lock().await;
+    let palette = source_palette(&palette_id).ok_or_else(|| {
+        CommandError::new(
+            "UNKNOWN_SOURCE_PALETTE",
+            format!("Unknown source palette: {palette_id}"),
+            false,
+        )
+    })?;
+    let sources = state.active_sources.lock().await.clone();
+    if sources
+        .iter()
+        .any(|(id, source)| id != &source_id && source.palette.id == palette.id)
+    {
+        return Err(CommandError::new(
+            "SOURCE_PALETTE_IN_USE",
+            "That color pair is already assigned to another connected source.",
+            true,
+        ));
+    }
+    let mut source = sources.get(&source_id).cloned().ok_or_else(|| {
+        CommandError::new(
+            "SOURCE_NOT_FOUND",
+            "The source disconnected before its palette could be changed.",
+            true,
+        )
+    })?;
+    let output = state
+        .source_outputs
+        .lock()
+        .await
+        .get(&source_id)
+        .cloned()
+        .ok_or_else(|| {
+            CommandError::new(
+                "SOURCE_OUTPUT_NOT_FOUND",
+                "The source output router is unavailable.",
+                true,
+            )
+        })?;
+    if source.palette == palette {
+        return Ok(SourcePaletteUpdate {
+            source,
+            health: output.health(),
+        });
+    }
+
+    let previous = output.config();
+    let gated = palette_output_boundary(previous.clone());
+    output.configure(gated).await.map_err(|message| {
+        CommandError::new(
+            "SOURCE_PALETTE_GATE_FAILED",
+            format!("Could not stop the affected outputs before changing color: {message}"),
+            true,
+        )
+    })?;
+
+    source.color = palette.light.primary.clone();
+    source.palette = palette;
+    state
+        .active_sources
+        .lock()
+        .await
+        .insert(source_id, source.clone());
+    let next = source_output_config(current_output_config(&state)?, &source)?;
+    let health = match output.configure(next.clone()).await {
+        Ok(health) => health,
+        Err(message) => {
+            let degraded = palette_output_boundary(next);
+            let _ = output.configure(degraded).await;
+            return Err(CommandError::new(
+                "SOURCE_PALETTE_RESTART_FAILED",
+                format!(
+                    "The palette changed, but LSL/CSV could not be restarted. Acquisition remains active and the affected destinations are off: {message}"
+                ),
+                true,
+            ));
+        }
+    };
+    Ok(SourcePaletteUpdate { source, health })
+}
+
+fn palette_output_boundary(mut config: OutputConfig) -> OutputConfig {
+    config.lsl_enabled = false;
+    config.csv_enabled = false;
+    config
+}
+
 fn parse_device_id(device_id: &str) -> CommandResult<(InputKind, &str)> {
     if let Some(id) = device_id.strip_prefix("polar:") {
         Ok((InputKind::PolarH10, id))
@@ -1487,16 +1619,46 @@ fn parse_device_id(device_id: &str) -> CommandResult<(InputKind, &str)> {
 async fn allocate_source(
     active: &tokio::sync::Mutex<HashMap<String, SourceDescriptor>>,
     input_kind: InputKind,
+    requested_palette_id: Option<&str>,
 ) -> CommandResult<SourceDescriptor> {
     let active = active.lock().await;
-    for (index, color) in SOURCE_COLORS.iter().enumerate() {
+    let palettes = source_palette_catalog();
+    let used_palettes = active
+        .values()
+        .map(|source| source.palette.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let requested = match requested_palette_id {
+        Some(id) => Some(source_palette(id).ok_or_else(|| {
+            CommandError::new(
+                "INVALID_SOURCE_PALETTE",
+                format!("Unknown source palette `{id}`."),
+                true,
+            )
+        })?),
+        None => None,
+    }
+    .filter(|palette| !used_palettes.contains(palette.id.as_str()));
+    let palette = requested.or_else(|| {
+        palettes
+            .into_iter()
+            .find(|palette| !used_palettes.contains(palette.id.as_str()))
+    });
+    let Some(palette) = palette else {
+        return Err(CommandError::new(
+            "SOURCE_PALETTE_CAPACITY_REACHED",
+            "Every source palette is already assigned to an active source.",
+            true,
+        ));
+    };
+    for index in 0..MAX_INPUT_SOURCES {
         let slot = format!("source-{}", index + 1);
         if !active.values().any(|source| source.slot == slot) {
             return Ok(SourceDescriptor {
                 id: format!("source-instance-{}", Uuid::new_v4().simple()),
                 slot,
                 label: format!("Source {}", index + 1),
-                color,
+                color: palette.light.primary.clone(),
+                palette,
                 input_kind,
             });
         }
@@ -1513,6 +1675,7 @@ fn source_output_config(
     source: &SourceDescriptor,
 ) -> CommandResult<OutputConfig> {
     config.stream_name = format!("{}_{}", config.stream_name, source.slot);
+    config.source_palette = Some(source.palette.clone());
     match source.input_kind {
         InputKind::PolarH10 => {
             config.outputs.retain(|id| id != "raw_force");
@@ -1783,10 +1946,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_bootstrap,
             migrate_legacy_preferences,
+            save_device_palette,
             scan_devices,
             connect_device,
             attach_active_sources,
             disconnect_device,
+            update_source_palette,
             update_output_config,
             validate_custom_formula,
             open_metric_citation,
@@ -1835,6 +2000,23 @@ mod tests {
     #[cfg(feature = "rusty-lsl-backend")]
     use std::sync::atomic::AtomicUsize;
 
+    fn test_source(
+        id: &str,
+        slot: &str,
+        palette_id: &str,
+        input_kind: InputKind,
+    ) -> SourceDescriptor {
+        let palette = source_palette(palette_id).expect("test palette must exist");
+        SourceDescriptor {
+            id: id.into(),
+            slot: slot.into(),
+            label: slot.replace('-', " "),
+            color: palette.light.primary.clone(),
+            palette,
+            input_kind,
+        }
+    }
+
     #[test]
     fn citation_opener_accepts_only_reviewed_sources_for_the_selected_metric() {
         let metric = MetricDefinition::for_id("rmssd").expect("RMSSD must remain in the catalog");
@@ -1860,30 +2042,77 @@ mod tests {
             outputs: vec!["raw_ecg".into(), "raw_acc".into(), "raw_force".into()],
             ..OutputConfig::default()
         };
-        let polar = SourceDescriptor {
-            id: "source-1".into(),
-            slot: "source-1".into(),
-            label: "Source 1".into(),
-            color: SOURCE_COLORS[0],
-            input_kind: InputKind::PolarH10,
-        };
-        let vernier = SourceDescriptor {
-            id: "source-2".into(),
-            slot: "source-2".into(),
-            label: "Source 2".into(),
-            color: SOURCE_COLORS[1],
-            input_kind: InputKind::VernierGoDirect,
-        };
+        let polar = test_source("source-1", "source-1", "ocean", InputKind::PolarH10);
+        let vernier = test_source("source-2", "source-2", "sunset", InputKind::VernierGoDirect);
 
         let polar_config = source_output_config(config.clone(), &polar).unwrap();
         assert_eq!(polar_config.outputs.len(), 2);
         assert!(polar_config.outputs.iter().any(|id| id == "raw_ecg"));
         assert!(polar_config.outputs.iter().any(|id| id == "raw_acc"));
         assert_eq!(polar_config.stream_name, "Polar-H10_source-1");
+        assert_eq!(polar_config.source_palette.as_ref().unwrap().id, "ocean");
 
         let vernier_config = source_output_config(config, &vernier).unwrap();
         assert_eq!(vernier_config.outputs, ["raw_force"]);
         assert_eq!(vernier_config.stream_name, "Polar-H10_source-2");
+        assert_eq!(vernier_config.source_palette.as_ref().unwrap().id, "sunset");
+    }
+
+    #[tokio::test]
+    async fn source_palette_allocation_is_deterministic_and_resolves_remembered_conflicts() {
+        let active = tokio::sync::Mutex::new(HashMap::new());
+        let first = allocate_source(&active, InputKind::PolarH10, Some("ocean"))
+            .await
+            .expect("first source");
+        assert_eq!(first.slot, "source-1");
+        assert_eq!(first.palette.id, "ocean");
+        active.lock().await.insert(first.id.clone(), first);
+
+        let conflict = allocate_source(&active, InputKind::VernierGoDirect, Some("ocean"))
+            .await
+            .expect("conflicting remembered palette falls back");
+        assert_eq!(conflict.slot, "source-2");
+        assert_eq!(conflict.palette.id, "sunset");
+    }
+
+    #[tokio::test]
+    async fn source_palette_allocation_rejects_unknown_ids_and_capacity_overflow() {
+        let active = tokio::sync::Mutex::new(HashMap::new());
+        assert!(
+            allocate_source(&active, InputKind::PolarH10, Some("not-a-palette"))
+                .await
+                .is_err()
+        );
+        for (index, palette) in source_palette_catalog().into_iter().enumerate() {
+            let source = test_source(
+                &format!("active-{index}"),
+                &format!("source-{}", index + 1),
+                &palette.id,
+                InputKind::PolarH10,
+            );
+            active.lock().await.insert(source.id.clone(), source);
+        }
+        assert!(
+            allocate_source(&active, InputKind::PolarH10, None)
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn palette_output_boundary_stops_only_metadata_bearing_destinations() {
+        let config = OutputConfig {
+            lsl_enabled: true,
+            csv_enabled: true,
+            osc_enabled: true,
+            audio_enabled: true,
+            ..OutputConfig::default()
+        };
+        let gated = palette_output_boundary(config);
+        assert!(!gated.lsl_enabled);
+        assert!(!gated.csv_enabled);
+        assert!(gated.osc_enabled);
+        assert!(gated.audio_enabled);
     }
 
     #[test]
@@ -1931,13 +2160,7 @@ mod tests {
     #[test]
     fn empty_presentation_points_do_not_change_accelerometer_ipc_shape() {
         let event = AppEvent::Accelerometer {
-            source: SourceDescriptor {
-                id: "source-1".into(),
-                slot: "source-1".into(),
-                label: "Source 1".into(),
-                color: SOURCE_COLORS[0],
-                input_kind: InputKind::PolarH10,
-            },
+            source: test_source("source-1", "source-1", "ocean", InputKind::PolarH10),
             sensor_timestamp_ns: 42_000_000,
             timing: TimingEnvelope::arrival(45_000_000, Some(ACC_SAMPLE_PERIOD_NS), false),
             samples: Vec::new(),

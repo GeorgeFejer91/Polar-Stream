@@ -110,11 +110,20 @@ Last verified: 2026-08-27
 - The ordinary application now admits up to eight mixed Polar H10 and Vernier
   Go Direct sources. Each source owns an independent input session, decoder,
   event receiver, metric engine, and output router; shared maps and mutexes are
-  lifecycle-only. Presentation slots add stable stream-name suffixes and map
-  to a fixed eight-color palette propagated through connected widgets, raw/output
-  cards, and visualizers; internal source instance IDs are non-reused UUIDs.
+  lifecycle-only. Presentation slots add stable stream-name suffixes and receive
+  one unique remembered two-color `SourcePalette` from an eight-pair catalog;
+  both light/dark variants propagate through UI, LSL metadata, native CSV v3,
+  and browser event/recording v3 contracts while `color` remains a compatibility
+  alias. Internal source instance IDs are non-reused UUIDs.
   UI temporal buffers are per source, so selecting a device cannot mix samples
   from another device.
+  The shared UI has a first-paint-safe persistent light/dark theme and reduces
+  the primary ACC library to raw X/Y/Z, 3D motion magnitude, and normalized
+  **ACC breathing magnitude (0–1)**. Signed projection, phase, diagnostics,
+  rate, and dynamics remain under Extra options without changing IDs. Mixed
+  visual comparison is opt-in and permits one active compatible comparator;
+  Polar `breathing_volume` and Vernier `vernier_breathing` share a fixed 0–1
+  host-monotonic view, while ECG/breathing and raw-force/ACC pairs are excluded.
   Saved output configuration is transport-free: formula validation uses a
   destination-disabled router and only connected source routers may create
   LSL/OSC/CSV endpoints, preventing empty legacy unsuffixed streams.

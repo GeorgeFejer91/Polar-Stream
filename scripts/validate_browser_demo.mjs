@@ -499,12 +499,36 @@ try {
   await desktop.evaluate(() => {
     window.__polarBrowserEvents = 0;
     window.__polarChannelEvents = 0;
-    window.addEventListener("polar-stream-data", () => { window.__polarBrowserEvents += 1; });
+    window.addEventListener("polar-stream-data", (event) => {
+      window.__polarBrowserEvents += 1;
+      window.__polarLastBrowserEvent = event.detail;
+    });
     window.__polarChannelReceiver = new BroadcastChannel(window.PolarBrowserSession.channelName);
-    window.__polarChannelReceiver.addEventListener("message", () => { window.__polarChannelEvents += 1; });
+    window.__polarChannelReceiver.addEventListener("message", (event) => {
+      window.__polarChannelEvents += 1;
+      window.__polarLastChannelEvent = event.data;
+    });
   });
   await desktop.waitForFunction(() => window.__polarBrowserEvents > 3 && window.__polarChannelEvents > 3);
+  const browserEventContract = await desktop.evaluate(() => ({
+    direct: window.__polarLastBrowserEvent,
+    channel: window.__polarLastChannelEvent,
+  }));
+  assert.equal(browserEventContract.direct.schemaVersion, 2);
+  assert.equal(browserEventContract.direct.event.source.palette.id, "ocean");
+  assert.equal(browserEventContract.direct.event.source.color, "#176B9E");
+  assert.equal(browserEventContract.channel.event.source.palette.id, "ocean");
   await desktop.locator("#csv-destination-row").click();
+  await desktop.locator("#browser-recorder-status").filter({ hasText: "REC" }).waitFor();
+  await desktop.waitForFunction(() => window.PolarBrowserSession.status().rowCount >= 20);
+  desktop.once("dialog", (dialog) => dialog.accept());
+  const [paletteBoundaryDownload] = await Promise.all([
+    desktop.waitForEvent("download"),
+    desktop.locator("#connected-device-list .device-color-button select").selectOption("sunset"),
+  ]);
+  const paletteBoundaryCsv = await readFile(await paletteBoundaryDownload.path(), "utf8");
+  assert.match(paletteBoundaryCsv, /# schema_version,3/);
+  assert.match(paletteBoundaryCsv, /# source_palette,[^,]+,ocean,#176B9E,#2AA8B8,#7CCBFF,#72E4EA/);
   await desktop.locator("#browser-recorder-status").filter({ hasText: "REC" }).waitFor();
   await desktop.waitForFunction(() => window.PolarBrowserSession.status().rowCount >= 20);
   const [recordingDownload] = await Promise.all([
@@ -515,7 +539,9 @@ try {
   const recordingPath = await recordingDownload.path();
   const recordingCsv = await readFile(recordingPath, "utf8");
   assert.match(recordingCsv, /^# Polar Stream browser recording/m);
-  assert.match(recordingCsv, /host_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream/);
+  assert.match(recordingCsv, /# schema_version,3/);
+  assert.match(recordingCsv, /# source_palette,[^,]+,sunset,#B83E35,#C96815,#FF8E84,#FFB366/);
+  assert.match(recordingCsv, /host_timestamp_ms,relative_time_s,sensor_timestamp_ns,source_id,source_palette_id,stream/);
   assert.match(recordingCsv, /,raw_ecg,/);
   assert.match(recordingCsv, /,raw_acc,/);
   assert.equal(await desktop.locator("#browser-recorder-status").textContent(), "READY");
@@ -533,7 +559,7 @@ try {
   assert.equal(boundedRecorder.status.state, "stopped");
   assert.equal(boundedRecorder.status.stopReason, "capacity");
   assert.equal(boundedRecorder.status.rowCount, 2);
-  assert.match(boundedRecorder.csv, /,raw_ecg,0,,,,1,uV/);
+  assert.match(boundedRecorder.csv, /,browser-source,,raw_ecg,0,,,,1,uV/);
   const metricTimestampCsv = await desktop.evaluate(async () => {
     let now = 2_000;
     const recorder = window.PolarBrowserSession.createRecorder({ maxRows: 10, now: () => now });
@@ -547,7 +573,7 @@ try {
     }, now);
     return recorder.createBlob().text();
   });
-  assert.match(metricTimestampCsv, /,3000000000,breathing_volume,0,,,,0\.75,/);
+  assert.match(metricTimestampCsv, /,3000000000,browser-source,,breathing_volume,0,,,,0\.75,/);
   const audioFixture = await desktop.evaluate(() => {
     const packet = window.PolarAudioDataLink.encodeBatch({
       ecg: [1, -2, 3],
@@ -630,6 +656,7 @@ try {
   assert.match(await desktop.locator("#signal-canvas").getAttribute("data-breath-direction"), /inhale|exhale|pause/);
   await desktop.locator("#open-output-dialog").click();
   await desktop.getByRole("button", { name: /ACC metrics/ }).click();
+  await desktop.getByRole("button", { name: "Extra options" }).click();
   await desktop.locator('.metric-option[data-metric-id="breathing_phase"]').click();
   await desktop.locator("#save-metric-output").click();
   await desktop.locator("#visual-source").selectOption("breathing_phase");
@@ -695,7 +722,7 @@ try {
   }
   assert.equal(await bluetooth.locator('.device-row[data-input-kind="web-bluetooth"]').count(), 0, "connected H10 remained a discovery row");
   assert.equal(await bluetooth.locator('.connected-device-widget[data-device-profile="polar"]').count(), 1, "connected H10 did not become a widget");
-  assert.equal(await bluetooth.getByLabel(/Color for Polar H10 TEST1234/).count(), 1, "connected H10 widget has no color picker");
+  assert.equal(await bluetooth.getByLabel(/Color pair for Polar H10 TEST1234/).count(), 1, "connected H10 widget has no source-palette picker");
   assert.equal(await bluetooth.locator("#battery-value").textContent(), "87%");
   assert.equal(await bluetooth.locator("#runtime-path-label").textContent(), "Browser Bluetooth · experimental");
   const bluetoothContract = await bluetooth.evaluate(() => ({
@@ -848,7 +875,7 @@ try {
   assert.equal(await vernier.locator("#battery-value").textContent(), "83%");
   assert.match(await vernier.locator("#app-state-text").textContent(), /Go Direct connected directly/);
   assert.match(await vernier.locator(".active-source-chip").textContent(), /Browser source 1.*GDX-RB TEST/);
-  assert.equal(await vernier.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), "#00c2ff");
+  assert.equal(await vernier.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), "#176B9E");
   assert.equal(await vernier.locator("body").getAttribute("data-device-profile"), "vernier");
   assert.match(await vernier.locator("#device-profile-title").textContent(), /respiration belt/i);
   assert.match(await vernier.locator("#device-profile-description").textContent(), /Primary use: breathing/i);
@@ -961,6 +988,7 @@ try {
   await assertNoHorizontalOverflow(phone, "phone breathing trail");
   await phone.locator("#open-output-dialog").click();
   await phone.getByRole("button", { name: /ACC metrics/ }).click();
+  await phone.getByRole("button", { name: "Extra options" }).click();
   await phone.locator('.metric-option[data-metric-id="breathing_phase"]').click();
   assert.equal(await phone.locator("#output-dialog").getAttribute("data-mobile-view"), "detail");
   assert.equal(await phone.locator("#metric-options").isHidden(), true, "phone detail view must hide the browse list");

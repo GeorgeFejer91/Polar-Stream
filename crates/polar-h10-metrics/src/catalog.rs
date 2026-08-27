@@ -797,8 +797,8 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
     metric!(
         "acc_breathing_magnitude",
         "accBreathingMagnitude",
-        "ACC breathing magnitude estimate",
-        "Smoothed principal-axis chest-motion projection",
+        "ACC breathing projection (g)",
+        "Signed principal-axis chest-motion projection",
         "g",
         "Breathing",
         "This continuous curve is a smoothed projection of selected accelerometer axes, not lung volume or airflow. It can preserve timing for exploratory breath-rate analysis, but this H10-specific estimate is unvalidated and is strongly confounded by movement, posture, strap placement and axis choice.",
@@ -815,8 +815,8 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
     metric!(
         "breathing_volume",
         "breathingVolume",
-        "ACC breathing waveform",
-        "Calibrated chest-motion projection",
+        "ACC breathing magnitude (0–1)",
+        "Normalized waveform for belt-signal comparison",
         "0–1",
         "Breathing",
         "The waveform applies source-time-aware smoothing, projects chest acceleration onto a calibrated principal movement axis, and rescales it between robust bounds. Chest accelerometers can capture breathing motion, but this H10-specific proxy has not been validated as lung volume or airflow and remains vulnerable to movement and mounting changes.",

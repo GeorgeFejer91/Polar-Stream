@@ -8,10 +8,12 @@ preset, and selecting a source when Polar and Vernier are both active switches
 the whole visible protocol without mixing cards or samples. Polar defaults to
 raw ECG and accelerometer; Vernier defaults to its complete raw recording plus
 the separate 0–1 breathing waveform. The Polar output library starts with a
-prominent red ECG / blue accelerometer selector. ECG mode contains the H10's core ECG,
+prominent ECG / accelerometer selector. ECG mode contains the H10's core ECG,
 heart-rate, HRV, coherence, Excite-O-Meter and experimental activation outputs;
-ACC mode contains raw motion plus the complete experimental breathing and
-breathing-dynamics catalog.
+ACC mode starts with exactly raw X/Y/Z, 3D motion magnitude, and **ACC breathing
+magnitude (0–1)**. Signed projection, phase, quality/calibration, breathing rate,
+and breathing-dynamics outputs remain available under **Extra options** with
+their existing IDs and stream names.
 Selecting a metric opens one focused preview window containing only a looping
 SVG example of the output, a two- or three-sentence scientific summary, and two
 or three of the most relevant sources. An explicit **Save output** action then
@@ -54,7 +56,11 @@ asymptotically, and eases its velocity toward rest during holds.
 
 Raw acceleration is presented as one visualizer choice with X, Y, and Z in
 three labeled, color-coded lanes, so comparing axes does not require switching
-the visualizer source.
+the visualizer source. When another connected source already has a compatible
+active signal, **Add comparison source** overlays one comparator without
+enabling any output. Polar's normalized `breathing_volume` and Vernier's
+normalized breathing waveform share a fixed 0–1 host-monotonic view; raw force
+cannot be compared with ACC and breathing cannot be compared with ECG.
 
 > Unofficial research software. Not affiliated with or endorsed by Polar
 > Electro. This is not a medical device.
@@ -94,18 +100,20 @@ connected, **Add another sensor** can find another non-active Polar or Vernier
 device without replacing either live owner. Their source-specific output
 routers remain live together: Polar ECG/ACC and Vernier raw/breathing outlets
 can be recorded on the same LSL clock. Selecting a source changes ordinary
-controls and charts only; mixed-source presets can show belt force beside Polar
-ACC or overlay the two relative breathing waveforms on their mapped host-time
-axis without stopping, merging, or republishing either raw source.
+controls and charts only. A compatible active signal can be added explicitly as
+one comparator without stopping, merging, or republishing either source.
 
 Input discovery is deliberately separate from connection state. **Search
 devices** lists supported candidates as classified rows—Polar H10 for ECG or a
 metadata-verified GDX-RB for breathing—and **Connect** promotes a row to a
 persistent device widget only after the link succeeds. Connected widgets own
-their metadata, disconnect action, and color picker; the Vernier widget also
+their metadata, disconnect action, and two-color palette picker; the Vernier widget also
 owns its keep-connected/reconnect switch, which defaults on for a new
-preference state. Its chosen color marks that source's Input widget, raw and
-processed Output cards, and Visualization frame.
+preference state. Eight unique remembered palette pairs provide light and dark
+variants for each source and thread through Input, Output, Visualization,
+legends, LSL descriptors, and CSV metadata. The app-level sun/moon control
+follows the OS initially and persists an explicit choice without restarting
+outputs.
 
 Raw device measurements are non-removable automatic outputs. A native physical
 connection also enables LSL automatically so the corresponding source-suffixed
@@ -168,6 +176,12 @@ downloads the timestamped CSV immediately. Files are bounded to 300,000 rows
 instead of dropping rows or growing memory without a bound. Download or discard
 that stopped file before starting the next segment, and always download it
 before closing the tab.
+
+Browser recording schema 3 adds `source_id` and `source_palette_id` columns plus
+one complete palette-definition header per encountered source. Native CSV schema
+3 keeps its existing sample rows and adds the same palette definition to header
+comments. Changing a palette while recording closes the current segment and
+starts a new one so one file never silently changes source-color identity.
 
 The installed app exposes the same **Save local CSV** toggle. Native recordings
 are written under `Downloads/Polar Stream` (with an app-data fallback) by a

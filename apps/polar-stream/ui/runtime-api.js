@@ -39,11 +39,25 @@
   ]);
   const browserVernierOutputs = new Set(["raw_force"]);
   const nativeSources = new Set();
+  const sourcePaletteOverrides = new Map();
   let activeInput = null;
 
-  function deliverInputEvent(callback, event) {
-    if (mode === "browser-demo") window.PolarBrowserSession?.publish(event);
-    callback(event);
+  function deliverInputEvent(callback, event, paletteId = null, sourceDefaults = null) {
+    const source = { ...(sourceDefaults || {}), ...(event?.source || {}) };
+    const effectivePaletteId = sourcePaletteOverrides.get(source.id) || paletteId;
+    const palette = window.PolarSourcePalettes?.find((candidate) => candidate.id === effectivePaletteId) || null;
+    const delivered = palette && source.id
+      ? {
+          ...event,
+          source: {
+            ...source,
+            palette,
+            color: palette.light.primary,
+          },
+        }
+      : event;
+    if (mode === "browser-demo") window.PolarBrowserSession?.publish(delivered);
+    callback(delivered);
   }
 
   function browserBluetoothModule() {
@@ -231,30 +245,40 @@
     async migrateLegacyPreferences(legacy) {
       return isNative ? invoke("migrate_legacy_preferences", { legacy }) : legacy;
     },
+    async saveDevicePalette(deviceId, paletteId) {
+      if (!isNative) return;
+      return invoke("save_device_palette", { deviceId, paletteId });
+    },
     async scanDevices(preferredDeviceId = null) {
       if (isNative) return invoke("scan_devices", { preferredDeviceId });
       return previewDelay([], 180);
     },
-    async connectDevice(deviceId, onEvent) {
+    async connectDevice(deviceId, onEvent, paletteId = null) {
       if (deviceId === mockDevice.id) {
+        if (paletteId) sourcePaletteOverrides.set("mock-source", paletteId);
         if (activeInput === "native" && isNative) {
           await Promise.all([...nativeSources].map((sourceId) => invoke("disconnect_device", { sourceId })));
           nativeSources.clear();
         }
         if (activeInput === "web-bluetooth") await webBluetooth.disconnect();
-        return startDemo((event) => deliverInputEvent(onEvent, event));
+        return startDemo((event) => deliverInputEvent(onEvent, event, paletteId, {
+          id: "mock-source", slot: "mock-source", label: "Recorded preview", inputKind: "mock",
+        }));
       }
       stopDemo({ notify: activeInput === "mock" });
       if (this.isBrowserBluetoothDevice(deviceId)) {
+        if (paletteId) sourcePaletteOverrides.set("browser-polar-source", paletteId);
         await webBluetooth.connect(
-          (event) => deliverInputEvent(onEvent, event),
+          (event) => deliverInputEvent(onEvent, event, paletteId, {
+            id: "browser-polar-source", slot: "browser-polar-source", label: "Browser H10", inputKind: "web-bluetooth",
+          }),
           demo.config || {},
         );
         activeInput = "web-bluetooth";
         return;
       }
       if (this.isBrowserVernierDevice(deviceId)) {
-        const source = await vernierBluetooth.connect((event) => deliverInputEvent(onEvent, event));
+        const source = await vernierBluetooth.connect((event) => deliverInputEvent(onEvent, event, paletteId));
         return source;
       }
       if (!isNative) {
@@ -263,10 +287,17 @@
       if (demo.config) await invoke("update_output_config", { config: demo.config });
       const events = new core.Channel();
       events.onmessage = onEvent;
-      const result = await invoke("connect_device", { deviceId, events });
+      const result = await invoke("connect_device", { deviceId, paletteId, events });
       activeInput = "native";
       if (result?.id) nativeSources.add(result.id);
       return result;
+    },
+    async updateSourcePalette(sourceId, paletteId) {
+      if (!isNative) {
+        sourcePaletteOverrides.set(sourceId, paletteId);
+        return null;
+      }
+      return invoke("update_source_palette", { sourceId, paletteId });
     },
     async attachActiveSources(onEvent) {
       if (!isNative) return [];
@@ -280,6 +311,7 @@
       return sources || [];
     },
     async disconnectDevice(sourceId = null) {
+      if (sourceId) sourcePaletteOverrides.delete(sourceId);
       if (activeInput === "mock") {
         stopDemo({ notify: true });
         return { emitted: true };

@@ -7,6 +7,7 @@
   const audioDataLink = window.PolarAudioDataLink;
   const preferences = window.PolarPreferences;
   const rendererPreferences = preferences.load();
+  const staticSourcePalettes = window.PolarSourcePalettes || [];
   const previewFixtureApi = window.PolarPreviewFixture;
   const formulaPreview = window.PolarFormulaPreview;
   let metricPreviews = window.PolarMetricPreviews || null;
@@ -98,8 +99,8 @@
     fallbackMetric("mean_heart_rate", "meanHeartRate", "Mean heart rate", "bpm", "Heart rate"),
     ...[["rmssd","rmssd","RMSSD","ms"],["ln_rmssd","lnRMSSD","lnRMSSD","ln(ms)"],["sdnn","sdnn","SDNN","ms"],["pnn50","pNN50","pNN50","%"],["sd1","sd1","Poincaré SD1","ms"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"HRV & relaxation")),
     ...[["coherence","coherence","Normalized coherence","0–1"],["coherence_confidence","coherenceConfidence","Coherence confidence","0–1"],["heartmath_coherence","heartMathCoherence","HeartMath-style coherence ratio","ratio"],["coherence_peak_frequency","coherencePeakFrequency","Coherence peak frequency","Hz"],["coherence_peak_power","coherencePeakPower","Coherence peak-band power","ms²"],["coherence_total_power","coherenceTotalPower","Coherence total power","ms²"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"Coherence","resonance")),
-    fallbackMetric("acc_breathing_magnitude", "accBreathingMagnitude", "ACC breathing magnitude estimate", "g", "Breathing", "breathing", "Smoothed selected-axis chest-motion projection", false, true, 20),
-    fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing waveform", "0–1", "Breathing", "breathing", "Robustly normalized relative chest-motion projection; not lung volume", false, true, 20),
+    fallbackMetric("acc_breathing_magnitude", "accBreathingMagnitude", "ACC breathing projection (g)", "g", "Breathing", "breathing", "Signed selected-axis chest-motion projection", false, true, 20),
+    fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing magnitude (0–1)", "0–1", "Breathing", "breathing", "Normalized waveform for direct respiration-belt comparison; not lung volume", false, true, 20),
     fallbackMetric("breathing_signal_confidence", "breathingSignalConfidence", "ACC breathing signal confidence", "0–1", "Breathing", "breathing", "Range, motion, coverage, and periodicity quality index", false, false, 20),
     fallbackMetric("breathing_signal_ready", "breathingSignalReady", "ACC breathing signal ready", "0/1", "Breathing", "breathing", "Calibration, freshness, and motion gate", false, false, 20),
     fallbackMetric("breathing_phase", "breathingPhase", "Breath phase classifier", "class", "Breathing", "breathing", "+1 inhale · −1 exhale · 0 pause or not ready", false, false, 20),
@@ -126,40 +127,25 @@
     : [...staticCatalog.slice(0, 2), rawForceMetric, ...staticCatalog.slice(2)];
 
   const visualDefinitions = {
-    raw_ecg: { label: "Raw ECG", unit: "µV", rate: 130, color: "#d85151", symmetric: true, deviceProfile: "polar" },
+    raw_ecg: { label: "Raw ECG", unit: "µV", rate: 130, color: "#d85151", symmetric: true, deviceProfile: "polar", comparisonFamily: "ecg", comparisonKey: "raw_ecg" },
     raw_acc: {
-      label: "Raw accelerometer · X/Y/Z", unit: "mg", rate: 200, deviceProfile: "polar",
+      label: "Raw accelerometer · X/Y/Z", unit: "mg", rate: 200, deviceProfile: "polar", comparisonFamily: "accelerometer", comparisonKey: "raw_acc_xyz",
       channels: [
         { buffer: "acc_x", label: "X", color: "#3b78aa", symmetric: true },
         { buffer: "acc_y", label: "Y", color: "#168259", symmetric: true },
         { buffer: "acc_z", label: "Z", color: "#a66d19", symmetric: true },
       ],
     },
-    raw_force: { label: "Raw Go Direct force", unit: "N", rate: 10, color: "#00c2ff", deviceProfile: "vernier", automatic: true, adjustable: true },
+    raw_force: { label: "Raw Go Direct force", unit: "N", rate: 10, color: "#00c2ff", deviceProfile: "vernier", automatic: true, adjustable: true, comparisonFamily: "breathing", comparisonKey: "raw_force" },
     vernier_breathing: {
       label: "Vernier breathing waveform", unit: "0–1", rate: 10, color: "#168259",
       deviceProfile: "vernier", automatic: true, breathingTrail: true,
-    },
-    compare_force_acc: {
-      label: "Compare · Force + ACC", unit: "shared time", rate: 200,
-      composite: "force-acc", automatic: true,
-      legend: [
-        { label: "Belt force · N", color: "#00c2ff" },
-        { label: "Polar ACC · X/Y/Z mg", color: "#3b78aa" },
-      ],
-    },
-    compare_breathing: {
-      label: "Compare · Belt + ACC breathing", unit: "0–1", rate: 20,
-      composite: "breathing-overlay", automatic: true,
-      legend: [
-        { label: "Vernier belt", color: "#00c2ff" },
-        { label: "Polar ACC estimate", color: "#ffb000" },
-      ],
+      comparisonFamily: "breathing", comparisonKey: "breathing_waveform_01",
     },
     heart_rate: { label: "Heart rate", unit: "bpm", rate: 1, color: "#d85151" },
     rr_interval: { label: "RR interval", unit: "ms", rate: 2, color: "#6c62a8" },
-    acc_magnitude: { label: "3D acceleration magnitude", unit: "g", rate: 200, color: "#3b78aa" },
-    acc_breathing_magnitude: { label: "ACC breathing magnitude estimate", unit: "g", rate: 20, color: "#3b78aa" },
+    acc_magnitude: { label: "3D acceleration magnitude", unit: "g", rate: 200, color: "#3b78aa", comparisonFamily: "accelerometer", comparisonKey: "acc_magnitude" },
+    acc_breathing_magnitude: { label: "ACC breathing projection (g)", unit: "g", rate: 20, color: "#3b78aa", comparisonFamily: "breathing", comparisonKey: "acc_breathing_projection" },
     rmssd: { label: "RMSSD", unit: "ms", rate: 1, color: "#168259" },
   };
 
@@ -221,6 +207,7 @@
       || metric.category === "Breathing"
       || metric.category === "Breathing dynamics")
     .map((metric) => metric.id));
+  const primaryAccLibraryIds = new Set(["raw_acc", "acc_magnitude", "breathing_volume"]);
   const breathingOutputIds = new Set([
     "acc_breathing_magnitude",
     "breathing_volume",
@@ -458,15 +445,15 @@
   const ids = [
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value", "connection-metric-1-label", "connection-metric-1-value", "connection-metric-2-label", "connection-metric-2-value", "active-source-strip",
-    "scan-button", "scan-caption", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "device-result-count", "connected-device-list", "connected-device-count", "activity-list", "output-state", "raw-ecg-value",
+    "scan-button", "scan-caption", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "device-result-count", "connected-device-list", "connected-device-count", "source-palette-status", "activity-list", "output-state", "raw-ecg-value",
     "output-empty-state", "output-workspace", "visual-empty-state", "visual-workspace", "device-profile-card", "device-profile-mark", "device-profile-title", "device-profile-description", "raw-ecg-card", "raw-acc-card", "raw-force-card", "vernier-breathing-card",
     "raw-acc-x", "raw-acc-y", "raw-acc-z", "raw-force-value", "vernier-breathing-value", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
-    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "destination-mode-label", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "lab-recorder-launch", "lab-recorder-detail", "open-lab-recorder", "device-protocol-block", "device-protocol-cards", "included-output-heading", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source",
+    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "destination-mode-label", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "lab-recorder-launch", "lab-recorder-detail", "open-lab-recorder", "device-protocol-block", "device-protocol-cards", "included-output-heading", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source", "visual-compare-source",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
     "chart-empty", "chart-empty-title", "chart-empty-detail", "y-max", "y-min", "footer-status", "footer-device-role", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "metric-back-button", "dialog-output-status", "save-metric-output", "toast-region",
     "stream-name-preview", "metric-search", "metric-filters", "metric-library-summary",
-    "metric-family-picker", "metric-family-toggle", "metric-family-context", "metric-family-note", "vernier-protocol-panel", "vernier-protocol-note",
+    "metric-family-picker", "metric-family-toggle", "metric-family-context", "metric-family-note", "acc-extra-toggle", "vernier-protocol-panel", "vernier-protocol-note",
     "adjust-visual", "visual-window-label", "visual-scale-label", "module-dialog", "module-dialog-title",
     "module-dialog-intro", "module-settings", "module-dialog-status", "save-module-settings",
     "pipeline-title", "pipeline-detail", "browser-export-button",
@@ -475,7 +462,7 @@
     "formula-saved-list", "formula-template-buttons", "formula-name", "formula-source",
     "formula-unit", "formula-expression", "formula-keyboard", "formula-preview-current",
     "formula-preview-canvas", "formula-preview-note", "formula-validation-status",
-    "delete-custom-formula", "save-custom-formula",
+    "delete-custom-formula", "save-custom-formula", "theme-toggle",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
   const signalContext = elements["signal-canvas"].getContext("2d", {
@@ -503,6 +490,7 @@
     moduleDraft: null,
     libraryMetricDraft: null,
     metricFamily: "ecg",
+    accLibraryExtra: false,
     metricFilter: "All",
     metricSearch: "",
     streamName: "Polar-H10",
@@ -515,6 +503,9 @@
     activeSources: new Map(),
     activatedProfiles: new Set(),
     selectedSourceId: null,
+    comparisonSourceId: null,
+    sourcePalettes: [...staticSourcePalettes],
+    pendingDevicePalettes: new Map(),
     pendingDevice: null,
     devices: [],
     hasSearched: false,
@@ -526,10 +517,96 @@
     breathingPresentationSettings: defaultBreathingPresentationSettings(),
     phaseMotion: { level: 0.5, velocity: 0, lastAt: 0 },
     preferences: isNative
-      ? { streamName: null, lastDevice: null, outputConfig: null, keepVernierAwake: rendererPreferences.keepVernierAwake !== false }
+      ? { streamName: null, lastDevice: null, outputConfig: null, keepVernierAwake: rendererPreferences.keepVernierAwake !== false, devicePalettes: rendererPreferences.devicePalettes || {} }
       : rendererPreferences,
     activity: [{ time: "NOW", message: isNative ? "Bluetooth interface ready" : "Browser demo ready" }],
   };
+
+  function currentTheme() {
+    return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  }
+
+  function canvasTextColor(strong = false) {
+    if (currentTheme() === "dark") return strong ? "#B1BDB5" : "#87948C";
+    return strong ? "#52645A" : "#85928A";
+  }
+
+  function paletteById(id) {
+    return app.sourcePalettes.find((palette) => palette.id === id) || null;
+  }
+
+  function sourcePalette(source) {
+    if (!source) return null;
+    return source.palette || paletteById(source.paletteId) || null;
+  }
+
+  function sourceColors(source) {
+    const palette = sourcePalette(source);
+    const colors = palette?.[currentTheme()];
+    return {
+      primary: colors?.primary || source?.color || "#3B78AA",
+      secondary: colors?.secondary || source?.color || "#168259",
+    };
+  }
+
+  function sourceWithPalette(source, palette) {
+    if (!palette) return source;
+    return { ...source, palette, color: palette.light.primary };
+  }
+
+  function usedPaletteIds(exceptSourceId = null) {
+    return new Set([...app.activeSources.values()]
+      .filter((source) => source.id !== exceptSourceId)
+      .map((source) => sourcePalette(source)?.id)
+      .filter(Boolean));
+  }
+
+  function paletteForDevice(deviceId, exceptSourceId = null) {
+    const used = usedPaletteIds(exceptSourceId);
+    const remembered = paletteById(app.preferences.devicePalettes?.[deviceId]);
+    if (remembered && !used.has(remembered.id)) return remembered;
+    return app.sourcePalettes.find((palette) => !used.has(palette.id)) || null;
+  }
+
+  async function rememberDevicePalette(deviceId, paletteId) {
+    const stored = preferences.saveDevicePalette(deviceId, paletteId);
+    app.preferences = { ...app.preferences, devicePalettes: stored.devicePalettes };
+    try {
+      await runtime.saveDevicePalette(deviceId, paletteId);
+    } catch (error) {
+      toast(`The color pair is active but could not be remembered. ${runtime.formatError(error)}`, true);
+    }
+  }
+
+  function applyPaletteVariables(element, source) {
+    const colors = sourceColors(source);
+    element.style.setProperty("--source-color", colors.primary);
+    element.style.setProperty("--source-secondary", colors.secondary);
+  }
+
+  function updateThemeUi() {
+    const dark = currentTheme() === "dark";
+    elements["theme-toggle"].setAttribute("aria-pressed", String(dark));
+    elements["theme-toggle"].setAttribute("aria-label", dark ? "Use light theme" : "Use dark theme");
+    elements["theme-toggle"].title = dark ? "Use light theme" : "Use dark theme";
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#202428" : "#17221d");
+    renderActiveSources();
+    renderOutputs();
+    updateVisualLabels();
+    requestRender();
+  }
+
+  function setTheme(theme) {
+    const next = theme === "dark" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    document.documentElement.style.colorScheme = next;
+    try {
+      window.localStorage.setItem(window.PolarTheme?.STORAGE_KEY || "polar-stream.theme.v1", next);
+    } catch (_error) {
+      // Theme remains active for this session if storage is unavailable.
+    }
+    updateThemeUi();
+  }
 
   function deviceProfileForSource(source) {
     if (!source) return deviceProfiles.none;
@@ -874,6 +951,7 @@
     }
 
     app.catalog = bootstrap.metricCatalog || fallbackCatalog;
+    app.sourcePalettes = bootstrap.sourcePalettes?.length ? bootstrap.sourcePalettes : [...staticSourcePalettes];
     if (isNative && !bootstrap.hasSavedPreferences) {
       const legacy = preferences.load();
       const outputConfig = legacy.outputConfig || (legacy.streamName
@@ -884,6 +962,7 @@
           bootstrap.preferences = await runtime.migrateLegacyPreferences({
             outputConfig,
             lastDevice: legacy.lastDevice,
+            devicePalettes: legacy.devicePalettes,
           });
           bootstrap.config = bootstrap.preferences.outputConfig;
         } catch (error) {
@@ -897,6 +976,7 @@
         outputConfig: bootstrap.preferences.outputConfig || null,
         lastDevice: bootstrap.preferences.lastDevice || null,
         keepVernierAwake: rendererPreferences.keepVernierAwake !== false,
+        devicePalettes: bootstrap.preferences.devicePalettes || {},
       };
     }
     const initialConfig = isNative
@@ -959,6 +1039,7 @@
     renderMetricFilters();
     renderOutputs();
     installInteractions();
+    updateThemeUi();
     if (isNative) {
       try {
         await runtime.attachActiveSources((event) => handleNativeEvent(event));
@@ -973,6 +1054,9 @@
   }
 
   function installInteractions() {
+    elements["theme-toggle"].addEventListener("click", () => {
+      setTheme(currentTheme() === "dark" ? "light" : "dark");
+    });
     elements["scan-button"].addEventListener("click", () => {
       void scanDevices();
     });
@@ -1010,6 +1094,7 @@
             browserSession.start({
               deviceName: selectedSourceName(),
               inputKind: app.currentInputKind || "browser",
+              source: app.activeSources.get(app.selectedSourceId) || null,
             });
             addActivity("Browser CSV recording started");
             toast("Recording all incoming browser data in this tab");
@@ -1165,6 +1250,7 @@
       const button = event.target.closest("button[data-family]");
       if (!button || button.dataset.family === app.metricFamily) return;
       app.metricFamily = button.dataset.family;
+      app.accLibraryExtra = false;
       app.metricFilter = "All";
       app.metricSearch = "";
       app.selectedMetricId = null;
@@ -1174,8 +1260,25 @@
       renderMetricFilters();
       renderMetricOptions();
     });
+    elements["acc-extra-toggle"].addEventListener("click", () => {
+      app.accLibraryExtra = !app.accLibraryExtra;
+      app.metricFilter = "All";
+      app.metricSearch = "";
+      app.selectedMetricId = null;
+      elements["metric-search"].value = "";
+      updateMetricFamilyUi();
+      renderMetricFilters();
+      renderMetricOptions();
+      renderMetricDetail();
+    });
     elements["visual-source"].addEventListener("change", () => {
       app.selectedVisual = elements["visual-source"].value;
+      rebuildComparisonOptions();
+      updateVisualLabels();
+      requestRender();
+    });
+    elements["visual-compare-source"].addEventListener("change", () => {
+      app.comparisonSourceId = elements["visual-compare-source"].value || null;
       updateVisualLabels();
       requestRender();
     });
@@ -1430,7 +1533,36 @@
         action.append(signal);
       }
       button.append(icon, copy, action);
-      return button;
+      const group = document.createElement("div");
+      group.className = "device-row-group";
+      group.append(button);
+      if (device.available !== false && app.sourcePalettes.length) {
+        const palette = paletteById(app.pendingDevicePalettes.get(device.id)) || paletteForDevice(device.id);
+        if (palette) app.pendingDevicePalettes.set(device.id, palette.id);
+        const paletteLabel = document.createElement("label");
+        paletteLabel.className = "device-palette-choice";
+        const caption = document.createElement("span");
+        caption.textContent = "Source colors";
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", `Color pair for ${device.name}`);
+        const used = usedPaletteIds();
+        for (const candidate of app.sourcePalettes) {
+          const option = new Option(candidate.id, candidate.id);
+          option.disabled = used.has(candidate.id) && candidate.id !== palette?.id;
+          select.add(option);
+        }
+        select.value = palette?.id || "";
+        applyPaletteVariables(paletteLabel, sourceWithPalette({}, palette));
+        select.addEventListener("change", () => {
+          app.pendingDevicePalettes.set(device.id, select.value);
+          const chosen = paletteById(select.value);
+          applyPaletteVariables(paletteLabel, sourceWithPalette({}, chosen));
+          void rememberDevicePalette(device.id, select.value);
+        });
+        paletteLabel.append(caption, select);
+        group.append(paletteLabel);
+      }
+      return group;
     });
     elements["device-list"].replaceChildren(...rows);
   }
@@ -1466,15 +1598,24 @@
     addActivity(`${isMock ? "Starting" : automatic ? "Reconnecting" : "Connecting"} ${device.name}`);
 
     try {
-      const source = await runtime.connectDevice(device.id, (event) => handleNativeEvent(event, device));
+      const requestedPalette = paletteById(app.pendingDevicePalettes.get(device.id)) || paletteForDevice(device.id);
+      const source = await runtime.connectDevice(
+        device.id,
+        (event) => handleNativeEvent(event, device),
+        requestedPalette?.id || null,
+      );
       if (source?.id) {
         const connectedSource = app.activeSources.get(source.id);
-        registerSource({
+        const resolvedSource = sourceWithPalette({
           ...source,
           ...connectedSource,
           deviceId: device.id,
           deviceName: connectedSource?.deviceName || device.name,
-        });
+        }, source.palette || requestedPalette);
+        registerSource(resolvedSource);
+        if (resolvedSource.palette?.id) {
+          await rememberDevicePalette(device.id, resolvedSource.palette.id);
+        }
         if (app.selectedSourceId === source.id) updateSelectedSourceUi();
       }
       if (isNative && !isMock) await ensureAutomaticRawLsl();
@@ -1602,15 +1743,21 @@
   }
 
   function eventSource(event, device = null) {
-    if (event?.source?.id) return {
+    if (event?.source?.id) {
+      const existing = app.activeSources.get(event.source.id);
+      const palette = existing?.palette || event.source.palette
+        || paletteById(app.pendingDevicePalettes.get(device?.id)) || paletteForDevice(device?.id);
+      return sourceWithPalette({
       ...event.source,
+      ...existing,
       deviceId: device?.id,
       ...(event.transport ? { transport: event.transport } : {}),
       ...(event.deviceName ? { deviceName: event.deviceName } : {}),
-    };
+      }, palette);
+    }
     if (!device && !event?.simulated && event?.transport !== "web-bluetooth") return null;
     const browserPolar = event?.transport === "web-bluetooth" || device?.kind === "web-bluetooth";
-    return {
+    return sourceWithPalette({
       id: browserPolar ? "browser-polar-source" : "mock-source",
       slot: browserPolar ? "browser-polar-source" : "mock-source",
       label: browserPolar ? "Browser H10" : "Recorded preview",
@@ -1618,7 +1765,7 @@
       inputKind: browserPolar ? "web-bluetooth" : "mock",
       deviceId: device?.id,
       deviceName: event?.deviceName || device?.name,
-    };
+    }, paletteById(app.pendingDevicePalettes.get(device?.id)) || paletteForDevice(device?.id));
   }
 
   function buffersForSource(sourceId) {
@@ -1628,7 +1775,9 @@
 
   function registerSource(source, { focus = false } = {}) {
     const existing = app.activeSources.get(source.id) || {};
-    const merged = { ...existing, ...source };
+    const palette = existing.palette || source.palette || paletteById(source.paletteId)
+      || paletteForDevice(source.deviceId, source.id);
+    const merged = sourceWithPalette({ ...existing, ...source }, palette);
     const profile = deviceProfileForSource(merged);
     app.activeSources.set(source.id, merged);
     if (!Object.keys(existing).length && !app.activatedProfiles.has(profile.id)) {
@@ -1675,7 +1824,7 @@
     const chips = sources.map((source) => {
       const chip = document.createElement("span");
       chip.className = `active-source-chip${source.id === app.selectedSourceId ? " selected" : ""}`;
-      chip.style.setProperty("--source-color", source.color);
+      applyPaletteVariables(chip, source);
       chip.addEventListener("click", () => selectSource(source.id));
       const label = document.createElement("span");
       label.textContent = `${source.label} · ${source.deviceName || source.inputKind || "sensor"}`;
@@ -1725,7 +1874,7 @@
       article.className = `connected-device-widget${source.id === app.selectedSourceId ? " selected" : ""}`;
       article.dataset.sourceId = source.id;
       article.dataset.deviceProfile = profile.id;
-      article.style.setProperty("--source-color", source.color || "#9db2a7");
+      applyPaletteVariables(article, source);
 
       const header = document.createElement("div");
       header.className = "connected-device-header";
@@ -1758,20 +1907,18 @@
       actions.className = "connected-device-actions";
       const colorLabel = document.createElement("label");
       colorLabel.className = "device-color-button";
-      colorLabel.title = `Choose the color for ${source.deviceName || source.label}`;
-      colorLabel.style.setProperty("--source-color", source.color || "#9db2a7");
-      const color = document.createElement("input");
-      color.type = "color";
-      color.value = /^#[0-9a-f]{6}$/i.test(source.color || "") ? source.color : "#9db2a7";
-      color.setAttribute("aria-label", `Color for ${source.deviceName || source.label}`);
-      color.addEventListener("change", () => {
-        const current = app.activeSources.get(source.id);
-        if (!current) return;
-        app.activeSources.set(source.id, { ...current, color: color.value });
-        renderActiveSources();
-        renderOutputs();
-        updateVisualLabels();
-      });
+      colorLabel.title = `Choose the color pair for ${source.deviceName || source.label}`;
+      applyPaletteVariables(colorLabel, source);
+      const color = document.createElement("select");
+      color.setAttribute("aria-label", `Color pair for ${source.deviceName || source.label}`);
+      const occupied = usedPaletteIds(source.id);
+      for (const palette of app.sourcePalettes) {
+        const option = new Option(palette.id, palette.id);
+        option.disabled = occupied.has(palette.id);
+        color.add(option);
+      }
+      color.value = sourcePalette(source)?.id || "";
+      color.addEventListener("change", () => void changeSourcePalette(source.id, color.value));
       colorLabel.append(color);
       const disconnect = document.createElement("button");
       disconnect.type = "button";
@@ -1834,23 +1981,90 @@
     elements["connected-device-list"].replaceChildren(...widgets);
   }
 
+  async function changeSourcePalette(sourceId, paletteId) {
+    const source = app.activeSources.get(sourceId);
+    const palette = paletteById(paletteId);
+    if (!source || !palette || sourcePalette(source)?.id === palette.id) return;
+    const nativeDestinations = [
+      elements["lsl-toggle"].checked ? "LSL outlets" : null,
+      elements["csv-toggle"].checked && !runtime.isBrowser ? "native CSV recording" : null,
+    ].filter(Boolean);
+    const browserRecording = runtime.isBrowser && browserSession?.status().state === "recording";
+    const affected = [...nativeDestinations, browserRecording ? "browser CSV recording" : null].filter(Boolean);
+    if (affected.length && !window.confirm(
+      `Changing ${source.deviceName || source.label} to the ${palette.id} color pair will stop ${affected.join(" and ")} at a clean metadata boundary, then create new ${nativeDestinations.includes("LSL outlets") ? "LSL outlets" : ""}${nativeDestinations.includes("LSL outlets") && affected.length > 1 ? " and " : ""}${affected.some((name) => name.includes("CSV")) ? "file segments" : ""}. LabRecorder may need to refresh or reselect recreated outlets. Continue?`,
+    )) {
+      renderConnectedDevices();
+      return;
+    }
+
+    elements["source-palette-status"].hidden = false;
+    elements["source-palette-status"].classList.remove("warning");
+    applyPaletteVariables(elements["source-palette-status"], sourceWithPalette(source, palette));
+    elements["source-palette-status"].textContent = `Restarting outputs for ${source.deviceName || source.label} color change…`;
+    let restartBrowserRecording = false;
+    try {
+      if (browserRecording) {
+        browserSession.stop("source-palette-change");
+        const filename = browserSession.download();
+        browserSession.discard();
+        restartBrowserRecording = true;
+        addActivity(`Downloaded ${filename} at the source-color boundary`);
+      }
+      let resolved = sourceWithPalette(source, palette);
+      const result = await runtime.updateSourcePalette(sourceId, palette.id);
+      if (!runtime.isBrowser) {
+        resolved = result?.source || resolved;
+        if (result?.health) updateDestinationHealth(result.health);
+      }
+      app.activeSources.set(sourceId, resolved);
+      if (resolved.deviceId) {
+        await rememberDevicePalette(resolved.deviceId, palette.id);
+      }
+      if (restartBrowserRecording) {
+        browserSession.start({
+          deviceName: resolved.deviceName || resolved.label,
+          inputKind: resolved.inputKind || "browser",
+          source: resolved,
+        });
+      }
+      elements["source-palette-status"].textContent = affected.length
+        ? `${source.deviceName || source.label} now uses the ${palette.id} pair. Affected outputs restarted with new metadata.`
+        : `${source.deviceName || source.label} now uses the ${palette.id} pair.`;
+      addActivity(`${source.label} color pair changed to ${palette.id}`);
+      renderActiveSources();
+      renderOutputs();
+      updateVisualLabels();
+    } catch (error) {
+      if (error?.code === "SOURCE_PALETTE_RESTART_FAILED") {
+        app.activeSources.set(sourceId, sourceWithPalette(source, palette));
+      }
+      elements["source-palette-status"].textContent = runtime.formatError(error);
+      elements["source-palette-status"].classList.add("warning");
+      toast(runtime.formatError(error), true);
+      renderActiveSources();
+    }
+  }
+
   function applySourceColor() {
     const source = app.activeSources.get(app.selectedSourceId);
-    const color = source?.color || "#9db2a7";
-    elements["chart-shell"].style.setProperty("--source-color", color);
+    const colors = sourceColors(source);
+    applyPaletteVariables(elements["chart-shell"], source);
     elements["chart-shell"].classList.toggle("source-marked", Boolean(source));
     for (const panel of [elements["output-workspace"], elements["visual-workspace"]]) {
-      panel.style.setProperty("--source-color", color);
+      applyPaletteVariables(panel, source);
       panel.classList.toggle("source-panel-marked", Boolean(source));
     }
     document.querySelectorAll(".raw-card, .output-card, .device-profile-card, .device-protocol-card").forEach((card) => {
-      card.style.setProperty("--source-color", color);
+      card.style.setProperty("--source-color", colors.primary);
+      card.style.setProperty("--source-secondary", colors.secondary);
       card.classList.toggle("source-marked", Boolean(source));
     });
   }
 
   function selectedSourceColor(fallback) {
-    return app.activeSources.get(app.selectedSourceId)?.color || fallback;
+    const source = app.activeSources.get(app.selectedSourceId);
+    return source ? sourceColors(source).primary : fallback;
   }
 
   function updateSelectedSourceUi() {
@@ -1926,6 +2140,7 @@
       sourceBuffers.delete(source.id);
       breathingPresentation.delete(source.id);
       vernierDisplayProcessors.delete(source.id);
+      if (app.comparisonSourceId === source.id) app.comparisonSourceId = null;
       if (app.selectedSourceId === source.id) {
         app.selectedSourceId = app.activeSources.keys().next().value || null;
         buffers = app.selectedSourceId ? buffersForSource(app.selectedSourceId) : createBufferBank();
@@ -2200,6 +2415,10 @@
           label: metric.label, unit: metric.unit, rate: Number(metric.rateHz) || 1,
           color: palette[metric.category] || "#168259",
           symmetric: metric.id === "breathing_phase" || /^ecg_(mean|sd)$/.test(metric.id),
+          comparisonFamily: metric.category === "Breathing" || metric.category === "Breathing dynamics"
+            ? "breathing"
+            : metric.formulaSource === "accelerometer" ? "accelerometer" : "ecg",
+          comparisonKey: metric.id === "breathing_volume" ? "breathing_waveform_01" : metric.id,
         };
       }
     }
@@ -2452,7 +2671,11 @@
       return app.catalog.filter((metric) => metric.id === "raw_force");
     }
     if (app.metricFamily === "acc") {
-      return app.catalog.filter((metric) => accLibraryIds.has(metric.id));
+      return app.catalog.filter((metric) => (
+        app.accLibraryExtra
+          ? accLibraryIds.has(metric.id) && !primaryAccLibraryIds.has(metric.id) && metric.id !== "raw_force"
+          : primaryAccLibraryIds.has(metric.id)
+      ));
     }
     return app.catalog.filter((metric) => (
       !accLibraryIds.has(metric.id)
@@ -2473,6 +2696,7 @@
     else if (app.metricFamily === "vernier") app.metricFamily = "ecg";
     elements["output-dialog"].dataset.family = app.metricFamily;
     elements["metric-family-toggle"].hidden = vernier;
+    elements["acc-extra-toggle"].hidden = vernier || app.metricFamily !== "acc";
     for (const button of elements["metric-family-toggle"].querySelectorAll("button[data-family]")) {
       const active = button.dataset.family === app.metricFamily;
       button.classList.toggle("active", active);
@@ -2486,16 +2710,19 @@
     }
     const acc = app.metricFamily === "acc";
     elements["metric-family-context"].textContent = acc
-      ? "Experimental ACC research outputs"
+      ? app.accLibraryExtra ? "ACC extra options" : "Three primary ACC signals"
       : "ECG-first outputs";
     elements["metric-family-note"].textContent = acc
-      ? "ACC breathing outputs are unvalidated. Keep still and compare them with a reference respiratory sensor."
+      ? app.accLibraryExtra
+        ? "Signed projection, phase, diagnostics, breathing rate, and dynamics remain available here for specialist workflows and saved configurations."
+        : "Start with raw X/Y/Z, general 3D motion, or the normalized 0–1 ACC breathing waveform for direct comparison with a respiration belt."
       : app.currentInputKind === "web-bluetooth"
         ? "Browser H10 input exposes raw ECG plus HR/RR here. Other derived ECG processors remain desktop-only."
         : "Start with ECG for the signal the H10 is designed to measure; interpretation limits still apply.";
     elements["metric-search"].placeholder = acc
       ? "Search raw motion or breathing…"
       : "Search ECG, heart rate, HRV…";
+    elements["acc-extra-toggle"].textContent = app.accLibraryExtra ? "← Primary ACC signals" : "Extra options";
   }
 
   function renderMetricFilters() {
@@ -2977,6 +3204,8 @@
         color: formulaSources[formula.source].color,
         formulaId: formula.id,
         deviceProfile: "polar",
+        comparisonFamily: `custom:${formula.source}`,
+        comparisonKey: `${formula.id}:${formula.unit}`,
       };
       ensureBuffer(id);
     }
@@ -3450,6 +3679,51 @@
       : "No outputs are currently selected.";
   }
 
+  function visualEnabledForSource(source, visualId) {
+    const definition = visualDefinitions[visualId];
+    if (!source || !definition || !visualMatchesDeviceProfile(definition, deviceProfileForSource(source))) return false;
+    const parent = definition.parent || visualId;
+    if (definition.automatic) return true;
+    if (definition.formulaId) {
+      return app.customFormulas.some((formula) => formula.id === definition.formulaId && formula.enabled);
+    }
+    return app.outputs.has(parent);
+  }
+
+  function comparisonVisualIdForSource(source, primaryDefinition) {
+    if (!primaryDefinition?.comparisonFamily || !primaryDefinition?.comparisonKey) return null;
+    return Object.entries(visualDefinitions).find(([visualId, definition]) => (
+      definition.comparisonFamily === primaryDefinition.comparisonFamily
+      && definition.comparisonKey === primaryDefinition.comparisonKey
+      && visualEnabledForSource(source, visualId)
+    ))?.[0] || null;
+  }
+
+  function rebuildComparisonOptions() {
+    const primary = app.activeSources.get(app.selectedSourceId);
+    const definition = visualDefinitions[app.selectedVisual];
+    const candidates = [...app.activeSources.values()]
+      .filter((source) => source.id !== primary?.id)
+      .map((source) => ({ source, visualId: comparisonVisualIdForSource(source, definition) }))
+      .filter((candidate) => candidate.visualId);
+    if (!candidates.some((candidate) => candidate.source.id === app.comparisonSourceId)) {
+      app.comparisonSourceId = null;
+    }
+    const options = [new Option("Add comparison source", "")];
+    for (const candidate of candidates) {
+      const option = new Option(
+        `${candidate.source.label} · ${candidate.source.deviceName || candidate.source.inputKind}`,
+        candidate.source.id,
+      );
+      option.dataset.visualId = candidate.visualId;
+      options.push(option);
+    }
+    elements["visual-compare-source"].replaceChildren(...options);
+    elements["visual-compare-source"].value = app.comparisonSourceId || "";
+    elements["visual-compare-source"].hidden = candidates.length === 0;
+    document.querySelector(".comparison-source-label")?.toggleAttribute("hidden", candidates.length === 0);
+  }
+
   function rebuildVisualOptions() {
     const profile = selectedDeviceProfile();
     const choices = [];
@@ -3464,12 +3738,6 @@
       if (!enabled) continue;
       choices.push({ id, definition });
     }
-    const activeProfiles = new Set([...app.activeSources.values()].map((source) => deviceProfileForSource(source).id));
-    if (activeProfiles.has("polar") && activeProfiles.has("vernier")) {
-      for (const id of ["compare_force_acc", "compare_breathing"]) {
-        choices.push({ id, definition: visualDefinitions[id] });
-      }
-    }
     elements["visual-source"].replaceChildren(...choices.map(({ id, definition }) => {
       const option = document.createElement("option");
       option.value = id;
@@ -3483,13 +3751,15 @@
     }
     elements["visual-source"].value = app.selectedVisual;
     elements["visual-source"].disabled = !choices.length;
+    rebuildComparisonOptions();
     updateVisualLabels();
   }
 
   function updateVisualLabels() {
     const definition = visualDefinitions[app.selectedVisual];
-    const composite = Boolean(definition?.composite);
-    const breathingTrail = Boolean(definition?.breathingTrail || app.selectedVisual === "breathing_volume");
+    const composite = Boolean(app.comparisonSourceId);
+    elements["visual-source"].closest(".visual-toolbar")?.classList.toggle("comparing", composite);
+    const breathingTrail = !composite && Boolean(definition?.breathingTrail || app.selectedVisual === "breathing_volume");
     const custom = Boolean(definition?.formulaId);
     const options = custom
       ? { normalization: "none", windowSeconds: 60, displayWindowSeconds: 5 }
@@ -3497,7 +3767,9 @@
     const normalized = options.normalization !== "none";
     elements["visual-unit"].textContent = app.selectedVisual === "breathing_phase" ? "" : normalized ? "0–1" : definition?.unit || "";
     elements["visual-window-label"].textContent = app.selectedVisual === "breathing_phase" ? "Live phase" : `${options.displayWindowSeconds} second window`;
-    elements["visual-scale-label"].textContent = breathingTrail
+    elements["visual-scale-label"].textContent = composite && definition?.comparisonKey === "breathing_waveform_01"
+      ? "Shared fixed 0–1 scale"
+      : breathingTrail
       ? "Relative 0–1 waveform"
       : normalized
         ? options.normalization === "session" ? "0–1 whole run" : `0–1 / ${options.windowSeconds}s`
@@ -3510,23 +3782,29 @@
     elements["visual-current"].classList.toggle("stacked-value", Boolean(definition?.channels || composite));
     elements["signal-canvas"].setAttribute(
       "aria-label",
-      breathingTrail
+      composite
+        ? "Time-aligned comparison of independent Bluetooth sources on a shared host-monotonic time axis"
+        : breathingTrail
         ? app.selectedVisual === "vernier_breathing"
           ? "Live Vernier respiration-belt waveform from 0 to 1. The newest sample is a moving dot and recent samples form a leftward trail; increasing belt force and inhalation move upward."
           : "Preliminary one-dimensional ACC breathing waveform. The newest sample is a moving dot and recent samples form a leftward trail; rising follows the configured inhale direction."
-        : composite
-          ? "Time-aligned comparison of independent Bluetooth sources on a shared host-monotonic time axis"
-          : definition?.channels
+        : definition?.channels
           ? "Live raw accelerometer X, Y, and Z signals in three stacked plots"
           : `Live ${definition?.label || "selected Polar H10"} signal`,
     );
-    if (!breathingTrail) {
+    if (!breathingTrail && !composite) {
       delete elements["signal-canvas"].dataset.visualMode;
       delete elements["signal-canvas"].dataset.breathDirection;
       delete elements["signal-canvas"].dataset.latestY01;
       delete elements["signal-canvas"].dataset.trailPoints;
     }
-    const legendItems = definition?.legend || definition?.channels || (definition ? [{
+    const primarySource = app.activeSources.get(app.selectedSourceId);
+    const comparisonSource = app.activeSources.get(app.comparisonSourceId);
+    const legendItems = composite ? [primarySource, comparisonSource].filter(Boolean).map((source) => ({
+      label: `${source.label} · ${source.deviceName || source.inputKind}`,
+      color: sourceColors(source).primary,
+      secondary: sourceColors(source).secondary,
+    })) : definition?.legend || definition?.channels || (definition ? [{
       label: breathingTrail ? `${definition.label} · dot = latest` : definition.label,
       color: selectedSourceColor(definition.color),
     }] : []);
@@ -3536,6 +3814,7 @@
       const line = document.createElement("i");
       line.className = "legend-line";
       line.style.background = item.color || "#87958d";
+      if (item.secondary) line.style.background = `linear-gradient(90deg, ${item.color}, ${item.secondary})`;
       const label = document.createElement("strong");
       label.textContent = item.label;
       legend.append(line, label);
@@ -3722,7 +4001,7 @@
     }
 
     const options = metricOptionFor(optionIdForVisual(app.selectedVisual));
-    if (definition.composite) {
+    if (app.comparisonSourceId) {
       drawCompositeSignal(context, canvas, definition, options);
       return;
     }
@@ -3860,6 +4139,15 @@
     return `rgba(${Number.parseInt(match[1], 16)}, ${Number.parseInt(match[2], 16)}, ${Number.parseInt(match[3], 16)}, ${alpha})`;
   }
 
+  function mixHexColors(first, second) {
+    const parse = (color) => /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(color || "");
+    const a = parse(first);
+    const b = parse(second);
+    if (!a || !b) return first || second || "#87958d";
+    const channels = [1, 2, 3].map((index) => Math.round((parseInt(a[index], 16) + parseInt(b[index], 16)) / 2));
+    return `#${channels.map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+  }
+
   function drawBreathingTrail(context, canvas, buffer, definition, options) {
     const temporal = temporalWindow(buffer, options.displayWindowSeconds);
     const presentationState = breathingPresentation.get(app.selectedSourceId);
@@ -3904,7 +4192,9 @@
     const padY = Math.max(Math.round(height * 0.10), Math.round(24 * pixelRatio));
     const drawWidth = width - padLeft - padRight;
     const drawHeight = height - padY * 2;
-    const sourceColor = selectedSourceColor(definition.color);
+    const activeSourceColors = sourceColors(app.activeSources.get(app.selectedSourceId));
+    const sourceColor = activeSourceColors.primary || selectedSourceColor(definition.color);
+    const sourceSecondary = activeSourceColors.secondary || sourceColor;
     const point = (sample) => {
       const value = Math.max(0, Math.min(1, Number(sample.value) || 0));
       return {
@@ -3957,7 +4247,7 @@
     const trailGradient = context.createLinearGradient(padLeft, 0, width - padRight, 0);
     trailGradient.addColorStop(0, colorWithAlpha(sourceColor, 0.10));
     trailGradient.addColorStop(0.32, colorWithAlpha(sourceColor, 0.40));
-    trailGradient.addColorStop(1, sourceColor);
+    trailGradient.addColorStop(1, sourceSecondary);
     context.strokeStyle = trailGradient;
     context.lineWidth = Math.max(2, pixelRatio * 1.5);
     context.stroke();
@@ -3966,17 +4256,17 @@
       latestPoint.x, latestPoint.y, 0,
       latestPoint.x, latestPoint.y, 13 * pixelRatio,
     );
-    glow.addColorStop(0, colorWithAlpha(sourceColor, 0.55));
-    glow.addColorStop(1, colorWithAlpha(sourceColor, 0));
+    glow.addColorStop(0, colorWithAlpha(sourceSecondary, 0.55));
+    glow.addColorStop(1, colorWithAlpha(sourceSecondary, 0));
     context.beginPath();
     context.arc(latestPoint.x, latestPoint.y, 13 * pixelRatio, 0, Math.PI * 2);
     context.fillStyle = glow;
     context.fill();
     context.beginPath();
     context.arc(latestPoint.x, latestPoint.y, 5.5 * pixelRatio, 0, Math.PI * 2);
-    context.fillStyle = "#fbfcfa";
+    context.fillStyle = currentTheme() === "dark" ? "#121613" : "#fbfcfa";
     context.fill();
-    context.strokeStyle = sourceColor;
+    context.strokeStyle = sourceSecondary;
     context.lineWidth = Math.max(2, pixelRatio * 1.7);
     context.stroke();
 
@@ -3989,11 +4279,14 @@
   }
 
   function drawStackedSignal(context, canvas, definition, options) {
+    const activeColors = sourceColors(app.activeSources.get(app.selectedSourceId));
+    const axisColors = [activeColors.primary, activeColors.secondary, mixHexColors(activeColors.primary, activeColors.secondary)];
     const commonEnd = Math.max(...definition.channels.map((channel) => (
       Number(buffers[channel.buffer]?.latestTimestamp()) || 0
     )));
-    const series = definition.channels.map((channel) => ({
+    const series = definition.channels.map((channel, index) => ({
       ...channel,
+      color: axisColors[index] || channel.color,
       buffer: buffers[channel.buffer],
       temporal: temporalWindow(buffers[channel.buffer], options.displayWindowSeconds, commonEnd),
     })).map((channel) => ({
@@ -4060,7 +4353,7 @@
         max += padding;
       }
 
-      context.fillStyle = "#85928a";
+      context.fillStyle = canvasTextColor();
       context.font = `${Math.round(8 * pixelRatio)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
       context.textAlign = "right";
       context.fillText(shortAxis(max), padLeft - Math.round(6 * pixelRatio), laneTop + Math.round(7 * pixelRatio));
@@ -4090,27 +4383,41 @@
   }
 
   function drawCompositeSignal(context, canvas, definition, options) {
-    const polarSource = activeSourceForProfile("polar");
-    const vernierSource = activeSourceForProfile("vernier");
-    const polarBuffers = polarSource ? buffersForSource(polarSource.id) : null;
-    const vernierBuffers = vernierSource ? buffersForSource(vernierSource.id) : null;
-    const polarColor = polarSource?.color || "#ffb000";
-    const vernierColor = vernierSource?.color || "#00c2ff";
-    const lanes = definition.composite === "breathing-overlay"
-      ? [{
-          label: "RELATIVE BREATHING · 0–1",
-          fixedRange: [0, 1],
+    const primarySource = app.activeSources.get(app.selectedSourceId);
+    const comparisonSource = app.activeSources.get(app.comparisonSourceId);
+    const comparisonVisualId = comparisonVisualIdForSource(comparisonSource, definition);
+    const primaryBuffers = primarySource ? buffersForSource(primarySource.id) : null;
+    const comparisonBuffers = comparisonSource ? buffersForSource(comparisonSource.id) : null;
+    if (!primarySource || !comparisonSource || !comparisonVisualId) {
+      app.comparisonSourceId = null;
+      rebuildComparisonOptions();
+      updateVisualLabels();
+      return;
+    }
+    const primaryColors = sourceColors(primarySource);
+    const comparisonColors = sourceColors(comparisonSource);
+    const axisColor = (colors, index) => index === 0
+      ? colors.primary : index === 1 ? colors.secondary : mixHexColors(colors.primary, colors.secondary);
+    const lanes = app.selectedVisual === "raw_acc"
+      ? ["X", "Y", "Z"].map((label, index) => ({
+          label: `${label} · mg`,
+          symmetric: true,
           series: [
-            { label: "Belt", color: vernierColor, buffer: vernierBuffers?.vernier_breathing },
-            { label: "ACC", color: polarColor, buffer: polarBuffers?.breathing_volume },
+            { label: primarySource.label, color: axisColor(primaryColors, index), buffer: primaryBuffers?.[`acc_${label.toLowerCase()}`] },
+            { label: comparisonSource.label, color: axisColor(comparisonColors, index), buffer: comparisonBuffers?.[`acc_${label.toLowerCase()}`] },
           ],
-        }]
-      : [
-          { label: "BELT FORCE · N", series: [{ label: "Force", color: vernierColor, buffer: vernierBuffers?.raw_force }] },
-          { label: "POLAR ACC X · mg", symmetric: true, series: [{ label: "X", color: "#3b78aa", buffer: polarBuffers?.acc_x }] },
-          { label: "POLAR ACC Y · mg", symmetric: true, series: [{ label: "Y", color: "#168259", buffer: polarBuffers?.acc_y }] },
-          { label: "POLAR ACC Z · mg", symmetric: true, series: [{ label: "Z", color: "#a66d19", buffer: polarBuffers?.acc_z }] },
-        ];
+        }))
+      : [{
+          label: definition.comparisonKey === "breathing_waveform_01"
+            ? "RELATIVE BREATHING · 0–1"
+            : `${definition.label.toUpperCase()} · ${definition.unit}`,
+          ...(definition.comparisonKey === "breathing_waveform_01" ? { fixedRange: [0, 1] } : {}),
+          symmetric: definition.symmetric,
+          series: [
+            { label: primarySource.label, color: primaryColors.primary, secondary: primaryColors.secondary, buffer: primaryBuffers?.[app.selectedVisual] },
+            { label: comparisonSource.label, color: comparisonColors.primary, secondary: comparisonColors.secondary, buffer: comparisonBuffers?.[comparisonVisualId] },
+          ],
+        }];
     const allSeries = lanes.flatMap((lane) => lane.series).filter((series) => series.buffer);
     const commonEnd = Math.max(0, ...allSeries.map((series) => Number(series.buffer.latestTimestamp()) || 0));
     const seconds = options.displayWindowSeconds;
@@ -4120,9 +4427,9 @@
     }
     const hasData = allSeries.some((series) => series.temporal.count > 1);
     elements["chart-empty"].hidden = hasData;
-    elements["visual-current"].textContent = definition.composite === "breathing-overlay"
-      ? `Belt ${formatValue(vernierBuffers?.vernier_breathing?.latest(), 3)} · ACC ${formatValue(polarBuffers?.breathing_volume?.latest(), 3)}`
-      : `Force ${formatValue(vernierBuffers?.raw_force?.latest(), 2)} N · ACC ${formatValue(polarBuffers?.acc_x?.latest(), 0)} / ${formatValue(polarBuffers?.acc_y?.latest(), 0)} / ${formatValue(polarBuffers?.acc_z?.latest(), 0)} mg`;
+    elements["visual-current"].textContent = app.selectedVisual === "raw_acc"
+      ? `${primarySource.label} ${formatValue(primaryBuffers?.acc_x?.latest(), 0)} / ${formatValue(primaryBuffers?.acc_y?.latest(), 0)} / ${formatValue(primaryBuffers?.acc_z?.latest(), 0)} · ${comparisonSource.label} ${formatValue(comparisonBuffers?.acc_x?.latest(), 0)} / ${formatValue(comparisonBuffers?.acc_y?.latest(), 0)} / ${formatValue(comparisonBuffers?.acc_z?.latest(), 0)}`
+      : `${primarySource.label} ${formatValue(primaryBuffers?.[app.selectedVisual]?.latest(), 3)} · ${comparisonSource.label} ${formatValue(comparisonBuffers?.[comparisonVisualId]?.latest(), 3)}`;
     elements["y-max"].textContent = "";
     elements["y-min"].textContent = "";
 
@@ -4130,7 +4437,7 @@
     const height = canvas.height;
     context.clearRect(0, 0, width, height);
     canvas.dataset.visualMode = "time-aligned-comparison";
-    canvas.dataset.composite = definition.composite;
+    canvas.dataset.composite = definition.comparisonKey || app.selectedVisual;
     if (!hasData) return;
 
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
@@ -4173,11 +4480,11 @@
         context.lineWidth = Math.max(1, pixelRatio * 0.6);
         context.stroke();
       }
-      context.fillStyle = "#52645a";
+      context.fillStyle = canvasTextColor(true);
       context.font = `700 ${Math.round(8 * pixelRatio)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
       context.textAlign = "left";
       context.fillText(lane.label, Math.round(8 * pixelRatio), laneTop + laneHeight / 2);
-      context.fillStyle = "#85928a";
+      context.fillStyle = canvasTextColor();
       context.textAlign = "right";
       context.fillText(shortAxis(max), padLeft - Math.round(7 * pixelRatio), laneTop + Math.round(7 * pixelRatio));
       context.fillText(shortAxis(min), padLeft - Math.round(7 * pixelRatio), laneBottom - Math.round(7 * pixelRatio));
@@ -4192,12 +4499,28 @@
           if (!pathStarted || point.gapBefore) context.moveTo(x, y); else context.lineTo(x, y);
           pathStarted = true;
         }
-        context.strokeStyle = series.color;
+        if (series.secondary) {
+          const gradient = context.createLinearGradient(padLeft, 0, width - padRight, 0);
+          gradient.addColorStop(0, colorWithAlpha(series.color, 0.25));
+          gradient.addColorStop(1, series.secondary);
+          context.strokeStyle = gradient;
+        } else {
+          context.strokeStyle = series.color;
+        }
         context.lineWidth = Math.max(1.5, pixelRatio);
         context.stroke();
+        if (series.secondary) {
+          const latest = series.points[series.points.length - 1];
+          const x = padLeft + ((latest.timestamp - (commonEnd - seconds)) / seconds) * drawWidth;
+          const y = laneTop + (1 - (latest.value - min) / range) * laneHeight;
+          context.beginPath();
+          context.arc(x, y, Math.max(2.5, 2 * pixelRatio), 0, Math.PI * 2);
+          context.fillStyle = series.secondary;
+          context.fill();
+        }
       }
     });
-    context.fillStyle = "#85928a";
+    context.fillStyle = canvasTextColor();
     context.font = `${Math.round(8 * pixelRatio)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
     context.textAlign = "left";
     context.fillText(`−${Number(seconds).toFixed(seconds < 10 ? 1 : 0)} s`, padLeft, height - Math.round(8 * pixelRatio));
@@ -4324,7 +4647,10 @@
     }
     handleNativeEvent({
       kind: "connection",
-      source: { id: "source-1", slot: "source-1", label: "Source 1", color: "#00c2ff", inputKind: "polarH10" },
+      source: sourceWithPalette(
+        { id: "source-1", slot: "source-1", label: "Source 1", inputKind: "polarH10" },
+        paletteById("ocean"),
+      ),
       connected: true,
       streaming: true,
       simulated: true,
@@ -4337,8 +4663,16 @@
   async function renderInterfaceScenario(name) {
     ensureRendererPolarSource();
     if (name === "multiple-colored-sources") {
-      const polarSource = { id: "source-1", slot: "source-1", label: "Source 1", color: "#00c2ff", inputKind: "polarH10" };
-      const vernierSource = { id: "source-2", slot: "source-2", label: "Source 2", color: "#ffb000", inputKind: "vernierGoDirect" };
+      app.outputs = new Set(["raw_ecg", "raw_acc", "raw_force"]);
+      app.comparisonSourceId = null;
+      const polarSource = sourceWithPalette(
+        { id: "source-1", slot: "source-1", label: "Source 1", inputKind: "polarH10" },
+        paletteById("ocean"),
+      );
+      const vernierSource = sourceWithPalette(
+        { id: "source-2", slot: "source-2", label: "Source 2", inputKind: "vernierGoDirect" },
+        paletteById("sunset"),
+      );
       handleNativeEvent({
         kind: "connection", source: polarSource, connected: true, streaming: true,
         deviceName: "Polar H10 A", batteryPercent: 88, message: "Raw ECG and accelerometer are streaming",
@@ -4389,7 +4723,7 @@
           hasKeepConnected: Boolean(widget.querySelector(".device-widget-toggle")),
           keepConnected: widget.querySelector(".device-widget-toggle input")?.checked ?? null,
         })),
-        colorPickerCount: elements["connected-device-list"].querySelectorAll('input[type="color"]').length,
+        palettePickerCount: elements["connected-device-list"].querySelectorAll(".device-color-button select").length,
         availableDeviceCount: elements["device-list"].querySelectorAll(".device-row").length,
         chartColor: elements["chart-shell"].style.getPropertyValue("--source-color"),
         outputColors: [...elements["output-chips"].children].map((card) => card.style.getPropertyValue("--source-color")),
@@ -4397,6 +4731,8 @@
         breathingValue: elements["vernier-breathing-value"].textContent,
         selectedVisual: app.selectedVisual,
         visualOptions: [...elements["visual-source"].options].map((option) => option.value),
+        comparisonOptions: [...elements["visual-compare-source"].options].map((option) => option.value),
+        comparisonHidden: elements["visual-compare-source"].hidden,
         deviceProfile: document.body.dataset.deviceProfile,
         deviceProfileTitle: elements["device-profile-title"].textContent,
         rawCardVisibility: {
@@ -4455,20 +4791,43 @@
         values: forceValues,
         breathingValues: forceValues.map((value) => normalizeVernierForce(value, 2.6, 3.6)),
       });
-      selectSource("source-2");
-      app.selectedVisual = "compare_force_acc";
+      const polarBreathing = buffersForSource("source-1").breathing_volume
+        || (buffersForSource("source-1").breathing_volume = createTemporalBuffer("breathing_volume"));
+      polarBreathing.pushMany(
+        Array.from({ length: 400 }, (_, index) => 0.5 + Math.sin(index / 28) * 0.32),
+        { mappedHostTimestampNs: String(commonNewestNs), samplePeriodNs: "50000000", gapBefore: false },
+      );
+      app.outputs.add("breathing_volume");
+      selectSource("source-1");
+      app.selectedVisual = "breathing_volume";
       rebuildVisualOptions();
       elements["visual-source"].value = app.selectedVisual;
+      app.comparisonSourceId = "source-2";
+      rebuildComparisonOptions();
+      elements["visual-compare-source"].value = app.comparisonSourceId;
       updateVisualLabels();
       resizeCanvas();
       drawSignal();
       await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
       resizeCanvas();
       drawSignal();
+      const breathingComparisonOptions = [...elements["visual-compare-source"].options].map((option) => option.value);
+      const incompatibleComparisonOptions = {};
+      for (const visualId of ["raw_ecg", "raw_acc"]) {
+        app.selectedVisual = visualId;
+        rebuildComparisonOptions();
+        incompatibleComparisonOptions[visualId] = [...elements["visual-compare-source"].options].map((option) => option.value);
+      }
+      app.selectedVisual = "breathing_volume";
+      app.comparisonSourceId = "source-2";
+      rebuildComparisonOptions();
+      updateVisualLabels();
       return {
         scenario: name,
         selectedVisual: app.selectedVisual,
         visualOptions: [...elements["visual-source"].options].map((option) => option.value),
+        comparisonOptions: breathingComparisonOptions,
+        incompatibleComparisonOptions,
         visualMode: elements["signal-canvas"].dataset.visualMode,
         composite: elements["signal-canvas"].dataset.composite,
         currentLabel: elements["visual-current"].textContent,
@@ -4476,6 +4835,16 @@
         chartClass: elements["chart-shell"].className,
         legendLabels: [...elements["visual-legend"].querySelectorAll(".legend-item")].map((item) => item.textContent.trim()),
       };
+    }
+    if (name === "acc-primary-library") {
+      selectSource("source-1");
+      app.metricFamily = "acc";
+      app.accLibraryExtra = false;
+      const primaryIds = libraryCatalog().map((metric) => metric.id);
+      app.accLibraryExtra = true;
+      const extraIds = libraryCatalog().map((metric) => metric.id);
+      app.accLibraryExtra = false;
+      return { scenario: name, primaryIds, extraIds };
     }
     if (name === "metric-library-previews") {
       if (app.activeSources.has("source-1")) selectSource("source-1");
@@ -4616,6 +4985,7 @@
         "raw-accelerometer-stacked",
         "multiple-colored-sources",
         "multi-source-comparison",
+        "acc-primary-library",
         "metric-library-previews",
       ]),
       ready: () => initialization,

@@ -7,6 +7,7 @@
     lastDevice: null,
     outputConfig: null,
     keepVernierAwake: true,
+    devicePalettes: {},
   });
 
   function load() {
@@ -24,7 +25,12 @@
         ? structuredClone(stored.outputConfig)
         : null;
       const keepVernierAwake = stored?.keepVernierAwake !== false;
-      return { streamName, lastDevice, outputConfig, keepVernierAwake };
+      const devicePalettes = stored?.devicePalettes && typeof stored.devicePalettes === "object"
+        ? Object.fromEntries(Object.entries(stored.devicePalettes).filter(([deviceId, paletteId]) => (
+            typeof deviceId === "string" && deviceId && typeof paletteId === "string" && paletteId
+          )))
+        : {};
+      return { streamName, lastDevice, outputConfig, keepVernierAwake, devicePalettes };
     } catch (_error) {
       return { ...defaults };
     }
@@ -51,11 +57,21 @@
     return write({ ...load(), keepVernierAwake: keepVernierAwake === true });
   }
 
+  function saveDevicePalette(deviceId, paletteId) {
+    if (typeof deviceId !== "string" || !deviceId || typeof paletteId !== "string" || !paletteId) return load();
+    const current = load();
+    return write({
+      ...current,
+      devicePalettes: { ...current.devicePalettes, [deviceId]: paletteId },
+    });
+  }
+
   window.PolarPreferences = Object.freeze({
     STORAGE_KEY,
     load,
     saveLastDevice,
     saveOutputConfig,
     saveKeepVernierAwake,
+    saveDevicePalette,
   });
 })();

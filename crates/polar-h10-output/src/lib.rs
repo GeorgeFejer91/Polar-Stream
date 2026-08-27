@@ -23,8 +23,9 @@ use std::{
 pub use config::{
     BreathingPresentationMode, BreathingPresentationSettings, CustomFormulaConfig, FormulaHealth,
     FormulaSource, MetricOutputOptions, MetricPresentationOptions, MetricProcessingOptions,
-    MetricSpec, NormalizationMode, OutputConfig, OutputHealth, custom_output_stream_name,
-    normalize_stream_base, output_stream_name,
+    MetricSpec, NormalizationMode, OutputConfig, OutputHealth, SourcePalette, SourcePaletteColors,
+    custom_output_stream_name, normalize_stream_base, output_stream_name, source_palette,
+    source_palette_catalog,
 };
 use csv::CsvPublisher;
 #[cfg(feature = "liblsl-backend")]
@@ -513,7 +514,11 @@ impl OutputRouter {
                     .map_err(|_| "Output router lock failed")?
                     .csv_directory
                     .clone();
-                Some(CsvPublisher::start(&directory, &config.stream_name)?)
+                Some(CsvPublisher::start(
+                    &directory,
+                    &config.stream_name,
+                    config.source_palette.as_ref(),
+                )?)
             } else {
                 None
             }
@@ -1066,7 +1071,11 @@ impl RouterInner {
         }
         for id in &self.config.outputs {
             if let Some(spec) = MetricSpec::for_id(id) {
-                self.lsl.add_outlet(&self.config.stream_name, spec);
+                self.lsl.add_outlet_with_palette(
+                    &self.config.stream_name,
+                    spec,
+                    self.config.source_palette.as_ref(),
+                );
             }
         }
         for formula in self
@@ -1075,13 +1084,19 @@ impl RouterInner {
             .iter()
             .filter(|formula| formula.enabled)
         {
-            self.lsl
-                .add_custom_outlet(&self.config.stream_name, formula);
+            self.lsl.add_custom_outlet_with_palette(
+                &self.config.stream_name,
+                formula,
+                self.config.source_palette.as_ref(),
+            );
         }
         #[cfg(feature = "liblsl-backend")]
         if let Some(schema) = &self.vernier_schema {
-            self.lsl
-                .add_vernier_outlets(&self.config.stream_name, schema);
+            self.lsl.add_vernier_outlets(
+                &self.config.stream_name,
+                schema,
+                self.config.source_palette.as_ref(),
+            );
         }
     }
 

@@ -1,5 +1,41 @@
 # Decision log
 
+## 2026-08-27 — Make breathing comparison opt-in and source identity a two-color contract
+
+This supersedes the 2026-08-26 automatic mixed force+ACC comparison presets and
+the earlier fixed single-color source-slot presentation. Keep every existing
+metric ID, processor, stream suffix, and saved configuration compatible, but
+show only raw X/Y/Z, 3D motion magnitude, and the normalized
+`breathing_volume` waveform as primary ACC choices. Label that compatibility ID
+**ACC breathing magnitude (0–1)** and place the signed
+`acc_breathing_magnitude` projection, phase, readiness, confidence,
+calibration, range, rate, and dynamics under **Extra options**.
+
+An active visualizer may add at most one other active, compatible source. Match
+raw ECG to raw ECG, raw ACC to raw ACC, motion magnitude to motion magnitude,
+and Polar `breathing_volume` to Vernier `vernier_breathing` through the shared
+`breathing_waveform_01` key. Exact specialist/custom outputs additionally
+require matching family, output/formula identity, and unit. Adding a comparator
+never enables a processor or publisher. Draw independent bounded buffers and
+gap evidence against mapped host-monotonic time; normalized breathing uses one
+fixed shared 0–1 scale.
+
+Assign each active source one of eight canonical `SourcePalette` IDs, each with
+light and dark primary/secondary colors. Remember the pair by local device
+identity, resolve active conflicts deterministically, keep the former `color`
+field as the light-primary alias, and carry the complete pair through UI,
+browser events, LSL metadata, native CSV schema 3, and browser recording schema
+3. A connected palette change is an output boundary: gate affected LSL/CSV
+destinations, preserve acquisition/display, apply the palette, and restart only
+previously active destinations. A failed gate retains the old palette; a failed
+restart retains the new palette, leaves the affected destination off, and
+reports degraded state.
+
+Use semantic light/dark tokens throughout the shared UI. First launch follows
+the OS; an explicit accessible sun/moon choice persists and is applied before
+CSS/first paint. Theme changes redraw canvases and update browser chrome but do
+not restart output because every exported palette contains both variants.
+
 ## 2026-08-27 — Let linuxdeploy resolve the isolated LabRecorder runtime
 
 The Linux package keeps LabRecorder and its pinned Qt/liblsl dependencies under

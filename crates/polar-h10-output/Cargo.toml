@@ -20,6 +20,7 @@ polar-h10-math = { path = "../polar-h10-math" }
 polar-h10-metrics = { path = "../polar-h10-metrics" }
 rusty-lsl = { git = "https://github.com/MesmerPrism/rusty-lsl", rev = "8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd", optional = true }
 serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 vernier-gdx-core = { path = "../vernier-gdx-core" }
 

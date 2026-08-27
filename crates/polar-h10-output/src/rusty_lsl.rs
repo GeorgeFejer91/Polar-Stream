@@ -27,7 +27,9 @@ use rusty_lsl::{
     XmlTextLimit, admit_runtime_activation, persistent_float32_local_clock,
 };
 
-use crate::{CustomFormulaConfig, MetricSpec, custom_output_stream_name, output_stream_name};
+use crate::{
+    CustomFormulaConfig, MetricSpec, SourcePalette, custom_output_stream_name, output_stream_name,
+};
 
 const RUSTY_LSL_REVISION: &str = "8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd";
 const ACTIVATION_CONSUMER: &str = "polar-stream-rusty-lsl-optional-backend-v1";
@@ -153,15 +155,25 @@ impl RustyLslPublisher {
         }
     }
 
-    pub(crate) fn add_outlet(&mut self, base_name: &str, spec: MetricSpec) {
-        if let Err(message) = self.try_add_outlet(base_name, spec) {
+    pub(crate) fn add_outlet_with_palette(
+        &mut self,
+        base_name: &str,
+        spec: MetricSpec,
+        palette: Option<&SourcePalette>,
+    ) {
+        if let Err(message) = self.try_add_outlet(base_name, spec, palette) {
             self.initialization_failed = true;
             self.status = message;
         }
     }
 
-    fn try_add_outlet(&mut self, base_name: &str, spec: MetricSpec) -> Result<(), String> {
-        self.try_add_outlet_with_key(base_name, spec, spec.id.to_string())
+    fn try_add_outlet(
+        &mut self,
+        base_name: &str,
+        spec: MetricSpec,
+        palette: Option<&SourcePalette>,
+    ) -> Result<(), String> {
+        self.try_add_outlet_with_key_and_palette(base_name, spec, spec.id.to_string(), palette)
     }
 
     pub(crate) fn try_add_outlet_with_key(
@@ -169,6 +181,16 @@ impl RustyLslPublisher {
         base_name: &str,
         spec: MetricSpec,
         outlet_key: String,
+    ) -> Result<(), String> {
+        self.try_add_outlet_with_key_and_palette(base_name, spec, outlet_key, None)
+    }
+
+    fn try_add_outlet_with_key_and_palette(
+        &mut self,
+        base_name: &str,
+        spec: MetricSpec,
+        outlet_key: String,
+        palette: Option<&SourcePalette>,
     ) -> Result<(), String> {
         let output_name = output_stream_name(base_name, spec.id)
             .ok_or_else(|| format!("Unknown output module: {}", spec.id))?;
@@ -183,11 +205,16 @@ impl RustyLslPublisher {
             spec.stream_type.into(),
             spec.rate_hz,
             channels,
-            || stream_metadata(spec),
+            || stream_metadata(spec, palette),
         )
     }
 
-    pub(crate) fn add_custom_outlet(&mut self, base_name: &str, formula: &CustomFormulaConfig) {
+    pub(crate) fn add_custom_outlet_with_palette(
+        &mut self,
+        base_name: &str,
+        formula: &CustomFormulaConfig,
+        palette: Option<&SourcePalette>,
+    ) {
         let result = self.try_add_stream(
             custom_output_stream_name(base_name, formula),
             format!("polar-h10-formula-{}", formula.id),
@@ -195,7 +222,7 @@ impl RustyLslPublisher {
             formula.source.stream_type().into(),
             formula.source.rate_hz(),
             1,
-            || custom_stream_metadata(formula),
+            || custom_stream_metadata(formula, palette),
         );
         if let Err(message) = result {
             self.initialization_failed = true;
@@ -795,7 +822,10 @@ fn stream_info_limits() -> PersistentFloat32StreamInfoLimits {
     )
 }
 
-fn stream_metadata(spec: MetricSpec) -> Result<MetadataTree, String> {
+fn stream_metadata(
+    spec: MetricSpec,
+    palette: Option<&SourcePalette>,
+) -> Result<MetadataTree, String> {
     let (manufacturer, model) = if spec.id == "raw_force" {
         ("Vernier", "Go Direct")
     } else {
@@ -838,6 +868,7 @@ fn stream_metadata(spec: MetricSpec) -> Result<MetadataTree, String> {
             Some(spec.stream_type.into()),
         ));
     }
+    append_palette_nodes(&mut nodes, palette);
     MetadataTree::new(
         MetadataTreeLimits::new(96, 8, 64, 64, 1024).expect("static metadata limits must be valid"),
         nodes,
@@ -845,8 +876,11 @@ fn stream_metadata(spec: MetricSpec) -> Result<MetadataTree, String> {
     .map_err(|error| format!("Rusty LSL metadata rejected: {error:?}"))
 }
 
-fn custom_stream_metadata(formula: &CustomFormulaConfig) -> Result<MetadataTree, String> {
-    let nodes = vec![
+fn custom_stream_metadata(
+    formula: &CustomFormulaConfig,
+    palette: Option<&SourcePalette>,
+) -> Result<MetadataTree, String> {
+    let mut nodes = vec![
         MetadataNodeInput::new(None, "desc".into(), None),
         MetadataNodeInput::new(Some(0), "manufacturer".into(), Some("Polar".into())),
         MetadataNodeInput::new(Some(0), "model".into(), Some("H10".into())),
@@ -869,12 +903,30 @@ fn custom_stream_metadata(formula: &CustomFormulaConfig) -> Result<MetadataTree,
         ),
         MetadataNodeInput::new(Some(9), "formula_id".into(), Some(formula.id.clone())),
     ];
+    append_palette_nodes(&mut nodes, palette);
     MetadataTree::new(
         MetadataTreeLimits::new(96, 8, 64, 64, 4096)
             .expect("static formula metadata limits must be valid"),
         nodes,
     )
     .map_err(|error| format!("Rusty LSL formula metadata rejected: {error:?}"))
+}
+
+fn append_palette_nodes(nodes: &mut Vec<MetadataNodeInput>, palette: Option<&SourcePalette>) {
+    let Some(palette) = palette else { return };
+    let parent = nodes.len();
+    nodes.push(MetadataNodeInput::new(
+        Some(0),
+        "source_palette".into(),
+        None,
+    ));
+    for (name, value) in palette.metadata_fields() {
+        nodes.push(MetadataNodeInput::new(
+            Some(parent),
+            name.into(),
+            Some(value.into()),
+        ));
+    }
 }
 
 fn channel_labels(spec: MetricSpec) -> Vec<&'static str> {
@@ -1036,8 +1088,16 @@ mod tests {
     fn polar_shapes_enter_two_bounded_outlets_without_browser_or_device_input() {
         let discovery = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let mut publisher = RustyLslPublisher::new_prebound_for_test(discovery);
-        publisher.add_outlet("participant_07", MetricSpec::for_id("raw_ecg").unwrap());
-        publisher.add_outlet("participant_07", MetricSpec::for_id("raw_acc").unwrap());
+        publisher.add_outlet_with_palette(
+            "participant_07",
+            MetricSpec::for_id("raw_ecg").unwrap(),
+            None,
+        );
+        publisher.add_outlet_with_palette(
+            "participant_07",
+            MetricSpec::for_id("raw_acc").unwrap(),
+            None,
+        );
 
         assert_ne!(
             publisher.test_endpoint("raw_ecg"),
@@ -1134,7 +1194,7 @@ mod tests {
             enabled: true,
         };
 
-        publisher.add_custom_outlet("participant_07", &formula);
+        publisher.add_custom_outlet_with_palette("participant_07", &formula, None);
         assert!(publisher.test_endpoint(&formula.id).is_some());
         publisher.push_scalar(&formula.id, 42.0);
         let health = publisher.test_outlet_health(&formula.id).unwrap();

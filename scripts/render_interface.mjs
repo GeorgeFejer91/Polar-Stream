@@ -83,8 +83,7 @@ function colorDistance(actual, expected) {
   return Math.hypot(...actual.map((channel, index) => channel - expected[index]));
 }
 
-async function inspectStackedCanvas(page) {
-  const colors = [[59, 120, 170], [22, 130, 89], [166, 109, 25]];
+async function inspectStackedCanvas(page, colors = [[23, 107, 158], [42, 168, 184], [33, 138, 171]]) {
   return page.locator("#signal-canvas").evaluate((canvas, expectedColors) => {
     const context = canvas.getContext("2d");
     const { data, width } = context.getImageData(0, 0, canvas.width, canvas.height);
@@ -98,7 +97,7 @@ async function inspectStackedCanvas(page) {
           data[index + 1] - expected[1],
           data[index + 2] - expected[2],
         );
-        if (distance >= 42) continue;
+        if (distance >= 24) continue;
         count += 1;
         yTotal += Math.floor(index / 4 / width);
       }
@@ -227,20 +226,22 @@ try {
 
   const multipleSources = await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
   assert.deepEqual(multipleSources.sourceOptions, ["source-1", "source-2"]);
-  assert.deepEqual(multipleSources.chipColors, ["#00c2ff", "#ffb000"]);
+  assert.deepEqual(multipleSources.chipColors, ["#176B9E", "#B83E35"]);
   assert.deepEqual(multipleSources.connectedWidgets, [
-    { sourceId: "source-1", profile: "polar", color: "#00c2ff", hasKeepConnected: false, keepConnected: null },
-    { sourceId: "source-2", profile: "vernier", color: "#ffb000", hasKeepConnected: true, keepConnected: true },
+    { sourceId: "source-1", profile: "polar", color: "#176B9E", hasKeepConnected: false, keepConnected: null },
+    { sourceId: "source-2", profile: "vernier", color: "#B83E35", hasKeepConnected: true, keepConnected: true },
   ]);
-  assert.equal(multipleSources.colorPickerCount, 2);
+  assert.equal(multipleSources.palettePickerCount, 2);
   assert.ok(multipleSources.availableDeviceCount >= 1, "available devices disappeared after sources connected");
   assert.equal(multipleSources.selectedSource, "source-2");
-  assert.equal(multipleSources.chartColor, "#ffb000");
-  assert.ok(multipleSources.outputColors.every((color) => color === "#ffb000"));
+  assert.equal(multipleSources.chartColor, "#B83E35");
+  assert.ok(multipleSources.outputColors.every((color) => color === "#B83E35"));
   assert.notEqual(multipleSources.forceValue, "—");
   assert.match(multipleSources.breathingValue, /^(?:0\.\d{3}|1\.000)$/);
   assert.equal(multipleSources.selectedVisual, "vernier_breathing");
-  assert.deepEqual(multipleSources.visualOptions, ["raw_force", "vernier_breathing", "compare_force_acc", "compare_breathing"]);
+  assert.deepEqual(multipleSources.visualOptions, ["raw_force", "vernier_breathing"]);
+  assert.deepEqual(multipleSources.comparisonOptions, [""]);
+  assert.equal(multipleSources.comparisonHidden, true, "comparison control appeared without an active compatible signal");
   assert.equal(multipleSources.deviceProfile, "vernier");
   assert.match(multipleSources.deviceProfileTitle, /respiration belt/i);
   assert.deepEqual(multipleSources.rawCardVisibility, { ecg: false, acc: false, force: true, breathing: true });
@@ -256,8 +257,7 @@ try {
   assert.equal(multipleSources.polarSwitch.deviceProfile, "polar");
   assert.ok(multipleSources.polarSwitch.visualOptions.includes("raw_ecg"));
   assert.ok(multipleSources.polarSwitch.visualOptions.includes("raw_acc"));
-  assert.ok(multipleSources.polarSwitch.visualOptions.includes("compare_force_acc"));
-  assert.ok(multipleSources.polarSwitch.visualOptions.includes("compare_breathing"));
+  assert.ok(!multipleSources.polarSwitch.visualOptions.some((id) => id.startsWith("compare_")));
   assert.ok(!multipleSources.polarSwitch.visualOptions.includes("raw_force"));
   assert.ok(!multipleSources.polarSwitch.visualOptions.includes("vernier_breathing"));
   assert.ok(multipleSources.polarSwitch.outputLabels.includes("Raw ECG"));
@@ -265,7 +265,7 @@ try {
   assert.equal(multipleSources.polarSwitch.automaticRawCount, 2);
   assert.ok(!multipleSources.polarSwitch.outputLabels.includes("Raw Go Direct force"));
   assert.deepEqual(multipleSources.polarSwitch.rawCardVisibility, { ecg: true, acc: true, force: false, breathing: false });
-  await page.getByLabel("Color for GDX-RB A").fill("#b392f0");
+  await page.getByLabel("Color pair for GDX-RB A").selectOption("meadow");
   const recolored = await page.evaluate(() => ({
     widget: document.querySelector('[data-source-id="source-2"]').style.getPropertyValue("--source-color"),
     chart: document.querySelector("#chart-shell").style.getPropertyValue("--source-color"),
@@ -273,29 +273,39 @@ try {
     outputPanelMarked: document.querySelector("#output-workspace").classList.contains("source-panel-marked"),
     visualPanelMarked: document.querySelector("#visual-workspace").classList.contains("source-panel-marked"),
   }));
-  assert.equal(recolored.widget, "#b392f0");
-  assert.equal(recolored.chart, "#b392f0");
-  assert.ok(recolored.outputs.every((color) => color === "#b392f0"));
+  assert.equal(recolored.widget, "#4E7B27");
+  assert.equal(recolored.chart, "#4E7B27");
+  assert.ok(recolored.outputs.every((color) => color === "#4E7B27"));
   assert.equal(recolored.outputPanelMarked, true);
   assert.equal(recolored.visualPanelMarked, true);
   await page.screenshot({ path: join(output, "multiple-colored-sources.png"), fullPage: true });
 
   const comparison = await page.evaluate(() => window.PolarInterfaceRenderer.render("multi-source-comparison"));
-  assert.equal(comparison.selectedVisual, "compare_force_acc");
-  assert.ok(comparison.visualOptions.includes("compare_force_acc"));
+  assert.equal(comparison.selectedVisual, "breathing_volume");
+  assert.ok(comparison.visualOptions.includes("breathing_volume"));
+  assert.deepEqual(comparison.comparisonOptions, ["", "source-2"]);
+  assert.deepEqual(comparison.incompatibleComparisonOptions, { raw_ecg: [""], raw_acc: [""] });
   assert.equal(comparison.visualMode, "time-aligned-comparison");
-  assert.equal(comparison.composite, "force-acc");
-  assert.match(comparison.currentLabel, /^Force .* N · ACC .* \/ .* \/ .* mg$/);
+  assert.equal(comparison.composite, "breathing_waveform_01");
+  assert.match(comparison.currentLabel, /^Source 1 0\.\d{3} · Source 2 0\.\d{3}$/);
   assert.match(comparison.canvasLabel, /time-aligned comparison/i);
   assert.match(comparison.chartClass, /stacked-axes/);
-  assert.deepEqual(comparison.legendLabels, ["Belt force · N", "Polar ACC · X\/Y\/Z mg"]);
+  assert.deepEqual(comparison.legendLabels, ["Source 1 · Polar H10 A", "Source 2 · GDX-RB A"]);
   const comparisonCanvas = await inspectCanvas(page);
   assert.ok(comparisonCanvas.width > 500 && comparisonCanvas.height > 150, `time-aligned comparison did not span the canvas: ${JSON.stringify(comparisonCanvas)}`);
-  const comparisonTraces = await inspectStackedCanvas(page);
-  assert.ok(comparisonTraces.every(({ count }) => count > 40), `comparison ACC lanes were not drawn: ${JSON.stringify(comparisonTraces)}`);
   const comparisonScreenshot = join(output, "multi-source-comparison.png");
   await page.screenshot({ path: comparisonScreenshot, fullPage: true });
   assert.ok((await stat(comparisonScreenshot)).size > 20_000, "comparison screenshot was unexpectedly empty");
+
+  const accLibrary = await page.evaluate(() => window.PolarInterfaceRenderer.render("acc-primary-library"));
+  assert.deepEqual(accLibrary.primaryIds, ["raw_acc", "acc_magnitude", "breathing_volume"]);
+  for (const retainedId of [
+    "acc_breathing_magnitude", "breathing_phase", "breathing_signal_ready",
+    "breathing_signal_confidence", "breathing_calibration", "breathing_axis_range",
+    "breathing_rate", "breathing_dynamics_confidence",
+  ]) {
+    assert.ok(accLibrary.extraIds.includes(retainedId), `${retainedId} is missing from Extra options`);
+  }
 
   const library = await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));
   assert.equal(library.dialogOpen, true, "metric library did not open in the renderer");
@@ -330,9 +340,12 @@ try {
   }
   await page.getByRole("button", { name: /ACC metrics/ }).click();
   assert.equal(await page.locator("#output-dialog").getAttribute("data-family"), "acc");
+  const primaryAccIds = await page.locator(".metric-option").evaluateAll((options) => options.map((option) => option.dataset.metricId));
+  assert.deepEqual(primaryAccIds, ["raw_acc", "acc_magnitude", "breathing_volume"]);
+  await page.getByRole("button", { name: "Extra options" }).click();
   const accIds = await page.locator(".metric-option").evaluateAll((options) => options.map((option) => option.dataset.metricId));
-  assert.ok(accIds.length > 20, `complete ACC and breathing catalog was not exposed: ${JSON.stringify(accIds)}`);
-  assert.ok(accIds.includes("raw_acc") && accIds.includes("breathing_phase") && accIds.includes("breath_interval_sampen"));
+  assert.ok(accIds.length > 20, `complete specialist ACC and breathing catalog was not exposed: ${JSON.stringify(accIds)}`);
+  assert.ok(!accIds.includes("raw_acc") && accIds.includes("breathing_phase") && accIds.includes("breath_interval_sampen"));
   assert.match(await page.locator("#metric-library-summary").textContent(), new RegExp(`^${accIds.length} of ${accIds.length} ACC metrics$`));
 
   for (const metricId of ["acc_breathing_magnitude", "breathing_phase", "breath_interval_sampen"]) {
@@ -346,7 +359,36 @@ try {
   await page.screenshot({ path: previewScreenshot, fullPage: true });
   assert.ok((await stat(previewScreenshot)).size > 20_000, "metric library screenshot was unexpectedly empty");
 
-  process.stdout.write(`Validated stacked raw ACC, time-aligned mixed-source comparison, ${targets.length} classifier renders, ${library.previewCount} concise clicked-metric previews with reviewed sources, saved controls, and one explicit live-only Go Direct signal in ${output}\n`);
+  await page.locator("#output-dialog").evaluate((dialog) => dialog.close());
+  await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
+  for (const [theme, expectedColor] of [["light", "#176B9E"], ["dark", "#7CCBFF"]]) {
+    const wantsDark = theme === "dark";
+    const isDark = await page.locator("html").getAttribute("data-theme") === "dark";
+    if (isDark !== wantsDark) await page.locator("#theme-toggle").click();
+    assert.equal(await page.locator("#theme-toggle").getAttribute("aria-pressed"), String(wantsDark));
+    assert.equal(await page.locator("meta[name='theme-color']").getAttribute("content"), wantsDark ? "#202428" : "#17221d");
+    await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
+    await page.evaluate(() => document.querySelector('[data-source-id="source-1"] button').click());
+    assert.equal(await page.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), expectedColor);
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: width === 1440 ? 900 : 780 });
+      const screenshot = join(output, `${theme}-${width}.png`);
+      await page.screenshot({ path: screenshot, fullPage: true });
+      assert.ok((await stat(screenshot)).size > 15_000, `${theme} ${width}px screenshot was unexpectedly empty`);
+    }
+  }
+
+  const firstPaintTheme = await browser.newPage({ viewport: { width: 390, height: 780 }, colorScheme: "dark" });
+  await firstPaintTheme.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  assert.equal(await firstPaintTheme.locator("html").getAttribute("data-theme"), "dark", "OS dark preference was not applied before app initialization");
+  await firstPaintTheme.locator("#theme-toggle").click();
+  assert.equal(await firstPaintTheme.evaluate(() => localStorage.getItem("polar-stream.theme.v1")), "light");
+  await firstPaintTheme.emulateMedia({ colorScheme: "dark" });
+  await firstPaintTheme.reload({ waitUntil: "domcontentloaded" });
+  assert.equal(await firstPaintTheme.locator("html").getAttribute("data-theme"), "light", "explicit theme preference did not override the OS setting");
+  await firstPaintTheme.close();
+
+  process.stdout.write(`Validated primary/extra ACC outputs, safe breathing comparison, source palettes, light/dark desktop and mobile states, ${targets.length} classifier renders, and ${library.previewCount} metric previews in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

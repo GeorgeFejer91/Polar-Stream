@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -11,11 +12,11 @@ use std::{
 #[cfg(unix)]
 use std::fs::File;
 
-use polar_h10_output::OutputConfig;
+use polar_h10_output::{OutputConfig, source_palette};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-const SCHEMA_VERSION: u16 = 2;
+const SCHEMA_VERSION: u16 = 3;
 const MAX_PREFERENCES_BYTES: u64 = 1_048_576;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -40,6 +41,7 @@ pub(crate) struct PreferencesSnapshot {
     pub(crate) schema_version: u16,
     pub(crate) output_config: OutputConfig,
     pub(crate) last_device: Option<SavedDevice>,
+    pub(crate) device_palettes: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -48,6 +50,7 @@ struct PreferencesFile {
     schema_version: u16,
     output_config: OutputConfig,
     last_device: Option<SavedDevice>,
+    device_palettes: HashMap<String, String>,
 }
 
 impl Default for PreferencesFile {
@@ -56,6 +59,7 @@ impl Default for PreferencesFile {
             schema_version: SCHEMA_VERSION,
             output_config: OutputConfig::default(),
             last_device: None,
+            device_palettes: HashMap::new(),
         }
     }
 }
@@ -66,6 +70,7 @@ impl From<PreferencesFile> for PreferencesSnapshot {
             schema_version: value.schema_version,
             output_config: value.output_config,
             last_device: value.last_device,
+            device_palettes: value.device_palettes,
         }
     }
 }
@@ -117,10 +122,22 @@ impl PreferencesStore {
             .await
     }
 
+    pub(crate) async fn save_device_palette(
+        &self,
+        device_id: String,
+        palette_id: String,
+    ) -> Result<(), String> {
+        self.update(move |preferences| {
+            preferences.device_palettes.insert(device_id, palette_id);
+        })
+        .await
+    }
+
     pub(crate) async fn migrate_legacy(
         &self,
         output_config: Option<OutputConfig>,
         last_device: Option<SavedDevice>,
+        device_palettes: HashMap<String, String>,
     ) -> Result<PreferencesSnapshot, String> {
         let _write = self.write_gate.lock().await;
         if self.has_saved_preferences() {
@@ -133,6 +150,7 @@ impl PreferencesStore {
             if last_device.is_some() {
                 preferences.last_device = last_device;
             }
+            preferences.device_palettes = device_palettes;
         })
         .await?;
         Ok(self.snapshot())
@@ -182,6 +200,9 @@ fn read_preferences(path: &Path) -> Option<PreferencesFile> {
     // renderer submissions are validated more strictly by OutputRouter.
     stored.output_config = stored.output_config.migrated().ok()?;
     stored.last_device = stored.last_device.filter(SavedDevice::is_valid);
+    stored.device_palettes.retain(|device_id, palette_id| {
+        !device_id.is_empty() && device_id.len() <= 512 && source_palette(palette_id).is_some()
+    });
     stored.schema_version = SCHEMA_VERSION;
     Some(stored)
 }
@@ -277,6 +298,10 @@ mod tests {
             ..OutputConfig::default()
         };
         store.save_output_config(config).await.unwrap();
+        store
+            .save_device_palette("device-7".into(), "ocean".into())
+            .await
+            .unwrap();
 
         let loaded = PreferencesStore::load(path.clone()).snapshot();
         assert_eq!(loaded.schema_version, SCHEMA_VERSION);
@@ -284,6 +309,7 @@ mod tests {
         assert!(loaded.output_config.csv_enabled);
         assert!(loaded.output_config.audio_enabled);
         assert_eq!(loaded.last_device.unwrap().id, "device-7");
+        assert_eq!(loaded.device_palettes["device-7"], "ocean");
         let _ = fs::remove_file(path);
     }
 
@@ -302,15 +328,17 @@ mod tests {
                     id: "legacy-device".into(),
                     name: "Polar H10 Legacy".into(),
                 }),
+                HashMap::from([("legacy-device".into(), "sunset".into())]),
             )
             .await
             .unwrap();
         assert_eq!(first.output_config.stream_name, "legacy_name");
         assert_eq!(first.last_device.unwrap().id, "legacy-device");
+        assert_eq!(first.device_palettes["legacy-device"], "sunset");
         assert!(store.has_saved_preferences());
 
         let second = store
-            .migrate_legacy(Some(OutputConfig::default()), None)
+            .migrate_legacy(Some(OutputConfig::default()), None, HashMap::new())
             .await
             .unwrap();
         assert_eq!(second.output_config.stream_name, "legacy_name");

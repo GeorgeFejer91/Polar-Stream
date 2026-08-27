@@ -80,9 +80,10 @@ items into the dated history instead of silently deleting them.
      protocol candidate registry without stopping active same- or mixed-family
      owners, exclude connected identities, and keep every source-suffixed LSL
      outlet advancing concurrently.
-   - Preserve mapped timestamp/gap evidence in bounded temporal UI rings and
-     retain the force+ACC and belt+ACC-breathing comparison presets without
-     putting the WebView on the authoritative path.
+   - Preserve mapped timestamp/gap evidence in bounded temporal UI rings. Offer
+     one opt-in comparator only when another source already exposes an active,
+     family-safe signal; keep normalized Polar/Vernier breathing on a shared
+     fixed 0–1 host-time view and reject force/ACC or ECG/breathing pairings.
    - Retain the exact four-inlet official pylsl gate for ECG, ACC, rawVernier,
      and vernierBreathing with an overlapping local-LSL-clock interval. A
      physical paired H10/GDX run remains required before hardware qualification.

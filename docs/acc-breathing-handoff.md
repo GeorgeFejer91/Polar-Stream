@@ -3,10 +3,13 @@
 ## Status in one paragraph
 
 Polar Stream exposes an experimental one-dimensional respiratory-effort module
-derived from the Polar H10 accelerometer. Its primary signals are the signed
-chest-motion projection in g (`acc_breathing_magnitude`), its robustly normalized
-0–1 form (`breathing_volume`, retained as a compatibility ID), and a three-state
-classifier (`breathing_phase`: inhale `+1`, pause/not-ready `0`, exhale `-1`).
+derived from the Polar H10 accelerometer. The primary ACC library now presents
+raw X/Y/Z, general 3D motion magnitude, and the robustly normalized 0–1 form
+(`breathing_volume`, labeled **ACC breathing magnitude (0–1)** and retained as a
+compatibility ID). The signed chest-motion projection in g
+(`acc_breathing_magnitude`, labeled **ACC breathing projection (g)**), the
+three-state classifier (`breathing_phase`: inhale `+1`, pause/not-ready `0`,
+exhale `-1`), and specialist diagnostics/dynamics remain under Extra options.
 Two companion outputs report computational readiness and an app-specific signal
 quality index (`breathing_signal_ready` and `breathing_signal_confidence`). These
 are not respiratory volume, airflow, a probability of correctness, or a

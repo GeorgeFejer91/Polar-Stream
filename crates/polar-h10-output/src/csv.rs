@@ -13,6 +13,8 @@ use std::{
 use polar_h10_core::AccSample;
 use polar_h10_metrics::MetricDefinition;
 
+use crate::SourcePalette;
+
 const QUEUE_CAPACITY: usize = 128;
 const ECG_RATE_HZ: f64 = 130.0;
 const ACC_RATE_HZ: f64 = 200.0;
@@ -69,7 +71,11 @@ pub(crate) struct CsvPublisher {
 }
 
 impl CsvPublisher {
-    pub(crate) fn start(directory: &Path, stream_name: &str) -> Result<Self, String> {
+    pub(crate) fn start(
+        directory: &Path,
+        stream_name: &str,
+        source_palette: Option<&SourcePalette>,
+    ) -> Result<Self, String> {
         fs::create_dir_all(directory)
             .map_err(|error| format!("Could not create the CSV recording directory: {error}"))?;
         let started_at_ms = unix_timestamp_ms();
@@ -78,7 +84,7 @@ impl CsvPublisher {
         let file = File::create(&path)
             .map_err(|error| format!("Could not create the CSV recording: {error}"))?;
         let mut writer = BufWriter::new(file);
-        write_header(&mut writer, stream_name, started_at_ms)
+        write_header(&mut writer, stream_name, started_at_ms, source_palette)
             .and_then(|()| writer.flush())
             .map_err(|error| format!("Could not initialize the CSV recording: {error}"))?;
 
@@ -293,10 +299,34 @@ fn write_header(
     writer: &mut impl Write,
     stream_name: &str,
     started_at_ms: f64,
+    source_palette: Option<&SourcePalette>,
 ) -> std::io::Result<()> {
     writeln!(writer, "# Polar Stream native recording")?;
-    writeln!(writer, "# schema_version,2")?;
+    writeln!(writer, "# schema_version,3")?;
     writeln!(writer, "# stream_name,{}", csv_cell(stream_name))?;
+    if let Some(palette) = source_palette {
+        writeln!(writer, "# source_palette_id,{}", csv_cell(&palette.id))?;
+        writeln!(
+            writer,
+            "# source_palette_light_primary,{}",
+            palette.light.primary
+        )?;
+        writeln!(
+            writer,
+            "# source_palette_light_secondary,{}",
+            palette.light.secondary
+        )?;
+        writeln!(
+            writer,
+            "# source_palette_dark_primary,{}",
+            palette.dark.primary
+        )?;
+        writeln!(
+            writer,
+            "# source_palette_dark_secondary,{}",
+            palette.dark.secondary
+        )?;
+    }
     writeln!(writer, "# started_at_unix_ms,{started_at_ms:.3}")?;
     writeln!(
         writer,
@@ -471,7 +501,8 @@ mod tests {
             std::process::id(),
             unix_timestamp_ms().round() as u128
         ));
-        let publisher = CsvPublisher::start(&directory, "Test_Stream").unwrap();
+        let palette = crate::source_palette("ocean").unwrap();
+        let publisher = CsvPublisher::start(&directory, "Test_Stream", Some(&palette)).unwrap();
         let path = publisher.path().to_owned();
         publisher.publish_ecg(1_000_000_000, &[1, -2]).unwrap();
         publisher
@@ -503,6 +534,8 @@ mod tests {
         assert!(contents.contains(",heart_rate,0,,,,61,bpm"));
         assert!(contents.contains(",rr_interval,0,,,,983.5,ms"));
         assert!(contents.contains(",3000000000,breathing_volume,0,,,,0.75,0–1"));
+        assert!(contents.contains("# schema_version,3"));
+        assert!(contents.contains("# source_palette_id,ocean"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

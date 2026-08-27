@@ -3,16 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#17221d" />
     <meta name="description" content="Polar Stream interface demo for Polar H10 ECG and accelerometer research outputs." />
     <title>Polar Stream</title>
     <link rel="icon" type="image/png" href="favicon.png" />
+    <script src="theme-bootstrap.js"></script>
     <link rel="stylesheet" href="styles.css" />
     <script src="polar-web-bluetooth.js" defer></script>
     <script src="vernier-web-bluetooth.js" defer></script>
     <script src="browser-session.js" defer></script>
     <script src="audio-data-link.js" defer></script>
+    <script src="source-palettes.js" defer></script>
     <script src="metric-catalog.js" defer></script>
     <script src="metric-previews.js" defer></script>
     <script src="preview-fixture.js" defer></script>
@@ -32,6 +34,10 @@
       <div class="app-state" aria-live="polite">
         <span class="state-dot" id="app-state-dot"></span>
         <span id="app-state-text">Ready to connect</span>
+        <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false" title="Use dark theme">
+          <span class="theme-sun" aria-hidden="true">☀</span>
+          <span class="theme-moon" aria-hidden="true">☾</span>
+        </button>
       </div>
       <div class="latency-note">
         <span id="platform-label">LOCAL</span>
@@ -82,6 +88,7 @@
               <small>A device becomes a configurable widget only after its connection succeeds.</small>
             </div>
           </div>
+          <div class="source-palette-status" id="source-palette-status" role="status" hidden></div>
         </div>
 
         <div hidden aria-hidden="true">
@@ -280,6 +287,10 @@
           <select id="visual-device"><option value="">Preview / no source</option></select>
           <label for="visual-source">Display</label>
           <select id="visual-source"></select>
+          <label class="comparison-source-label" for="visual-compare-source">Compare</label>
+          <select class="comparison-source-select" id="visual-compare-source" aria-label="Add comparison source" hidden>
+            <option value="">Add comparison source</option>
+          </select>
           <button class="secondary-button visual-adjust-button" id="adjust-visual" type="button">Adjust</button>
           <div class="visual-value">
             <strong id="visual-current">—</strong>
@@ -347,6 +358,7 @@
             </button>
           </div>
           <p id="metric-family-note">Start with ECG for the signal the H10 is designed to measure; interpretation limits still apply.</p>
+          <button class="secondary-button compact acc-extra-toggle" id="acc-extra-toggle" type="button" hidden>Extra options</button>
         </section>
         <section class="vernier-protocol-panel" id="vernier-protocol-panel" hidden aria-labelledby="vernier-protocol-title">
           <header>
