@@ -29,18 +29,18 @@
     <header class="app-bar">
       <div class="brand">
         <img class="brand-mark" src="favicon.png" alt="" />
-        <span class="brand-copy"><strong>Polar Stream</strong><small>H10 signal bridge</small></span>
+        <span class="brand-copy"><strong>Polar Stream</strong><span class="brand-subtitle">Research signal bridge</span></span>
       </div>
-      <div class="app-state" aria-live="polite">
-        <span class="state-dot" id="app-state-dot"></span>
-        <span id="app-state-text">Ready to connect</span>
+      <div class="app-state">
+        <span class="state-dot" id="app-state-dot" aria-hidden="true"></span>
+        <span id="app-state-text" role="status" aria-live="polite">Ready to connect</span>
         <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false" title="Use dark theme">
           <span class="theme-sun" aria-hidden="true">☀</span>
           <span class="theme-moon" aria-hidden="true">☾</span>
         </button>
       </div>
       <div class="latency-note">
-        <span id="platform-label">LOCAL</span>
+        <span id="platform-label">Local</span>
         <strong id="runtime-path-label">Native data path</strong>
       </div>
     </header>
@@ -48,17 +48,16 @@
     <main class="workspace">
       <section class="workspace-panel input-panel" id="input-section" aria-labelledby="input-heading">
         <header class="section-heading">
-          <span class="section-number">01</span>
           <div>
-            <p class="eyebrow">Input</p>
-            <h1 id="input-heading">Devices</h1>
+            <h1 id="input-heading">Input</h1>
+            <p>Devices</p>
           </div>
           <span class="section-state" id="input-state">Idle</span>
         </header>
 
         <div class="input-search-block">
           <div class="scan-row">
-            <button class="primary-button" id="scan-button">
+            <button class="primary-button" id="scan-button" type="button">
               <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.2 12.2 4.1 4.1"/></svg>
               <span>Search devices</span>
             </button>
@@ -66,11 +65,10 @@
           </div>
           <div class="mini-heading device-list-heading">
             <strong>Available devices</strong>
-            <span id="device-result-count">Search to refresh</span>
+            <span id="device-result-count" role="status" aria-live="polite">Search to refresh</span>
           </div>
-          <div class="device-list" id="device-list" aria-live="polite">
+          <div class="device-list" id="device-list">
             <div class="empty-state compact" id="device-empty">
-              <span class="empty-orbit" aria-hidden="true"></span>
               <p>Search for a Polar ECG sensor or Vernier breathing belt.</p>
               <small>Supported devices are identified from their advertised protocol and model attributes.</small>
             </div>
@@ -80,9 +78,9 @@
         <div class="connected-devices-block">
           <div class="mini-heading">
             <strong>Connected devices</strong>
-            <span id="connected-device-count">0 live</span>
+            <span id="connected-device-count" role="status" aria-live="polite">0 live</span>
           </div>
-          <div class="connected-device-list" id="connected-device-list" aria-live="polite">
+          <div class="connected-device-list" id="connected-device-list">
             <div class="connected-empty-state">
               <strong>No connected devices</strong>
               <small>A device becomes a configurable widget only after its connection succeeds.</small>
@@ -121,16 +119,14 @@
 
       <section class="workspace-panel output-panel" id="output-section" aria-labelledby="output-heading">
         <header class="section-heading">
-          <span class="section-number">02</span>
           <div>
-            <p class="eyebrow">Output</p>
-            <h2 id="output-heading">Signals &amp; streams</h2>
+            <h2 id="output-heading">Output</h2>
+            <p>Signals and streams</p>
           </div>
           <span class="section-state live-state" id="output-state">Waiting</span>
         </header>
 
         <div class="panel-empty-state" id="output-empty-state">
-          <span class="panel-empty-mark">02</span>
           <strong>Outputs appear after connection</strong>
           <p>Connect a Polar H10, a Vernier GDX-RB, or both. Each device loads only its own default output protocol.</p>
         </div>
@@ -220,7 +216,7 @@
             <label class="destination-row" id="audio-destination-row">
               <span class="protocol-mark audio-mark">PCM</span>
               <span>
-                <strong>Audio data output <em>EXPERIMENTAL</em></strong>
+                <strong>Audio data output <em>Experimental</em></strong>
                 <small id="audio-detail">CRC-checked stereo data modem · cable or digital recording</small>
               </span>
               <input id="audio-toggle" class="switch-input" type="checkbox" />
@@ -243,7 +239,7 @@
           </div>
           <div class="browser-recorder-actions" id="browser-recorder-actions" hidden>
             <span>
-              <strong class="local-only-mark" id="browser-recorder-status">READY</strong>
+              <strong class="local-only-mark" id="browser-recorder-status">Ready</strong>
               <small class="browser-recorder-count" id="browser-recorder-count">Ready · up to 300,000 rows per file</small>
             </span>
             <span class="browser-recorder-controls">
@@ -256,7 +252,7 @@
         <div class="outputs-block">
           <div class="mini-heading"><strong id="included-output-heading">Raw + processed outputs</strong><span id="included-count">2 active</span></div>
           <div class="output-cards" id="output-chips"></div>
-          <button class="add-output-button" id="open-output-dialog">
+          <button class="add-output-button" id="open-output-dialog" type="button">
             <span aria-hidden="true">＋</span>
             Add processed output
           </button>
@@ -266,16 +262,14 @@
 
       <section class="workspace-panel visual-panel" id="visual-section" aria-labelledby="visual-heading">
         <header class="section-heading">
-          <span class="section-number">03</span>
           <div>
-            <p class="eyebrow">Visualization</p>
-            <h2 id="visual-heading">Live signal</h2>
+            <h2 id="visual-heading">Visualization</h2>
+            <p>Live signal</p>
           </div>
           <span class="section-state" id="render-rate">Idle</span>
         </header>
 
         <div class="panel-empty-state visual-empty-state" id="visual-empty-state">
-          <span class="panel-empty-mark">03</span>
           <strong>Visualizations follow outputs</strong>
           <p>Connect a device first. Its default outputs determine which live visualizations become available here.</p>
         </div>
@@ -322,7 +316,7 @@
       </section>
     </main>
 
-    <footer class="status-bar">
+    <footer class="status-bar" role="status" aria-live="polite">
       <span><i class="footer-dot"></i><span id="footer-status">Engine ready</span></span>
       <span id="sample-counter">0 samples</span>
       <span id="footer-device-role">No device protocol active</span>
@@ -335,8 +329,8 @@
             <span aria-hidden="true">←</span>
             <span>Signals</span>
           </button>
-          <div class="dialog-title"><p class="eyebrow">Output library</p><h2 id="output-dialog-title">Add signals</h2></div>
-          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+          <div class="dialog-title"><h2 id="output-dialog-title">Add signals</h2></div>
+          <button class="icon-button" type="button" aria-label="Close">×</button>
         </header>
         <div class="dialog-intro output-library-intro">
           <p>Choose a signal, review its animated output, scientific summary, and sources, then add it.</p>
@@ -362,18 +356,18 @@
         </section>
         <section class="vernier-protocol-panel" id="vernier-protocol-panel" hidden aria-labelledby="vernier-protocol-title">
           <header>
-            <span>GDX-RB DEVICE PROTOCOL</span>
+            <span>GDX-RB device protocol</span>
             <strong id="vernier-protocol-title">Respiration-belt outputs</strong>
           </header>
           <div class="vernier-protocol-grid">
             <article>
-              <span>RAW · DOUBLE64</span>
+              <span>Raw · Double64</span>
               <strong>Complete Vernier recording</strong>
               <code>_rawVernier</code>
               <small>All metadata-defined numeric channels, sparse NaN values, timing and loss diagnostics.</small>
             </article>
             <article>
-              <span>BREATH · FLOAT32</span>
+              <span>Breathing · Float32</span>
               <strong>Relative breathing waveform</strong>
               <code>_vernierBreathing</code>
               <small>Causal 30-second normalization, bounded 0–1, with increasing belt force moving upward.</small>
@@ -388,13 +382,12 @@
           </label>
           <span id="metric-library-summary">0 metrics</span>
         </div>
-        <nav class="metric-filters" id="metric-filters" aria-label="Metric categories"></nav>
+        <div class="metric-filters" id="metric-filters" role="group" aria-label="Metric categories"></div>
         <div class="metric-library-body">
           <div class="metric-options" id="metric-options" aria-label="Available metrics"></div>
-          <aside class="metric-detail" id="metric-detail" aria-live="polite">
+          <aside class="metric-detail" id="metric-detail">
             <div class="metric-detail-empty">
-              <span>SELECT A METRIC</span>
-              <strong>Preview and scientific context appear here</strong>
+              <strong>Select a signal to inspect</strong>
               <p>Nothing is added until you review a metric and press Save output.</p>
             </div>
           </aside>
@@ -409,8 +402,8 @@
     <dialog class="formula-dialog" id="formula-dialog" aria-labelledby="formula-dialog-title">
       <form method="dialog">
         <header>
-          <div><p class="eyebrow">Math module</p><h2 id="formula-dialog-title">Formula Lab</h2></div>
-          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+          <div><h2 id="formula-dialog-title">Formula Lab</h2></div>
+          <button class="icon-button" type="button" aria-label="Close">×</button>
         </header>
         <p class="dialog-intro">Build one scalar output at a time. Sensor time is always the x-axis; your expression computes the y-value from the selected signal channel and its bounded history.</p>
         <div class="formula-lab-layout">
@@ -424,7 +417,7 @@
               <div id="formula-template-buttons"></div>
             </section>
           </aside>
-          <main class="formula-editor">
+          <section class="formula-editor">
             <section class="formula-variable-map" aria-labelledby="formula-variable-map-title">
               <header><strong id="formula-variable-map-title">Signal variable map</strong><span>one source clock per formula</span></header>
               <div>
@@ -455,7 +448,7 @@
               <canvas id="formula-preview-canvas" role="img" aria-label="Recorded formula input and output preview"></canvas>
               <footer><span class="formula-preview-legend"><span><i class="input"></i>Input</span><span><i class="output"></i>Formula output</span></span><span id="formula-preview-note">Enter a formula or load a template</span></footer>
             </section>
-          </main>
+          </section>
         </div>
         <footer>
           <button class="text-button danger" id="delete-custom-formula" type="button" hidden>Delete output</button>
@@ -468,8 +461,8 @@
     <dialog class="module-dialog" id="module-dialog" aria-labelledby="module-dialog-title">
       <form method="dialog">
         <header>
-          <div><p class="eyebrow">Module controls</p><h2 id="module-dialog-title">Adjust output</h2></div>
-          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+          <div><h2 id="module-dialog-title">Adjust output</h2></div>
+          <button class="icon-button" type="button" aria-label="Close">×</button>
         </header>
         <p class="dialog-intro" id="module-dialog-intro">Changes remain a draft until Save module is pressed.</p>
         <div class="module-settings" id="module-settings"></div>

@@ -428,7 +428,7 @@ try {
   });
   await desktop.goto(baseUrl, { waitUntil: "networkidle" });
   assert.equal(await desktop.locator("body").getAttribute("data-runtime"), "browser-demo");
-  assert.equal(await desktop.locator("#platform-label").textContent(), "BROWSER DEMO");
+  assert.equal(await desktop.locator("#platform-label").textContent(), "Browser demo");
   assert.equal(await desktop.locator("#runtime-path-label").textContent(), "Browser-local inputs");
   assert.match(await desktop.locator(".device-row.mock").textContent(), /RECORDED/);
   assert.match(await desktop.locator(".device-row.mock").textContent(), /seamless loop of an anonymized 60-second ECG \+ ACC recording/i);
@@ -468,8 +468,8 @@ try {
   });
   assert.equal(destinationLayout.columnCount, 2, `desktop destinations are not arranged in two columns: ${JSON.stringify(destinationLayout)}`);
   assert.equal(destinationLayout.rowCount, 2, `desktop destinations are not arranged in two rows: ${JSON.stringify(destinationLayout)}`);
-  assert.ok(destinationLayout.heights.every((height) => height >= 44 && height <= 52), `desktop destination controls are not compact: ${JSON.stringify(destinationLayout)}`);
-  assert.ok(destinationLayout.height <= 110, `desktop destination group is too tall: ${JSON.stringify(destinationLayout)}`);
+  assert.ok(destinationLayout.heights.every((height) => height >= 52 && height <= 96), `desktop destination controls do not preserve readable copy: ${JSON.stringify(destinationLayout)}`);
+  assert.ok(destinationLayout.height <= 190, `desktop destination group is unexpectedly tall: ${JSON.stringify(destinationLayout)}`);
   assert.equal(await desktop.locator("#lsl-toggle").isEnabled(), true, "browser LSL control must remain interactive so it can explain the limitation");
   assert.equal(await desktop.locator("#osc-toggle").isEnabled(), true, "browser OSC control must remain interactive so it can explain the limitation");
   await desktop.locator("#lsl-destination-row").click();
@@ -565,7 +565,7 @@ try {
   assert.match(recordingCsv, /host_timestamp_ms,relative_time_s,sensor_timestamp_ns,source_id,source_palette_id,stream/);
   assert.match(recordingCsv, /,raw_ecg,/);
   assert.match(recordingCsv, /,raw_acc,/);
-  assert.equal(await desktop.locator("#browser-recorder-status").textContent(), "READY");
+  assert.equal(await desktop.locator("#browser-recorder-status").textContent(), "Ready");
   const boundedRecorder = await desktop.evaluate(async () => {
     let now = 1_000;
     const recorder = window.PolarBrowserSession.createRecorder({ maxRows: 2, now: () => now });
@@ -723,6 +723,8 @@ try {
   assert.equal(await desktop.locator(".metric-preview-settings, .metric-formula-context, .metric-stream-preview, .breathing-selection-settings").count(), 0);
   await desktop.locator("#open-formula-lab").click();
   assert.equal(await desktop.locator("#formula-dialog").isVisible(), true);
+  const formulaSaveBox = await desktop.locator("#save-custom-formula").boundingBox();
+  assert.ok(formulaSaveBox && formulaSaveBox.width < 240, `Formula Lab save action stretched across the footer: ${JSON.stringify(formulaSaveBox)}`);
   await desktop.locator("#formula-name").fill("rmssd_custom");
   await desktop.locator("#formula-source").selectOption("rrInterval");
   await desktop.locator("#formula-unit").fill("ms");

@@ -832,6 +832,7 @@
     while (region.childElementCount >= 3) region.firstElementChild?.remove();
     const node = document.createElement("div");
     node.className = `toast${error ? " error" : ""}`;
+    node.setAttribute("role", error ? "alert" : "status");
     node.dataset.toastKey = key;
     node.textContent = message;
     region.append(node);
@@ -1076,7 +1077,10 @@
       elements["stream-name-label"].textContent = "Signal base name";
     }
     document.body.dataset.runtime = runtime.mode;
-    elements["platform-label"].textContent = isInterfaceRenderer ? "RENDERER" : String(bootstrap.platform || "local").toUpperCase();
+    const platform = String(bootstrap.platform || "local");
+    elements["platform-label"].textContent = isInterfaceRenderer
+      ? "Renderer"
+      : `${platform.charAt(0).toUpperCase()}${platform.slice(1)}`;
     renderRuntimeContext();
     if (runtime.isDemo) {
       elements["scan-caption"].textContent = "Connect opens the browser Bluetooth chooser";
@@ -1113,6 +1117,10 @@
   }
 
   function installInteractions() {
+    for (const dialog of [elements["output-dialog"], elements["module-dialog"], elements["formula-dialog"]]) {
+      dialog.addEventListener("submit", (event) => event.preventDefault());
+      dialog.querySelector(".icon-button")?.addEventListener("click", () => dialog.close());
+    }
     elements["theme-toggle"].addEventListener("click", () => {
       setTheme(currentTheme() === "dark" ? "light" : "dark");
     });
@@ -1550,8 +1558,6 @@
     if (!availableDevices.length) {
       const empty = document.createElement("div");
       empty.className = "empty-state compact";
-      const orbit = document.createElement("span");
-      orbit.className = "empty-orbit";
       const message = document.createElement("p");
       message.textContent = app.hasSearched
         ? "No additional supported devices found."
@@ -1560,7 +1566,7 @@
       hint.textContent = app.hasSearched
         ? "Connected devices remain live; wake another sensor and search again."
         : "Polar H10 is identified as ECG; GDX-RB is identified as a breathing belt.";
-      empty.append(orbit, message, hint);
+      empty.append(message, hint);
       elements["device-list"].replaceChildren(empty);
       return;
     }
@@ -1602,7 +1608,7 @@
       if (isPreferred) {
         const badge = document.createElement("span");
         badge.className = "preference-badge";
-        badge.textContent = "LAST USED";
+        badge.textContent = "Last used";
         nameLine.append(badge);
       }
       const id = document.createElement("small");
@@ -1972,6 +1978,7 @@
       select.type = "button";
       select.className = "connected-device-select";
       select.setAttribute("aria-label", `Show ${source.deviceName || source.label} outputs`);
+      select.setAttribute("aria-pressed", String(source.id === app.selectedSourceId));
       select.addEventListener("click", () => selectSource(source.id));
       const icon = document.createElement("span");
       icon.className = "device-icon";
@@ -2022,12 +2029,12 @@
       meta.className = "connected-device-meta";
       const metaValues = isVernier
         ? [
-            ["BATTERY", source.batteryPercent == null ? "—" : `${source.batteryPercent}%`],
-            [(source.sensorName || "FORCE").toUpperCase(), `${sampleRate.toFixed(sampleRate % 1 ? 1 : 0)} Hz`],
-            ["CHANNEL", String(source.sensorNumber ?? 1)],
+            ["Battery", source.batteryPercent == null ? "—" : `${source.batteryPercent}%`],
+            [source.sensorName || "Force", `${sampleRate.toFixed(sampleRate % 1 ? 1 : 0)} Hz`],
+            ["Channel", String(source.sensorNumber ?? 1)],
           ]
         : [
-            ["BATTERY", source.batteryPercent == null ? "—" : `${source.batteryPercent}%`],
+            ["Battery", source.batteryPercent == null ? "—" : `${source.batteryPercent}%`],
             ["ECG", "130 Hz"],
             ["ACC", "200 Hz"],
           ];
@@ -2321,8 +2328,8 @@
     elements["browser-export-button"].disabled = !stopped || !status.hasData;
     elements["browser-discard-button"].hidden = !stopped || !status.hasData;
     elements["browser-recorder-status"].textContent = recording
-      ? "REC"
-      : status.stopReason === "capacity" ? "FULL" : stopped ? "FILE" : "READY";
+      ? "Recording"
+      : status.stopReason === "capacity" ? "Full" : stopped ? "File" : "Ready";
     elements["browser-recorder-status"].classList.toggle("recording", recording);
     elements["browser-recorder-status"].classList.toggle("full", status.stopReason === "capacity");
     elements["browser-recorder-count"].textContent = recording
@@ -2869,8 +2876,8 @@
         ? "metric-added"
         : support.supported ? "metric-chevron" : "metric-unavailable";
       state.textContent = app.outputs.has(metric.id)
-        ? "ADDED"
-        : support.supported ? "›" : "DESKTOP";
+        ? "Added"
+        : support.supported ? "›" : "Desktop";
       option.addEventListener("click", () => {
         app.selectedMetricId = metric.id;
         app.libraryMetricDraft = structuredClone(metricOptionFor(metric.id, { forSelection: true }));
@@ -2881,6 +2888,11 @@
         }
         renderMetricDetail();
         setMetricLibraryView("detail");
+        if (window.matchMedia("(max-width: 760px)").matches) {
+          window.requestAnimationFrame(() => {
+            elements["metric-detail"].querySelector("h3")?.focus({ preventScroll: true });
+          });
+        }
       });
       option.append(mark, copy, state);
       return option;
@@ -2905,13 +2917,11 @@
     if (!metric) {
       const empty = document.createElement("div");
       empty.className = "metric-detail-empty";
-      const kicker = document.createElement("span");
-      kicker.textContent = "SELECT A METRIC";
       const title = document.createElement("strong");
-      title.textContent = "Scientific context appears here";
+      title.textContent = "Select a signal to inspect";
       const copy = document.createElement("p");
       copy.textContent = "Nothing is added until you review a metric and press Save output.";
-      empty.append(kicker, title, copy);
+      empty.append(title, copy);
       elements["metric-detail"].replaceChildren(empty);
       save.disabled = true;
       save.textContent = "Save output";
@@ -2929,6 +2939,7 @@
     category.textContent = metric.category;
     const title = document.createElement("h3");
     title.textContent = metric.label;
+    title.tabIndex = -1;
     header.append(category, title);
 
     const summary = document.createElement("section");
@@ -3353,7 +3364,7 @@
       if (metric.raw) {
         const automatic = document.createElement("span");
         automatic.className = "automatic-output-badge";
-        automatic.textContent = "RAW · AUTO";
+        automatic.textContent = "Raw · automatic";
         header.append(identity, automatic);
       } else {
         const remove = document.createElement("button");

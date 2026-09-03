@@ -83,6 +83,49 @@ function colorDistance(actual, expected) {
   return Math.hypot(...actual.map((channel, index) => channel - expected[index]));
 }
 
+async function textContrast(page, selector) {
+  return page.locator(selector).first().evaluate((element) => {
+    const parseColor = (value) => {
+      const channels = value.match(/[\d.]+/g)?.map(Number) || [];
+      const srgb = value.startsWith("color(srgb");
+      return {
+        rgb: channels.slice(0, 3).map((channel) => srgb ? channel * 255 : channel),
+        alpha: channels[3] ?? 1,
+      };
+    };
+    const luminance = (rgb) => {
+      const linear = rgb.map((channel) => {
+        const value = channel / 255;
+        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    };
+    const foreground = parseColor(getComputedStyle(element).color).rgb;
+    let backgroundNode = element;
+    let background = parseColor(getComputedStyle(backgroundNode).backgroundColor);
+    while (background.alpha === 0 && backgroundNode.parentElement) {
+      backgroundNode = backgroundNode.parentElement;
+      background = parseColor(getComputedStyle(backgroundNode).backgroundColor);
+    }
+    const foregroundLuminance = luminance(foreground);
+    const backgroundLuminance = luminance(background.rgb);
+    return {
+      ratio: (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
+        / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05),
+      foreground,
+      background: background.rgb,
+    };
+  });
+}
+
+async function assertTextContrast(page, selector, minimum = 4.5) {
+  const contrast = await textContrast(page, selector);
+  assert.ok(
+    contrast.ratio >= minimum,
+    `${selector} contrast ${contrast.ratio.toFixed(2)}:1 is below ${minimum}:1 (${contrast.foreground} on ${contrast.background})`,
+  );
+}
+
 async function inspectStackedCanvas(page, colors = [[23, 107, 158], [42, 168, 184], [33, 138, 171]]) {
   return page.locator("#signal-canvas").evaluate((canvas, expectedColors) => {
     const context = canvas.getContext("2d");
@@ -121,6 +164,14 @@ try {
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.waitForFunction(() => Boolean(window.PolarInterfaceRenderer));
   await page.evaluate(() => window.PolarInterfaceRenderer.ready());
+  const designBaseline = await page.evaluate(() => ({
+    decorativeDashboardElements: document.querySelectorAll(".eyebrow, .section-number, .panel-empty-mark, .empty-orbit").length,
+    bodyFontSize: Number.parseFloat(getComputedStyle(document.body).fontSize),
+    mainCount: document.querySelectorAll("main").length,
+  }));
+  assert.equal(designBaseline.decorativeDashboardElements, 0, "decorative dashboard UI returned");
+  assert.ok(designBaseline.bodyFontSize >= 14, "base UI copy is smaller than 14px");
+  assert.equal(designBaseline.mainCount, 1, "the page must have one main landmark");
   const emptyState = await page.evaluate(() => ({
     profile: document.body.dataset.deviceProfile,
     outputEmptyVisible: !document.querySelector("#output-empty-state").hidden,
@@ -572,12 +623,70 @@ try {
     await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
     await page.evaluate(() => document.querySelector('[data-source-id="source-1"] button').click());
     assert.equal(await page.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), expectedColor);
+    for (const selector of [
+      '#connected-device-list [data-source-id="source-1"] .device-icon',
+      '#connected-device-list [data-source-id="source-2"] .device-icon',
+      ".device-profile-mark",
+      ".activity-list time",
+      ".osc-mark",
+      ".destination-row strong em",
+    ]) {
+      await assertTextContrast(page, selector);
+    }
+    await page.evaluate(() => document.querySelector('[data-source-id="source-2"] button').click());
+    await assertTextContrast(page, ".device-profile-mark");
+    await page.evaluate(() => document.querySelector('[data-source-id="source-1"] button').click());
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: width === 1440 ? 900 : 780 });
       const screenshot = join(output, `${theme}-${width}.png`);
       await page.screenshot({ path: screenshot, fullPage: true });
       assert.ok((await stat(screenshot)).size > 15_000, `${theme} ${width}px screenshot was unexpectedly empty`);
     }
+  }
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));
+  for (const selector of [
+    ".metric-search input",
+    ".metric-family-heading strong",
+    ".family-choice.active",
+    ".metric-option",
+    ".metric-option > span:first-child",
+    ".metric-detail section p",
+    ".metric-source-list a",
+    ".output-dialog .primary-button",
+  ]) {
+    await assertTextContrast(page, selector);
+  }
+  const darkLibraryScreenshot = join(output, "dark-output-library.png");
+  await page.screenshot({ path: darkLibraryScreenshot, fullPage: true });
+  assert.ok((await stat(darkLibraryScreenshot)).size > 20_000, "dark output library screenshot was unexpectedly empty");
+  await page.locator("#output-dialog").evaluate((dialog) => dialog.close());
+
+  await page.evaluate(() => window.PolarInterfaceRenderer.render("breathing-phase-settings"));
+  for (const selector of [
+    ".settings-section > p",
+    ".setting-check",
+    ".setting-field input",
+    ".module-dialog .primary-button",
+  ]) {
+    await assertTextContrast(page, selector);
+  }
+  const darkSettingsScreenshot = join(output, "dark-module-settings.png");
+  await page.screenshot({ path: darkSettingsScreenshot, fullPage: true });
+  assert.ok((await stat(darkSettingsScreenshot)).size > 20_000, "dark module settings screenshot was unexpectedly empty");
+  await page.locator("#module-dialog").evaluate((dialog) => dialog.close());
+
+  await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
+  for (const width of [1024, 940, 820]) {
+    await page.setViewportSize({ width, height: 780 });
+    const layout = await page.evaluate(() => ({
+      viewportWidth: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      footerPosition: getComputedStyle(document.querySelector(".status-bar")).position,
+    }));
+    assert.ok(layout.documentWidth <= layout.viewportWidth, `${width}px layout has horizontal overflow`);
+    if (width <= 960) assert.equal(layout.footerPosition, "static", `${width}px footer can obscure workspace content`);
   }
 
   const firstPaintTheme = await browser.newPage({ viewport: { width: 390, height: 780 }, colorScheme: "dark" });
@@ -590,7 +699,7 @@ try {
   assert.equal(await firstPaintTheme.locator("html").getAttribute("data-theme"), "light", "explicit theme preference did not override the OS setting");
   await firstPaintTheme.close();
 
-  process.stdout.write(`Validated primary/extra ACC outputs, safe breathing comparison, source palettes, light/dark desktop and mobile states, ${targets.length} classifier renders, and ${library.previewCount} metric previews in ${output}\n`);
+  process.stdout.write(`Validated primary/extra ACC outputs, safe breathing comparison, source palettes, light/dark desktop, dialog, mobile, and intermediate-width states, ${targets.length} classifier renders, and ${library.previewCount} metric previews in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

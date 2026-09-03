@@ -4,6 +4,15 @@ Last verified: 2026-09-03
 
 ## Implemented
 
+- The shared desktop/browser interface is a quiet three-part research workbench
+  with direct Input, Output, and Visualization headings, readable control copy,
+  semantic light/dark surfaces, restrained depth, 44px coarse-pointer targets,
+  and responsive workspace/dialog breakpoints. Status announcements are scoped
+  away from interactive lists, dialogs cannot close through implicit form
+  submission, and mobile metric selection transfers focus to visible detail.
+  Automated renderer checks cover representative text contrast, landmarks,
+  intermediate-width overflow, dark dialogs, and mobile footer flow. ECG, ACC,
+  Vernier, source-palette, processing, and transport contracts are unchanged.
 - The 0.6 release surface offers one H10 chest-motion waveform plus readiness
   and confidence as an inseparable new-selection set. Raw ACC remains automatic;
   22 older respiration IDs remain executable only for saved compatibility

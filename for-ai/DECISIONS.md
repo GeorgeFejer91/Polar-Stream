@@ -1,5 +1,24 @@
 # Decision log
 
+## 2026-09-03 — Treat the interface as a quiet research workbench
+
+Preserve the Input, Output, and Visualization workflow, but express each area
+with one direct heading and a quiet text status. Remove decorative section
+numbers, uppercase eyebrow labels, oversized empty-state marks, pill filters,
+repeated tinted cards, blurred backdrops, and dramatic shadows. Use semantic
+surface, foreground, focus, and primary-action tokens so the same canonical UI
+remains readable in both themes.
+
+Keep color only where it communicates signal identity or state: ECG, ACC,
+Vernier, per-source palettes, plots, warnings, and connection status. Retain
+scientific summaries and sources as plain structured content rather than
+marketing cards. At 960px and below, stack the complete workbench and return the
+status bar to document flow; do not hide acquisition or output state behind a
+new navigation mode without operator evidence. Require 44px coarse-pointer
+targets and regression checks for dark-dialog contrast, one main landmark, and
+intermediate-width overflow. These are presentation and interaction semantics;
+they do not change acquisition, processing, metric, or transport contracts.
+
 ## 2026-09-03 — Gate publication and hash-bind the complete Pages surface
 
 Require every release tag to be an exact match for the Cargo/Cargo.lock, Tauri, npm, and
