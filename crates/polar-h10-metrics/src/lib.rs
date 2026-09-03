@@ -24,8 +24,9 @@ pub use breathing::{
 };
 pub use breathing_dynamics::{BreathingDynamicsSnapshot, FeatureSet};
 pub use catalog::{
-    METRIC_CATALOG, MetricCitation, MetricDefinition, MetricFormulaDefinition, metric_citations,
-    metric_definition, metric_formula_definition,
+    METRIC_CATALOG, MetricCitation, MetricDefinition, MetricFormulaDefinition, MetricSelectionTier,
+    RELEASE_POLAR_RESPIRATION_IDS, metric_citations, metric_definition, metric_formula_definition,
+    metric_selection_tier,
 };
 pub use coherence::CoherenceSnapshot;
 pub use ecg::EcgSnapshot;
@@ -34,7 +35,9 @@ pub use reference_validation::{
     AgreementError, RespirationReferenceReport, RespirationReferenceSettings, SignalAgreement,
     TimedReferenceSample, TimedRespirationSample, analyze_respiration_reference,
 };
-pub use vernier_breathing::VernierBreathingProcessor;
+pub use vernier_breathing::{
+    VERNIER_BREATHING_CONTRACT, VernierBreathingContract, VernierBreathingProcessor,
+};
 
 use breathing_dynamics::BreathingDynamicsProcessor;
 use coherence::CoherenceProcessor;

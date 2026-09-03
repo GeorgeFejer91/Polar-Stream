@@ -39,6 +39,12 @@ already-arrived BLE notification as one bounded chunk:
 - up to 256 records per chunk, 64 outlets, and exactly one admitted official
   consumer per outlet.
 
+First enable populates that shared registry in place. While outlets are active,
+changes to their names, selections, formulas, palettes, or respiration metadata
+are rejected without disturbing the live set; turn LSL off, apply the change,
+and turn it on again. The packaged liblsl backend stages and swaps those changes
+atomically and does not have this optional-backend restriction.
+
 The one-consumer bound is an explicit Polar Stream deployment constraint, not
 general multi-consumer conformance. A second concurrent connection is rejected
 without disturbing the already admitted consumer. A product requirement for

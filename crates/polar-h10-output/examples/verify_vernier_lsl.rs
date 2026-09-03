@@ -120,7 +120,7 @@ async fn main() -> Result<(), String> {
             SampleEncoding::Float32,
             &sensors,
         );
-        router.publish_vernier_breathing(
+        let _ = router.publish_vernier_breathing(
             timestamp_ns,
             &[if index.is_multiple_of(2) { 0.25 } else { 0.75 }],
             100_000,

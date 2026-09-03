@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -71,6 +72,11 @@ jobs:
       - run: node --check download/downloads.js
       - run: npm run test:browser-acceptance
       - run: python -m unittest scripts/test_verify_two_h10_rusty_lsl.py
+      - run: python -m unittest discover -s scripts -p 'test_verify_mixed_lsl.py'
+      - run: python -m unittest discover -s scripts -p 'test_stage_release_assets.py'
+      - run: python -m unittest discover -s scripts -p 'test_verify_release_assets.py'
+      - run: python -m unittest discover -s scripts -p 'test_build_browser_demo.py'
+      - run: python -m unittest discover -s scripts -p 'test_prepare_lab_recorder.py'
       - run: npm run validate:interface
       - run: npm run validate:browser-demo
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

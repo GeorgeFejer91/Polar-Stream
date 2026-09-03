@@ -7,11 +7,16 @@ import pathlib
 import subprocess
 import sys
 import time
+import argparse
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-LIBLSL = ROOT / "apps" / "polar-stream" / "resources" / "lsl.dll"
 BASE = "polar_mixed_acceptance"
+
+
+def default_liblsl() -> pathlib.Path:
+    filename = "lsl.dll" if sys.platform == "win32" else "liblsl.dylib" if sys.platform == "darwin" else "liblsl.so"
+    return ROOT / "apps" / "polar-stream" / "resources" / filename
 
 
 def descriptor(info):
@@ -44,6 +49,14 @@ def expected_descriptors(pylsl):
             200.0,
             pylsl.cf_float32,
             f"polar-h10-{polar}_rawACC",
+        ),
+        "polar_breathing": (
+            f"{polar}_breathingVolume",
+            "Breathing",
+            1,
+            0.0,
+            pylsl.cf_float32,
+            f"polar-h10-{polar}_breathingVolume",
         ),
         "vernier_raw": (
             f"{vernier}_rawVernier",
@@ -88,12 +101,15 @@ def resolve_exact(pylsl, timeout: float):
         if resolved.keys() == expected.keys():
             return resolved
     raise RuntimeError(
-        "the four exact mixed-device outlets were not found: "
+        "the five exact mixed-device outlets were not found: "
         f"{sorted(descriptor(info) for info in latest)!r}"
     )
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("library", nargs="?", type=pathlib.Path, default=default_liblsl())
+    arguments = parser.parse_args()
     try:
         import pylsl
     except ImportError as error:
@@ -116,7 +132,7 @@ def main() -> int:
             "verify_mixed_lsl",
             "--quiet",
             "--",
-            str(LIBLSL),
+            str(arguments.library),
         ],
         cwd=ROOT,
         stdout=subprocess.PIPE,
@@ -152,6 +168,7 @@ def main() -> int:
         minimum_rows = {
             "ecg": 260,
             "acc": 400,
+            "polar_breathing": 25,
             "vernier_raw": 25,
             "vernier_breathing": 25,
         }
@@ -177,8 +194,9 @@ def main() -> int:
         )
         if overlap < 1.5:
             raise RuntimeError(f"mixed-device LSL clocks did not overlap: {overlap:.3f}s")
-        if not all(0.0 <= row[0] <= 1.0 for row in rows["vernier_breathing"]):
-            raise RuntimeError("Vernier breathing left its 0-1 contract")
+        for role in ("polar_breathing", "vernier_breathing"):
+            if not all(0.0 <= row[0] <= 1.0 for row in rows[role]):
+                raise RuntimeError(f"{role} left its 0-1 contract")
 
         remaining, _ = process.communicate(timeout=15.0)
         output.append(remaining)

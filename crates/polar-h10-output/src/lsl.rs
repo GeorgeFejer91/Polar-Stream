@@ -10,8 +10,9 @@ use polar_h10_core::AccSample;
 use crate::{
     CustomFormulaConfig, MetricSpec, SourcePalette, VERNIER_BREATHING_OUTLET_KEY,
     VERNIER_RAW_OUTLET_KEY, VernierStreamSchema, custom_output_stream_name,
-    encode_vernier_raw_rows, output_stream_name, vernier_breathing_stream_name,
-    vernier_raw_stream_name,
+    encode_vernier_raw_rows, output_stream_name,
+    provenance::{PolarRespirationProvenance, VernierBreathingProvenance},
+    vernier_breathing_stream_name, vernier_raw_stream_name,
 };
 use vernier_gdx_core::{SampleEncoding, SensorSamples};
 
@@ -167,6 +168,7 @@ impl LslOutlet {
 unsafe impl Send for LslOutlet {}
 
 pub(crate) struct LslPublisher {
+    bundled_library: Option<PathBuf>,
     api: Option<LslApi>,
     outlets: HashMap<String, LslOutlet>,
     source_clock: crate::SensorClockMap,
@@ -179,6 +181,7 @@ impl LslPublisher {
     pub(crate) fn new(bundled_library: Option<PathBuf>) -> Self {
         match LslApi::load(bundled_library.as_deref()) {
             Ok(api) => Self {
+                bundled_library,
                 api: Some(api),
                 outlets: HashMap::new(),
                 source_clock: crate::SensorClockMap::default(),
@@ -187,6 +190,7 @@ impl LslPublisher {
                 scratch_double: Vec::with_capacity(512),
             },
             Err(error) => Self {
+                bundled_library,
                 api: None,
                 outlets: HashMap::new(),
                 source_clock: crate::SensorClockMap::default(),
@@ -197,8 +201,20 @@ impl LslPublisher {
         }
     }
 
+    pub(crate) fn fresh(&self) -> Self {
+        Self::new(self.bundled_library.clone())
+    }
+
+    pub(crate) fn inherit_source_clock(&mut self, previous: &mut Self) {
+        self.source_clock = std::mem::take(&mut previous.source_clock);
+    }
+
     pub(crate) fn status(&self) -> &str {
         &self.status
+    }
+
+    pub(crate) fn outlet_count(&self) -> usize {
+        self.outlets.len()
     }
 
     pub(crate) fn clear(&mut self) {
@@ -217,6 +233,7 @@ impl LslPublisher {
         base_name: &str,
         spec: MetricSpec,
         palette: Option<&SourcePalette>,
+        respiration_provenance: Option<&PolarRespirationProvenance>,
     ) {
         let Some(api) = &self.api else { return };
         let Some(output_name) = output_stream_name(base_name, spec.id) else {
@@ -247,7 +264,14 @@ impl LslPublisher {
             self.status = format!("Could not create {} stream", spec.label);
             return;
         }
-        append_stream_metadata(api, info, spec, palette);
+        if !append_stream_metadata(api, info, spec, palette, respiration_provenance) {
+            unsafe { (api.destroy_streaminfo)(info) };
+            self.status = format!(
+                "Could not attach required processing metadata to {}",
+                spec.label
+            );
+            return;
+        }
         // SAFETY: info is live; create_outlet copies its metadata.
         let outlet = unsafe { (api.create_outlet)(info, 0, 360) };
         unsafe { (api.destroy_streaminfo)(info) };
@@ -431,7 +455,12 @@ impl LslPublisher {
             self.status = "Could not create Vernier breathing stream".into();
             return;
         }
-        append_vernier_breathing_metadata(api, info, schema, palette);
+        if !append_vernier_breathing_metadata(api, info, schema, palette) {
+            unsafe { (api.destroy_streaminfo)(info) };
+            self.status =
+                "Could not attach required processing metadata to Vernier breathing stream".into();
+            return;
+        }
         let outlet = unsafe { (api.create_outlet)(info, 0, 360) };
         unsafe { (api.destroy_streaminfo)(info) };
         if outlet.is_null() {
@@ -635,19 +664,22 @@ fn append_stream_metadata(
     info: StreamInfo,
     spec: MetricSpec,
     palette: Option<&SourcePalette>,
-) {
+    respiration_provenance: Option<&PolarRespirationProvenance>,
+) -> bool {
+    let processing_required =
+        respiration_provenance.is_some_and(|_| PolarRespirationProvenance::applies_to(spec));
     let (Some(get_description), Some(append_child), Some(append_child_value)) = (
         api.get_description,
         api.append_child,
         api.append_child_value,
     ) else {
-        return;
+        return !processing_required;
     };
     // SAFETY: `info` remains live until after outlet creation, and every C
     // string below lives through its individual liblsl call.
     let description = unsafe { get_description(info) };
     if description.is_null() {
-        return;
+        return !processing_required;
     }
     let (manufacturer, model) = if spec.id == "raw_force" {
         ("Vernier", "Go Direct")
@@ -668,13 +700,20 @@ fn append_stream_metadata(
         "Polar Stream",
     );
     append_source_palette(append_child, append_child_value, description, palette);
+    let processing_attached = append_polar_respiration_processing(
+        append_child,
+        append_child_value,
+        description,
+        spec,
+        respiration_provenance,
+    );
 
     let Ok(channels_name) = CString::new("channels") else {
-        return;
+        return processing_attached;
     };
     let channels = unsafe { append_child(description, channels_name.as_ptr()) };
     if channels.is_null() {
-        return;
+        return processing_attached;
     }
     for label in channel_labels(spec) {
         let Ok(channel_name) = CString::new("channel") else {
@@ -688,6 +727,31 @@ fn append_stream_metadata(
         append_value(append_child_value, channel, "unit", spec.unit);
         append_value(append_child_value, channel, "type", spec.stream_type);
     }
+    processing_attached
+}
+
+fn append_polar_respiration_processing(
+    append_child: AppendChild,
+    append_child_value: AppendChildValue,
+    description: XmlElement,
+    spec: MetricSpec,
+    provenance: Option<&PolarRespirationProvenance>,
+) -> bool {
+    let Some(provenance) = provenance.filter(|_| PolarRespirationProvenance::applies_to(spec))
+    else {
+        return true;
+    };
+    let Ok(name) = CString::new("processing") else {
+        return false;
+    };
+    let processing = unsafe { append_child(description, name.as_ptr()) };
+    if processing.is_null() {
+        return false;
+    }
+    provenance
+        .fields()
+        .into_iter()
+        .all(|field| append_value_checked(append_child_value, processing, field.name, &field.value))
 }
 
 fn append_vernier_raw_metadata(
@@ -839,17 +903,17 @@ fn append_vernier_breathing_metadata(
     info: StreamInfo,
     schema: &VernierStreamSchema,
     palette: Option<&SourcePalette>,
-) {
+) -> bool {
     let (Some(get_description), Some(append_child), Some(append_child_value)) = (
         api.get_description,
         api.append_child,
         api.append_child_value,
     ) else {
-        return;
+        return false;
     };
     let description = unsafe { get_description(info) };
     if description.is_null() {
-        return;
+        return false;
     }
     append_value(append_child_value, description, "manufacturer", "Vernier");
     append_value(
@@ -877,24 +941,9 @@ fn append_vernier_breathing_metadata(
         "source",
         "GDX-RB Force (N)",
     );
-    append_value(
-        append_child_value,
-        description,
-        "processing",
-        "Causal 30 s force range; 5th/95th percentiles after 20 finite samples; clamp to 0-1.",
-    );
-    append_value(
-        append_child_value,
-        description,
-        "nonfinite_policy",
-        "Hold the last derived value; exact non-finite input remains in the raw stream.",
-    );
-    append_value(
-        append_child_value,
-        description,
-        "inhale_direction",
-        "increasing",
-    );
+    if !append_vernier_breathing_processing(append_child, append_child_value, description) {
+        return false;
+    }
     append_value(
         append_child_value,
         description,
@@ -902,7 +951,7 @@ fn append_vernier_breathing_metadata(
         "Relative belt-force waveform, not lung volume or a clinical measurement.",
     );
     let Ok(channels_name) = CString::new("channels") else {
-        return;
+        return false;
     };
     let channels = unsafe { append_child(description, channels_name.as_ptr()) };
     append_vernier_channel(
@@ -914,6 +963,25 @@ fn append_vernier_breathing_metadata(
         "DerivedRespiration",
         &[],
     );
+    true
+}
+
+fn append_vernier_breathing_processing(
+    append_child: AppendChild,
+    append_child_value: AppendChildValue,
+    description: XmlElement,
+) -> bool {
+    let Ok(name) = CString::new("processing") else {
+        return false;
+    };
+    let processing = unsafe { append_child(description, name.as_ptr()) };
+    if processing.is_null() {
+        return false;
+    }
+    VernierBreathingProvenance
+        .fields()
+        .into_iter()
+        .all(|field| append_value_checked(append_child_value, processing, field.name, &field.value))
 }
 
 fn append_vernier_channel(
@@ -1026,12 +1094,21 @@ fn append_source_palette(
 }
 
 fn append_value(append_child_value: AppendChildValue, parent: XmlElement, name: &str, value: &str) {
+    let _ = append_value_checked(append_child_value, parent, name, value);
+}
+
+fn append_value_checked(
+    append_child_value: AppendChildValue,
+    parent: XmlElement,
+    name: &str,
+    value: &str,
+) -> bool {
     let (Ok(name), Ok(value)) = (CString::new(name), CString::new(value)) else {
-        return;
+        return false;
     };
     // SAFETY: parent is owned by the live streaminfo and strings live through
     // the call. liblsl returns a child owned by the same XML document.
-    unsafe { append_child_value(parent, name.as_ptr(), value.as_ptr()) };
+    !unsafe { append_child_value(parent, name.as_ptr(), value.as_ptr()) }.is_null()
 }
 
 fn channel_labels(spec: MetricSpec) -> Vec<&'static str> {
@@ -1045,5 +1122,53 @@ fn channel_labels(spec: MetricSpec) -> Vec<&'static str> {
 impl Drop for LslPublisher {
     fn drop(&mut self) {
         self.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe extern "C" fn unavailable_child(
+        _parent: XmlElement,
+        _name: *const c_char,
+    ) -> XmlElement {
+        std::ptr::null_mut()
+    }
+
+    unsafe extern "C" fn unavailable_value(
+        _parent: XmlElement,
+        _name: *const c_char,
+        _value: *const c_char,
+    ) -> XmlElement {
+        std::ptr::null_mut()
+    }
+
+    #[test]
+    fn required_respiration_processing_metadata_fails_closed() {
+        let provenance = PolarRespirationProvenance::new(Default::default());
+        assert!(!append_polar_respiration_processing(
+            unavailable_child,
+            unavailable_value,
+            std::ptr::null_mut(),
+            MetricSpec::for_id("breathing_volume").unwrap(),
+            Some(&provenance),
+        ));
+        assert!(append_polar_respiration_processing(
+            unavailable_child,
+            unavailable_value,
+            std::ptr::null_mut(),
+            MetricSpec::for_id("raw_acc").unwrap(),
+            Some(&provenance),
+        ));
+    }
+
+    #[test]
+    fn required_vernier_breathing_processing_metadata_fails_closed() {
+        assert!(!append_vernier_breathing_processing(
+            unavailable_child,
+            unavailable_value,
+            std::ptr::null_mut(),
+        ));
     }
 }

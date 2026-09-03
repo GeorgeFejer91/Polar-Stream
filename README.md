@@ -10,14 +10,20 @@ raw ECG and accelerometer; Vernier defaults to its complete raw recording plus
 the separate 0–1 breathing waveform. The Polar output library starts with a
 prominent ECG / accelerometer selector. ECG mode contains the H10's core ECG,
 heart-rate, HRV, coherence, Excite-O-Meter and experimental activation outputs;
-ACC mode starts with exactly raw X/Y/Z, 3D motion magnitude, and **ACC breathing
-magnitude (0–1)**. Signed projection, phase, quality/calibration, breathing rate,
-and breathing-dynamics outputs remain available under **Extra options** with
-their existing IDs and stream names.
+ACC mode offers raw X/Y/Z, 3D motion magnitude, and one experimental **ACC
+breathing magnitude (0–1)** waveform. Adding any release respiration card adds
+that waveform with readiness and confidence, so quality cannot be omitted by
+accident. Older projection, phase, calibration, rate, and breathing-dynamics
+IDs are not offered for new selections; saved configurations that use them are
+restored as visibly marked compatibility outputs. A restored dynamics-only
+subset uses the current default upstream respiration settings rather than
+retaining per-output upstream settings, so it must not be treated as a
+reproducible new-work measure.
 Selecting a metric opens one focused preview window containing only a looping
 SVG example of the output, a two- or three-sentence scientific summary, and two
 or three of the most relevant sources. An explicit **Save output** action then
-adds that single module to the enabled destinations. List rows stay static so
+adds that module to the enabled destinations (the ACC respiration set is one
+waveform plus two quality indicators). List rows stay static so
 only the selected metric animates.
 
 The loop is derived from the canonical anonymized 60-second real Polar H10
@@ -38,14 +44,21 @@ normalization controls. New ACC breathing outputs default to source-timed PCA
 over X + Z with a 0.18-second filter time constant. The H10 normally delivers
 roughly 37 internally 200 Hz samples per BLE notification; Polar Stream
 uses nominal 5 ms timing for the first frame and interpolates later samples
-between consecutive PMD newest-sample timestamps, so waveform and phase do not
-inherit the slower notification cadence. The module exposes a signed chest-motion projection
-in g, its robustly normalized 0–1 waveform, a hysteretic inhale/hold/exhale
-classifier, and explicit readiness/confidence companions. Saved pre-v1 settings
-retain the legacy estimator. Direction inversion, calibration, filter, state,
-and optional adaptive-bound controls remain available through **Adjust**.
+between consecutive PMD newest-sample timestamps, so the waveform does not
+inherit the slower notification cadence. The release surface exposes the
+robustly normalized 0–1 waveform plus explicit readiness/confidence companions.
+It does not expose a respiratory rate, phase, lung volume, or airflow
+measurement. Saved pre-v1 settings retain the legacy estimator for
+reproducibility and are labeled compatibility-only. A saved subset missing any
+of the waveform, confidence, or readiness cards is also labeled
+compatibility-only. **Upgrade to current set** is an explicit action that adds
+the complete three-output set and switches it to Timed PCA v1; merely restoring
+the configuration does not rewrite its saved output IDs. New settings stay on
+Timed PCA v1; direction inversion, calibration, filter, and optional
+adaptive-bound controls remain available through **Adjust**.
 
-The waveform display separately offers responsive fresh smoothing or an
+The waveform is already canonical 0–1, so a second output normalization is not
+offered for new configurations. Its display separately offers responsive fresh smoothing or an
 intentional 0.18-second timestamp-faithful delay; neither presentation mode
 changes canonical LSL, OSC, CSV, or classifier values. Every output is an
 unvalidated respiratory-motion/effort surrogate—not lung volume or airflow—and
@@ -98,8 +111,9 @@ In the installed app, connecting one sensor changes the discovery action to
 publishing while either protocol candidate cache is refreshed. Once both are
 connected, **Add another sensor** can find another non-active Polar or Vernier
 device without replacing either live owner. Their source-specific output
-routers remain live together: Polar ECG/ACC and Vernier raw/breathing outlets
-can be recorded on the same LSL clock. Selecting a source changes ordinary
+routers remain live together: Polar ECG/ACC/breathing and Vernier raw/breathing
+outlets can be recorded on the same LSL clock and in source-scoped CSV files.
+Selecting a source changes ordinary
 controls and charts only. A compatible active signal can be added explicitly as
 one comparator without stopping, merging, or republishing either source.
 
@@ -211,7 +225,7 @@ browser profile. It is deliberately called a live channel, not LSL.
 LSL and OSC remain visible in the shared browser interface, but ordinary web
 pages cannot open the raw UDP discovery/multicast and TCP/UDP sockets those
 native protocols require. Trying either toggle in Pages leaves it off and shows
-an installed-app-only error with a link to the latest release. Native LSL/OSC
+an installed-app-only error with a link to the latest stable release. Native LSL/OSC
 remain features of the separately installed desktop app; the website does not
 relay data to it and does not label a WebSocket or HTTP transport as LSL.
 
@@ -224,17 +238,19 @@ localhost, Tauri, a relay, or synthetic data to count as hardware evidence.
 
 ## Download
 
-Use the repository's
-[Polar Stream download page](https://github.com/GeorgeFejer91/Polar-Stream/releases/latest).
+Use the public [Polar Stream download page](https://georgefejer91.github.io/Polar-Stream/download/),
+browse [all GitHub releases](https://github.com/GeorgeFejer91/Polar-Stream/releases)
+for release candidates, or open the [latest stable release](https://github.com/GeorgeFejer91/Polar-Stream/releases/latest)
+directly. GitHub's latest route intentionally excludes prereleases.
 
 Every published release is held as a draft until CI has built and launch-tested
 the complete package set:
 
 | Platform | CPU | Packages |
 | --- | --- | --- |
-| Windows 10/11 | x64 | NSIS `.exe`, `.msi` |
-| Windows 11 | ARM64 | NSIS `.exe`, `.msi` |
-| macOS 10.15+ | Intel and Apple Silicon | Universal `.dmg` |
+| Windows | x64 | NSIS `.exe`, `.msi` |
+| Windows | ARM64 | NSIS `.exe`, `.msi` |
+| macOS 14+ | Intel and Apple Silicon | Universal `.dmg` |
 | Linux | x64 | `.AppImage`, `.deb` |
 | Linux | ARM64 | `.AppImage`, `.deb` |
 
@@ -250,7 +266,7 @@ rule, physical-device gate, predicate-filter exclusion, and AGPL licensing
 boundary are documented in the
 [optional Rusty LSL backend guide](docs/rusty-lsl-backend.md).
 
-Current packages are ad-hoc/unsigned. Windows SmartScreen and macOS Gatekeeper
+Release packages are ad-hoc/unsigned research previews. Windows SmartScreen and macOS Gatekeeper
 may therefore require an explicit confirmation. See the download page for the
 short platform-specific instructions.
 
@@ -307,6 +323,9 @@ settings, presentation boundary, and proposed reference-validation protocol are 
 The [Go Direct and multi-source handoff](docs/vernier-go-direct-handoff.md)
 documents the native/browser protocol paths, timing contract, source identity,
 and remaining hardware gates.
+The [mixed respiration audit](docs/mixed-respiration-audit.md) records the
+release-facing Polar allow-list, simultaneous LSL/OSC/CSV/visualization matrix,
+automated evidence, and remaining physical/signing gates.
 The [latency and multi-source architecture](docs/latency-multi-source-architecture.md)
 documents shared clock mapping, scanning during live sessions, renderer
 reattachment, composite panels, graceful shutdown, PsychoPy integration, and

@@ -1,6 +1,6 @@
 use std::{
-    fs::{self, File},
-    io::{BufWriter, Write},
+    fs::{self, File, OpenOptions},
+    io::{BufWriter, ErrorKind, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -13,14 +13,19 @@ use std::{
 use polar_h10_core::AccSample;
 use polar_h10_metrics::MetricDefinition;
 
-use crate::SourcePalette;
+use crate::{
+    SourcePalette, VERNIER_BREATHING_RECORDING_ID,
+    provenance::{PolarRespirationProvenance, VernierBreathingProvenance},
+};
 
 const QUEUE_CAPACITY: usize = 128;
+const FILE_COLLISION_ATTEMPTS: usize = 1_000;
 const ECG_RATE_HZ: f64 = 130.0;
 const ACC_RATE_HZ: f64 = 200.0;
 
 #[derive(Debug)]
 enum CsvMessage {
+    VernierBreathingProvenance,
     Ecg {
         clock: CaptureClock,
         sensor_timestamp_ns: u64,
@@ -47,6 +52,14 @@ enum CsvMessage {
         sensor_timestamp_ns: u64,
         values: Vec<(String, f32, String)>,
     },
+    MetricSeries {
+        clock: CaptureClock,
+        newest_timestamp_ns: u64,
+        sample_period_us: u32,
+        id: String,
+        unit: String,
+        values: Vec<f32>,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +81,10 @@ pub(crate) struct CsvPublisher {
     path: PathBuf,
     status: Arc<Mutex<WriterStatus>>,
     started_at: Instant,
+    stream_name: String,
+    source_palette: Option<SourcePalette>,
+    respiration_provenance: Option<PolarRespirationProvenance>,
+    vernier_breathing_provenance_sent: Mutex<bool>,
 }
 
 impl CsvPublisher {
@@ -75,18 +92,23 @@ impl CsvPublisher {
         directory: &Path,
         stream_name: &str,
         source_palette: Option<&SourcePalette>,
+        respiration_provenance: Option<&PolarRespirationProvenance>,
     ) -> Result<Self, String> {
         fs::create_dir_all(directory)
             .map_err(|error| format!("Could not create the CSV recording directory: {error}"))?;
         let started_at_ms = unix_timestamp_ms();
-        let filename = format!("{stream_name}_{}.csv", started_at_ms.round() as u128);
-        let path = directory.join(filename);
-        let file = File::create(&path)
+        let (path, file) = create_recording_file(directory, stream_name, started_at_ms)
             .map_err(|error| format!("Could not create the CSV recording: {error}"))?;
         let mut writer = BufWriter::new(file);
-        write_header(&mut writer, stream_name, started_at_ms, source_palette)
-            .and_then(|()| writer.flush())
-            .map_err(|error| format!("Could not initialize the CSV recording: {error}"))?;
+        write_header(
+            &mut writer,
+            stream_name,
+            started_at_ms,
+            source_palette,
+            respiration_provenance,
+        )
+        .and_then(|()| writer.flush())
+        .map_err(|error| format!("Could not initialize the CSV recording: {error}"))?;
 
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let status = Arc::new(Mutex::new(WriterStatus::default()));
@@ -101,6 +123,10 @@ impl CsvPublisher {
             path,
             status,
             started_at: Instant::now(),
+            stream_name: stream_name.to_owned(),
+            source_palette: source_palette.cloned(),
+            respiration_provenance: respiration_provenance.copied(),
+            vernier_breathing_provenance_sent: Mutex::new(false),
         })
     }
 
@@ -188,6 +214,54 @@ impl CsvPublisher {
         })
     }
 
+    pub(crate) fn records_header_configuration(
+        &self,
+        stream_name: &str,
+        source_palette: Option<&SourcePalette>,
+        respiration_provenance: Option<&PolarRespirationProvenance>,
+    ) -> bool {
+        self.stream_name == stream_name
+            && self.source_palette.as_ref() == source_palette
+            && self.respiration_provenance.as_ref() == respiration_provenance
+    }
+
+    pub(crate) fn publish_vernier_breathing_provenance(&self) -> Result<(), String> {
+        let mut sent = self
+            .vernier_breathing_provenance_sent
+            .lock()
+            .map_err(|_| "CSV provenance lock failed".to_owned())?;
+        if *sent {
+            return Ok(());
+        }
+        self.send(CsvMessage::VernierBreathingProvenance)?;
+        *sent = true;
+        Ok(())
+    }
+
+    pub(crate) fn publish_metric_series_at(
+        &self,
+        newest_timestamp_ns: u64,
+        sample_period_us: u32,
+        id: &str,
+        unit: &str,
+        values: &[f32],
+    ) -> Result<(), String> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        if id == VERNIER_BREATHING_RECORDING_ID {
+            self.publish_vernier_breathing_provenance()?;
+        }
+        self.send(CsvMessage::MetricSeries {
+            clock: self.clock(),
+            newest_timestamp_ns,
+            sample_period_us,
+            id: id.to_owned(),
+            unit: unit.to_owned(),
+            values: values.to_vec(),
+        })
+    }
+
     pub(crate) fn publish_custom_metrics(
         &self,
         values: &[(String, f32, String)],
@@ -235,6 +309,31 @@ impl CsvPublisher {
             status.error.get_or_insert(error);
         }
     }
+}
+
+fn create_recording_file(
+    directory: &Path,
+    stream_name: &str,
+    started_at_ms: f64,
+) -> std::io::Result<(PathBuf, File)> {
+    let base = format!("{stream_name}_{}", started_at_ms.round() as u128);
+    for collision in 0..FILE_COLLISION_ATTEMPTS {
+        let filename = if collision == 0 {
+            format!("{base}.csv")
+        } else {
+            format!("{base}_{collision}.csv")
+        };
+        let path = directory.join(filename);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        "too many CSV recordings share the same timestamp",
+    ))
 }
 
 fn run_writer(
@@ -300,6 +399,7 @@ fn write_header(
     stream_name: &str,
     started_at_ms: f64,
     source_palette: Option<&SourcePalette>,
+    respiration_provenance: Option<&PolarRespirationProvenance>,
 ) -> std::io::Result<()> {
     writeln!(writer, "# Polar Stream native recording")?;
     writeln!(writer, "# schema_version,3")?;
@@ -327,6 +427,16 @@ fn write_header(
             palette.dark.secondary
         )?;
     }
+    if let Some(provenance) = respiration_provenance {
+        for field in provenance.fields() {
+            writeln!(
+                writer,
+                "# polar_respiration_{},{}",
+                field.name,
+                csv_cell(&field.value)
+            )?;
+        }
+    }
     writeln!(writer, "# started_at_unix_ms,{started_at_ms:.3}")?;
     writeln!(
         writer,
@@ -340,6 +450,16 @@ fn write_header(
 
 fn write_message(writer: &mut impl Write, message: CsvMessage) -> std::io::Result<()> {
     match message {
+        CsvMessage::VernierBreathingProvenance => {
+            for field in VernierBreathingProvenance.fields() {
+                writeln!(
+                    writer,
+                    "# vernier_breathing_{},{}",
+                    field.name,
+                    csv_cell(&field.value)
+                )?;
+            }
+        }
         CsvMessage::Ecg {
             clock,
             sensor_timestamp_ns,
@@ -422,6 +542,29 @@ fn write_message(writer: &mut impl Write, message: CsvMessage) -> std::io::Resul
                 write_scalar_at(writer, clock, sensor_timestamp_ns, &id, index, value, &unit)?;
             }
         }
+        CsvMessage::MetricSeries {
+            clock,
+            newest_timestamp_ns,
+            sample_period_us,
+            id,
+            unit,
+            values,
+        } => {
+            let count = values.len();
+            let rate_hz = 1_000_000.0 / f64::from(sample_period_us.max(1));
+            for (index, value) in values.into_iter().enumerate() {
+                let offset_s = sample_offset_s(index, count, rate_hz);
+                writeln!(
+                    writer,
+                    "{:.3},{:.6},{},{},{index},,,,{value},{}",
+                    clock.host_timestamp_ms - offset_s * 1_000.0,
+                    (clock.relative_time_s - offset_s).max(0.0),
+                    sensor_timestamp(newest_timestamp_ns, index, count, rate_hz),
+                    csv_cell(&id),
+                    csv_cell(&unit),
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -495,6 +638,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn same_stream_and_start_millisecond_create_distinct_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "polar-stream-csv-collision-test-{}-{}",
+            std::process::id(),
+            unix_timestamp_ms().round() as u128
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let (first_path, mut first) =
+            create_recording_file(&directory, "Shared_Stream", 1_000.0).unwrap();
+        let (second_path, mut second) =
+            create_recording_file(&directory, "Shared_Stream", 1_000.0).unwrap();
+        assert_ne!(first_path, second_path);
+        assert_eq!(
+            first_path.file_name().and_then(|name| name.to_str()),
+            Some("Shared_Stream_1000.csv")
+        );
+        assert_eq!(
+            second_path.file_name().and_then(|name| name.to_str()),
+            Some("Shared_Stream_1000_1.csv")
+        );
+        first.write_all(b"polar").unwrap();
+        second.write_all(b"vernier").unwrap();
+        drop((first, second));
+        assert_eq!(fs::read_to_string(first_path).unwrap(), "polar");
+        assert_eq!(fs::read_to_string(second_path).unwrap(), "vernier");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn writes_raw_and_scalar_rows_without_blocking_the_publisher() {
         let directory = std::env::temp_dir().join(format!(
             "polar-stream-csv-test-{}-{}",
@@ -502,7 +674,10 @@ mod tests {
             unix_timestamp_ms().round() as u128
         ));
         let palette = crate::source_palette("ocean").unwrap();
-        let publisher = CsvPublisher::start(&directory, "Test_Stream", Some(&palette)).unwrap();
+        let provenance = PolarRespirationProvenance::new(Default::default());
+        let publisher =
+            CsvPublisher::start(&directory, "Test_Stream", Some(&palette), Some(&provenance))
+                .unwrap();
         let path = publisher.path().to_owned();
         publisher.publish_ecg(1_000_000_000, &[1, -2]).unwrap();
         publisher
@@ -516,8 +691,18 @@ mod tests {
             )
             .unwrap();
         publisher.publish_heart_rate(61, &[983.5]).unwrap();
+        publisher.publish_vernier_breathing_provenance().unwrap();
         publisher
             .publish_metrics_at(3_000_000_000, &[("breathing_volume", 0.75)])
+            .unwrap();
+        publisher
+            .publish_metric_series_at(
+                4_000_000_000,
+                100_000,
+                "vernier_breathing",
+                "0–1",
+                &[0.25, 0.75],
+            )
             .unwrap();
         drop(publisher);
 
@@ -534,8 +719,61 @@ mod tests {
         assert!(contents.contains(",heart_rate,0,,,,61,bpm"));
         assert!(contents.contains(",rr_interval,0,,,,983.5,ms"));
         assert!(contents.contains(",3000000000,breathing_volume,0,,,,0.75,0–1"));
+        assert!(contents.contains(",3900000000,vernier_breathing,0,,,,0.25,0–1"));
+        assert!(contents.contains(",4000000000,vernier_breathing,1,,,,0.75,0–1"));
         assert!(contents.contains("# schema_version,3"));
         assert!(contents.contains("# source_palette_id,ocean"));
+        assert!(contents.contains("# polar_respiration_algorithm,polar-stream-acc-respiration"));
+        assert!(contents.contains("# polar_respiration_volume_mode,timed-pca-v1"));
+        assert!(contents.contains("# polar_respiration_state_mode,hysteresis-v1"));
+        assert!(contents.contains("# polar_respiration_axes,\"x,z\""));
+        assert!(contents.contains(&format!(
+            "# polar_respiration_application_version,{}",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(
+            contents
+                .contains("# vernier_breathing_algorithm,polar-stream-vernier-force-respiration")
+        );
+        assert!(
+            contents.contains("# vernier_breathing_settings_schema,vernier-breathing-settings-v1")
+        );
+        assert!(contents.contains("# vernier_breathing_window_seconds,30"));
+        assert!(contents.contains("# vernier_breathing_lower_quantile,0.05"));
+        assert!(contents.contains("# vernier_breathing_upper_quantile,0.95"));
+        assert!(contents.contains("# vernier_breathing_inhale_direction,increasing-force"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn vernier_only_recording_header_has_versioned_processing_provenance() {
+        let directory = std::env::temp_dir().join(format!(
+            "polar-stream-vernier-csv-test-{}-{}",
+            std::process::id(),
+            unix_timestamp_ms().round() as u128
+        ));
+        let publisher = CsvPublisher::start(&directory, "Vernier_Stream", None, None).unwrap();
+        let path = publisher.path().to_owned();
+        publisher
+            .publish_metric_series_at(100_000_000, 100_000, "vernier_breathing", "0–1", &[0.5])
+            .unwrap();
+        drop(publisher);
+        let mut contents = String::new();
+        for _ in 0..40 {
+            contents = fs::read_to_string(&path).unwrap_or_default();
+            if contents.contains(",vernier_breathing,") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!contents.contains("# polar_respiration_"));
+        assert!(contents.contains(&format!(
+            "# vernier_breathing_application_version,{}",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(contents.contains("# vernier_breathing_robust_bounds_minimum_samples,20"));
+        assert!(contents.contains("# vernier_breathing_bounds_update_samples,5"));
+        assert!(contents.contains("# vernier_breathing_nonfinite_policy,hold-last-output"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

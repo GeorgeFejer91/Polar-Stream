@@ -5,6 +5,7 @@ mod csv;
 #[cfg(feature = "liblsl-backend")]
 mod lsl;
 mod osc;
+mod provenance;
 #[cfg(feature = "rusty-lsl-backend")]
 mod rusty_lsl;
 
@@ -35,6 +36,7 @@ use polar_h10_core::AccSample;
 use polar_h10_math::{CompiledFormula, FormulaFrame, MAX_TOTAL_STATE_SAMPLES};
 pub use polar_h10_math::{FormulaError, FormulaRuntimeState, FormulaValidation, validate_formula};
 use polar_stream_time::SourceClockMapper;
+use provenance::PolarRespirationProvenance;
 #[cfg(feature = "rusty-lsl-backend")]
 use rusty_lsl::RustyLslPublisher as LslPublisher;
 use serde::Serialize;
@@ -45,6 +47,7 @@ const VERNIER_RAW_OUTLET_KEY: &str = "__vernier_raw";
 const VERNIER_BREATHING_OUTLET_KEY: &str = "__vernier_breathing";
 pub const VERNIER_RAW_STREAM_SUFFIX: &str = "rawVernier";
 pub const VERNIER_BREATHING_STREAM_SUFFIX: &str = "vernierBreathing";
+pub const VERNIER_BREATHING_RECORDING_ID: &str = "vernier_breathing";
 pub const VERNIER_RAW_DIAGNOSTIC_CHANNELS: usize = 7;
 
 #[derive(Default)]
@@ -411,6 +414,16 @@ struct RouterInner {
     selected: HashSet<String>,
     formulas: HashMap<String, FormulaRuntime>,
     vernier_schema: Option<VernierStreamSchema>,
+    #[cfg(test)]
+    fail_lsl_build_after_outlets: Option<usize>,
+}
+
+enum StagedLsl {
+    #[cfg(feature = "rusty-lsl-backend")]
+    Keep,
+    Disable,
+    #[cfg(feature = "liblsl-backend")]
+    Replace(Box<LslPublisher>),
 }
 
 struct FormulaRuntime {
@@ -453,6 +466,8 @@ impl OutputRouter {
                 selected: OutputConfig::default().outputs.into_iter().collect(),
                 formulas: HashMap::new(),
                 vernier_schema: None,
+                #[cfg(test)]
+                fail_lsl_build_after_outlets: None,
             }),
         }
     }
@@ -490,6 +505,7 @@ impl OutputRouter {
 
     pub async fn configure(&self, config: OutputConfig) -> Result<OutputHealth, String> {
         let (config, mut compiled) = Self::validated_with_formulas(config)?;
+        let respiration_provenance = PolarRespirationProvenance::configured(&config);
         let mut osc = if config.osc_enabled {
             Some(OscPublisher::connect(OSC_TARGET).await?)
         } else {
@@ -498,33 +514,8 @@ impl OutputRouter {
         if let Some(publisher) = &mut osc {
             publisher.configure(&config.stream_name, &config.outputs);
             publisher.configure_custom(&config.stream_name, &config.custom_formulas);
+            publisher.configure_vernier_breathing(&config.stream_name);
         }
-
-        let csv_to_install = if config.csv_enabled {
-            let needs_writer = self
-                .inner
-                .lock()
-                .map_err(|_| "Output router lock failed")?
-                .csv
-                .is_none();
-            if needs_writer {
-                let directory = self
-                    .inner
-                    .lock()
-                    .map_err(|_| "Output router lock failed")?
-                    .csv_directory
-                    .clone();
-                Some(CsvPublisher::start(
-                    &directory,
-                    &config.stream_name,
-                    config.source_palette.as_ref(),
-                )?)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
 
         let mut inner = self.inner.lock().map_err(|_| "Output router lock failed")?;
         #[cfg(feature = "rusty-lsl-backend")]
@@ -534,10 +525,47 @@ impl OutputRouter {
                     .into(),
             );
         }
+        #[cfg(feature = "rusty-lsl-backend")]
+        inner.ensure_lsl_reconfiguration_supported(&config, inner.vernier_schema.as_ref())?;
+        #[cfg(feature = "liblsl-backend")]
+        let staged_lsl = inner.build_lsl(&config, inner.vernier_schema.as_ref())?;
+        let csv_to_install = if config.csv_enabled
+            && inner.csv.as_ref().is_none_or(|csv| {
+                !csv.records_header_configuration(
+                    &config.stream_name,
+                    config.source_palette.as_ref(),
+                    respiration_provenance.as_ref(),
+                )
+            }) {
+            let csv = CsvPublisher::start(
+                &inner.csv_directory,
+                &config.stream_name,
+                config.source_palette.as_ref(),
+                respiration_provenance.as_ref(),
+            )?;
+            if inner.vernier_schema.is_some() {
+                csv.publish_vernier_breathing_provenance()?;
+            }
+            Some(csv)
+        } else {
+            None
+        };
+        // Rusty LSL owns one process-wide discovery registry. Stage other
+        // fallible transports first, then populate that existing publisher on
+        // first enable; active contract changes were rejected above.
+        #[cfg(feature = "rusty-lsl-backend")]
+        let staged_lsl = {
+            let vernier_schema = inner.vernier_schema.clone();
+            inner.build_lsl(&config, vernier_schema.as_ref())?
+        };
+
+        // Every operation below is an in-memory, infallible commit. Until this
+        // point the live transports, configuration, and processor state remain
+        // untouched if any candidate endpoint cannot be created.
         if !config.csv_enabled {
             inner.csv = None;
-        } else if inner.csv.is_none() {
-            inner.csv = csv_to_install;
+        } else if let Some(csv) = csv_to_install {
+            inner.csv = Some(csv);
         }
         inner.reconcile_normalizers(&config);
         let mut previous = std::mem::take(&mut inner.formulas);
@@ -549,7 +577,7 @@ impl OutputRouter {
         {
             let candidate = compiled
                 .remove(&formula.id)
-                .ok_or("Compiled custom formula is unavailable")?;
+                .expect("validated enabled formulas are compiled before transport staging");
             let runtime = if let Some(mut existing) =
                 previous.remove(&formula.id).filter(|existing| {
                     existing.config.source == formula.source
@@ -571,7 +599,7 @@ impl OutputRouter {
         inner.selected = config.outputs.iter().cloned().collect();
         inner.config = config;
         inner.osc = osc;
-        inner.rebuild_lsl();
+        inner.install_lsl(staged_lsl);
         Ok(inner.health())
     }
 
@@ -631,15 +659,24 @@ impl OutputRouter {
             );
         }
         if inner.vernier_schema.as_ref() != Some(&schema) {
+            let config = inner.config.clone();
+            let staged_lsl = inner
+                .build_lsl(&config, Some(&schema))
+                .map_err(|message| {
+                    format!(
+                        "The Vernier raw and derived LSL outlets could not be installed atomically: {message}"
+                    )
+                })?;
+            if let Some(csv) = inner.csv.as_ref()
+                && let Err(message) = csv.publish_vernier_breathing_provenance()
+            {
+                inner.csv = None;
+                return Err(format!(
+                    "The Vernier CSV processing metadata could not be recorded: {message}"
+                ));
+            }
             inner.vernier_schema = Some(schema.clone());
-            inner.rebuild_lsl();
-        }
-        #[cfg(feature = "liblsl-backend")]
-        if inner.config.lsl_enabled && !inner.lsl.status().starts_with("Publishing ") {
-            return Err(format!(
-                "The Vernier raw and derived LSL outlets could not be installed atomically: {}",
-                inner.lsl.status()
-            ));
+            inner.install_lsl(staged_lsl);
         }
         Ok(schema)
     }
@@ -853,9 +890,9 @@ impl OutputRouter {
         host_receive_timestamp_ns: u64,
         values_01: &[f32],
         sample_period_us: u32,
-    ) {
+    ) -> Option<String> {
         let Ok(mut inner) = self.inner.lock() else {
-            return;
+            return None;
         };
         if inner.config.lsl_enabled && inner.vernier_schema.is_some() {
             inner.lsl.push_scalar_series_period_at(
@@ -865,6 +902,23 @@ impl OutputRouter {
                 sample_period_us,
             );
         }
+        if let Some(osc) = &mut inner.osc {
+            osc.send_vernier_breathing(host_receive_timestamp_ns, values_01, sample_period_us);
+        }
+        let error = inner.csv.as_ref().and_then(|csv| {
+            csv.publish_metric_series_at(
+                host_receive_timestamp_ns,
+                sample_period_us,
+                VERNIER_BREATHING_RECORDING_ID,
+                "0–1",
+                values_01,
+            )
+            .err()
+        });
+        if error.is_some() {
+            inner.csv = None;
+        }
+        error
     }
 
     pub fn publish_accelerometer(
@@ -1064,39 +1118,165 @@ impl RouterInner {
             .map_or(value, |normalizer| normalizer.apply(value))
     }
 
-    fn rebuild_lsl(&mut self) {
-        self.lsl.clear();
-        if !self.config.lsl_enabled {
-            return;
+    #[cfg(feature = "liblsl-backend")]
+    fn build_lsl(
+        &self,
+        config: &OutputConfig,
+        vernier_schema: Option<&VernierStreamSchema>,
+    ) -> Result<StagedLsl, String> {
+        if !config.lsl_enabled {
+            return Ok(StagedLsl::Disable);
         }
-        for id in &self.config.outputs {
+        let mut lsl = self.lsl.fresh();
+        let fail_after_outlets = {
+            #[cfg(test)]
+            {
+                self.fail_lsl_build_after_outlets
+            }
+            #[cfg(not(test))]
+            {
+                None
+            }
+        };
+        Self::populate_lsl(&mut lsl, config, vernier_schema, fail_after_outlets)?;
+        Ok(StagedLsl::Replace(Box::new(lsl)))
+    }
+
+    #[cfg(feature = "rusty-lsl-backend")]
+    fn build_lsl(
+        &mut self,
+        config: &OutputConfig,
+        vernier_schema: Option<&VernierStreamSchema>,
+    ) -> Result<StagedLsl, String> {
+        if !config.lsl_enabled {
+            return Ok(StagedLsl::Disable);
+        }
+        self.ensure_lsl_reconfiguration_supported(config, vernier_schema)?;
+        if self.config.lsl_enabled && self.lsl.outlet_count() > 0 {
+            return Ok(StagedLsl::Keep);
+        }
+
+        // The optional backend owns one process-wide runtime admission and
+        // discovery socket, so first enable must populate the existing
+        // publisher rather than constructing a competing candidate.
+        self.lsl.clear();
+        let fail_after_outlets = {
+            #[cfg(test)]
+            {
+                self.fail_lsl_build_after_outlets
+            }
+            #[cfg(not(test))]
+            {
+                None
+            }
+        };
+        if let Err(message) =
+            Self::populate_lsl(&mut self.lsl, config, vernier_schema, fail_after_outlets)
+        {
+            self.lsl.clear();
+            return Err(message);
+        }
+        Ok(StagedLsl::Keep)
+    }
+
+    fn populate_lsl(
+        lsl: &mut LslPublisher,
+        config: &OutputConfig,
+        vernier_schema: Option<&VernierStreamSchema>,
+        fail_after_outlets: Option<usize>,
+    ) -> Result<(), String> {
+        let respiration_provenance = PolarRespirationProvenance::configured(config);
+        for id in &config.outputs {
             if let Some(spec) = MetricSpec::for_id(id) {
-                self.lsl.add_outlet_with_palette(
-                    &self.config.stream_name,
+                lsl.add_outlet_with_palette(
+                    &config.stream_name,
                     spec,
-                    self.config.source_palette.as_ref(),
+                    config.source_palette.as_ref(),
+                    respiration_provenance.as_ref(),
                 );
             }
         }
-        for formula in self
-            .config
+        for formula in config
             .custom_formulas
             .iter()
             .filter(|formula| formula.enabled)
         {
-            self.lsl.add_custom_outlet_with_palette(
-                &self.config.stream_name,
+            lsl.add_custom_outlet_with_palette(
+                &config.stream_name,
                 formula,
-                self.config.source_palette.as_ref(),
+                config.source_palette.as_ref(),
             );
         }
         #[cfg(feature = "liblsl-backend")]
-        if let Some(schema) = &self.vernier_schema {
-            self.lsl.add_vernier_outlets(
-                &self.config.stream_name,
-                schema,
-                self.config.source_palette.as_ref(),
+        if let Some(schema) = vernier_schema {
+            lsl.add_vernier_outlets(&config.stream_name, schema, config.source_palette.as_ref());
+        }
+        let expected = config.outputs.len()
+            + config
+                .custom_formulas
+                .iter()
+                .filter(|formula| formula.enabled)
+                .count()
+            + usize::from(vernier_schema.is_some()) * 2;
+        let actual = lsl.outlet_count();
+        if fail_after_outlets.is_some_and(|outlets| actual >= outlets) {
+            return Err(format!(
+                "Injected LSL candidate failure after {actual} outlet(s)"
+            ));
+        }
+        if actual != expected {
+            return Err(format!(
+                "Expected {expected} LSL outlet(s), opened {actual}: {}",
+                lsl.status()
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "rusty-lsl-backend")]
+    fn ensure_lsl_reconfiguration_supported(
+        &self,
+        config: &OutputConfig,
+        vernier_schema: Option<&VernierStreamSchema>,
+    ) -> Result<(), String> {
+        if config.lsl_enabled
+            && self.config.lsl_enabled
+            && self.lsl.outlet_count() > 0
+            && !self.lsl_contract_unchanged(config, vernier_schema)
+        {
+            return Err(
+                "The optional Rusty LSL backend cannot atomically replace active outlets. Turn LSL off, apply the output change, then turn LSL on again."
+                    .into(),
             );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "rusty-lsl-backend")]
+    fn lsl_contract_unchanged(
+        &self,
+        config: &OutputConfig,
+        vernier_schema: Option<&VernierStreamSchema>,
+    ) -> bool {
+        self.config.stream_name == config.stream_name
+            && self.config.outputs == config.outputs
+            && self.config.source_palette == config.source_palette
+            && self.config.custom_formulas == config.custom_formulas
+            && PolarRespirationProvenance::configured(&self.config)
+                == PolarRespirationProvenance::configured(config)
+            && self.vernier_schema.as_ref() == vernier_schema
+    }
+
+    fn install_lsl(&mut self, staged: StagedLsl) {
+        match staged {
+            #[cfg(feature = "rusty-lsl-backend")]
+            StagedLsl::Keep => {}
+            StagedLsl::Disable => self.lsl.clear(),
+            #[cfg(feature = "liblsl-backend")]
+            StagedLsl::Replace(mut staged) => {
+                staged.inherit_source_clock(&mut self.lsl);
+                self.lsl = *staged;
+            }
         }
     }
 
@@ -1417,5 +1597,446 @@ mod normalization_tests {
         assert_eq!(batch.series.len(), 1);
         assert_eq!(batch.series[0].values, vec![5.0, -3.0]);
         assert_eq!(router.publish_ecg(1_000_000, &[10, -6]), None);
+    }
+
+    #[cfg(feature = "liblsl-backend")]
+    #[tokio::test]
+    async fn failed_lsl_candidate_leaves_config_csv_and_selected_outputs_unchanged() {
+        let directory = std::env::temp_dir().join(format!(
+            "polar-stream-output-transaction-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let router = OutputRouter::with_bundled_lsl_and_recordings(None, directory.clone());
+        let previous = OutputConfig {
+            stream_name: "Stable_Stream".into(),
+            csv_enabled: true,
+            outputs: vec!["raw_acc".into()],
+            ..OutputConfig::default()
+        };
+        router.configure(previous.clone()).await.unwrap();
+        let previous_csv = router
+            .inner
+            .lock()
+            .unwrap()
+            .csv
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_owned();
+        router.inner.lock().unwrap().fail_lsl_build_after_outlets = Some(0);
+
+        let error = router
+            .configure(OutputConfig {
+                stream_name: "Rejected_Stream".into(),
+                lsl_enabled: true,
+                csv_enabled: true,
+                osc_enabled: true,
+                outputs: vec!["breathing_volume".into()],
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(error.contains("Injected LSL candidate failure"), "{error}");
+        let inner = router.inner.lock().unwrap();
+        assert_eq!(inner.config.stream_name, previous.stream_name);
+        assert_eq!(inner.config.outputs, previous.outputs);
+        assert!(!inner.config.lsl_enabled);
+        assert!(!inner.config.osc_enabled);
+        assert!(inner.selected.contains("raw_acc"));
+        assert!(!inner.selected.contains("breathing_volume"));
+        assert_eq!(inner.csv.as_ref().unwrap().path(), previous_csv);
+        drop(inner);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+
+        drop(router);
+        for _ in 0..40 {
+            match std::fs::remove_dir_all(&directory) {
+                Ok(()) => break,
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(!directory.exists());
+    }
+
+    #[cfg(feature = "rusty-lsl-backend")]
+    #[tokio::test]
+    async fn changed_rusty_lsl_contract_is_rejected_without_disturbing_live_outlets() {
+        let router = OutputRouter::new();
+        let previous = OutputConfig {
+            stream_name: format!("transaction_{}", std::process::id()),
+            lsl_enabled: true,
+            outputs: vec!["raw_acc".into()],
+            ..OutputConfig::default()
+        };
+        router.configure(previous.clone()).await.unwrap();
+        {
+            let mut inner = router.inner.lock().unwrap();
+            assert_eq!(inner.lsl.outlet_count(), 1);
+            inner.fail_lsl_build_after_outlets = Some(1);
+        }
+
+        let error = router
+            .configure(OutputConfig {
+                stream_name: format!("rejected_{}", std::process::id()),
+                lsl_enabled: true,
+                outputs: vec!["raw_acc".into(), "breathing_volume".into()],
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("cannot atomically replace active outlets"),
+            "{error}"
+        );
+        let inner = router.inner.lock().unwrap();
+        assert_eq!(inner.config.stream_name, previous.stream_name);
+        assert_eq!(inner.config.outputs, previous.outputs);
+        assert_eq!(inner.lsl.outlet_count(), 1);
+        assert!(inner.lsl.status().contains("1 stream(s)"));
+    }
+
+    #[tokio::test]
+    async fn csv_starts_a_new_file_when_respiration_provenance_changes() {
+        use polar_h10_metrics::{BreathingSettings, BreathingStateMode, BreathingVolumeMode};
+
+        let directory = std::env::temp_dir().join(format!(
+            "polar-stream-provenance-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let router = OutputRouter::with_bundled_lsl_and_recordings(None, directory.clone());
+        router
+            .configure(OutputConfig {
+                csv_enabled: true,
+                outputs: vec!["raw_acc".into()],
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap();
+        let raw_path = router
+            .inner
+            .lock()
+            .unwrap()
+            .csv
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_owned();
+        assert!(
+            !std::fs::read_to_string(&raw_path)
+                .unwrap()
+                .contains("# polar_respiration_")
+        );
+
+        router
+            .configure(OutputConfig {
+                csv_enabled: true,
+                outputs: vec!["breathing_volume".into()],
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap();
+        let timed_path = router
+            .inner
+            .lock()
+            .unwrap()
+            .csv
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_owned();
+        assert_ne!(timed_path, raw_path);
+        let timed_header = std::fs::read_to_string(&timed_path).unwrap();
+        assert!(timed_header.contains("# polar_respiration_volume_mode,timed-pca-v1"));
+        assert!(timed_header.contains("# polar_respiration_state_mode,hysteresis-v1"));
+
+        let mut metric_options = HashMap::new();
+        metric_options.insert(
+            "breathing_volume".into(),
+            MetricOutputOptions {
+                processing: MetricProcessingOptions {
+                    breathing: Some(BreathingSettings {
+                        volume_mode: BreathingVolumeMode::LegacyV0,
+                        state_mode: BreathingStateMode::LegacyV0,
+                        ..BreathingSettings::default()
+                    }),
+                },
+                ..MetricOutputOptions::default()
+            },
+        );
+        router
+            .configure(OutputConfig {
+                csv_enabled: true,
+                outputs: vec!["breathing_volume".into()],
+                metric_options,
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap();
+        let legacy_path = router
+            .inner
+            .lock()
+            .unwrap()
+            .csv
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_owned();
+        assert_ne!(legacy_path, timed_path);
+        let legacy_header = std::fs::read_to_string(&legacy_path).unwrap();
+        assert!(legacy_header.contains("# polar_respiration_volume_mode,legacy-v0"));
+        assert!(legacy_header.contains("# polar_respiration_state_mode,legacy-v0"));
+
+        drop(router);
+        for _ in 0..40 {
+            match std::fs::remove_dir_all(&directory) {
+                Ok(()) => break,
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(!directory.exists());
+    }
+
+    #[tokio::test]
+    async fn csv_starts_a_new_file_when_header_identity_changes() {
+        let directory = std::env::temp_dir().join(format!(
+            "polar-stream-csv-identity-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let router = OutputRouter::with_bundled_lsl_and_recordings(None, directory.clone());
+        router
+            .configure(OutputConfig {
+                stream_name: "First_Stream".into(),
+                csv_enabled: true,
+                outputs: vec!["raw_acc".into()],
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap();
+        let first_path = router
+            .inner
+            .lock()
+            .unwrap()
+            .csv
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_owned();
+
+        router
+            .configure(OutputConfig {
+                stream_name: "Second_Stream".into(),
+                csv_enabled: true,
+                outputs: vec!["raw_acc".into()],
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap();
+        let second_path = router
+            .inner
+            .lock()
+            .unwrap()
+            .csv
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_owned();
+        assert_ne!(second_path, first_path);
+        assert!(
+            std::fs::read_to_string(&second_path)
+                .unwrap()
+                .contains("# stream_name,Second_Stream")
+        );
+
+        router
+            .configure(OutputConfig {
+                stream_name: "Second_Stream".into(),
+                csv_enabled: true,
+                source_palette: source_palette("ocean"),
+                outputs: vec!["raw_acc".into()],
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap();
+        let palette_path = router
+            .inner
+            .lock()
+            .unwrap()
+            .csv
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_owned();
+        assert_ne!(palette_path, second_path);
+        let palette_header = std::fs::read_to_string(&palette_path).unwrap();
+        assert!(palette_header.contains("# stream_name,Second_Stream"));
+        assert!(palette_header.contains("# source_palette_id,ocean"));
+
+        drop(router);
+        for _ in 0..40 {
+            match std::fs::remove_dir_all(&directory) {
+                Ok(()) => break,
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(!directory.exists());
+    }
+
+    #[tokio::test]
+    async fn polar_and_vernier_routers_log_distinct_native_csv_streams_with_provenance() {
+        let directory = std::env::temp_dir().join(format!(
+            "polar-stream-mixed-router-csv-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let polar = OutputRouter::with_bundled_lsl_and_recordings(None, directory.clone());
+        let vernier = OutputRouter::with_bundled_lsl_and_recordings(None, directory.clone());
+
+        polar
+            .configure(OutputConfig {
+                stream_name: "Mixed_source-1".into(),
+                csv_enabled: true,
+                outputs: vec!["raw_acc".into(), "breathing_volume".into()],
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap();
+        vernier
+            .configure(OutputConfig {
+                stream_name: "Mixed_source-2".into(),
+                csv_enabled: true,
+                outputs: Vec::new(),
+                ..OutputConfig::default()
+            })
+            .await
+            .unwrap();
+        vernier
+            .configure_vernier_streams(
+                "GDX-RB",
+                100_000,
+                &[vernier_sensor(
+                    1,
+                    "Force",
+                    "N",
+                    vernier_gdx_core::NumericMeasurementType::Real,
+                    vernier_gdx_core::SamplingMode::Periodic,
+                )],
+            )
+            .unwrap();
+
+        assert_eq!(
+            polar.publish_accelerometer(
+                200_000_000,
+                &[AccSample {
+                    x_mg: 1,
+                    y_mg: 2,
+                    z_mg: 3,
+                }],
+            ),
+            None
+        );
+        assert_eq!(
+            polar.publish_metrics_at(
+                200_000_000,
+                &[MetricValue {
+                    id: "breathing_volume",
+                    value: 0.75,
+                }],
+            ),
+            None
+        );
+        assert_eq!(
+            vernier.publish_force(300_000_000, &[10.0, 11.0], 100_000),
+            None
+        );
+        assert_eq!(
+            vernier.publish_vernier_breathing(300_000_000, &[0.25, 0.75], 100_000),
+            None
+        );
+
+        let polar_path = polar
+            .inner
+            .lock()
+            .unwrap()
+            .csv
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_owned();
+        let vernier_path = vernier
+            .inner
+            .lock()
+            .unwrap()
+            .csv
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_owned();
+        assert_ne!(polar_path, vernier_path);
+        assert!(
+            polar_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("Mixed_source-1_")
+        );
+        assert!(
+            vernier_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("Mixed_source-2_")
+        );
+        drop((polar, vernier));
+
+        let (mut polar_csv, mut vernier_csv) = (String::new(), String::new());
+        for _ in 0..40 {
+            polar_csv = std::fs::read_to_string(&polar_path).unwrap_or_default();
+            vernier_csv = std::fs::read_to_string(&vernier_path).unwrap_or_default();
+            if polar_csv.contains(",breathing_volume,")
+                && vernier_csv.contains(",vernier_breathing,")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(polar_csv.contains(",raw_acc,0,1,2,3,,mg"));
+        assert!(polar_csv.contains(",200000000,breathing_volume,0,,,,0.75,0–1"));
+        assert!(polar_csv.contains("# polar_respiration_settings_schema,breathing-settings-v1"));
+        assert!(!polar_csv.contains("# vernier_breathing_"));
+        assert!(vernier_csv.contains(",raw_force,0,,,,10,N"));
+        assert!(vernier_csv.contains(",vernier_breathing,0,,,,0.25,0–1"));
+        assert!(vernier_csv.contains(",vernier_breathing,1,,,,0.75,0–1"));
+        assert!(
+            vernier_csv
+                .contains("# vernier_breathing_settings_schema,vernier-breathing-settings-v1")
+        );
+        assert!(vernier_csv.contains(&format!(
+            "# vernier_breathing_application_version,{}",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(!vernier_csv.contains("# polar_respiration_"));
+
+        for _ in 0..40 {
+            match std::fs::remove_dir_all(&directory) {
+                Ok(()) => break,
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(!directory.exists());
     }
 }

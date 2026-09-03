@@ -55,6 +55,11 @@ require_universal "$recorder_app/Contents/MacOS/LabRecorder" 'bundled LabRecorde
 require_universal "$recorder_app/Contents/Frameworks/lsl.framework/lsl" 'LabRecorder liblsl framework'
 codesign --verify --deep --strict "$app"
 plutil -extract NSBluetoothAlwaysUsageDescription raw "$info_plist" | grep -q 'Bluetooth'
+minimum_system=$(plutil -extract LSMinimumSystemVersion raw "$info_plist")
+if [ "$minimum_system" != '14.0' ]; then
+  echo "Polar Stream package declares unexpected macOS minimum: $minimum_system" >&2
+  exit 1
+fi
 
 "$app_binary" > smoke.log 2>&1 &
 app_pid=$!

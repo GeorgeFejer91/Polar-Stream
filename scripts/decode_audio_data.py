@@ -31,7 +31,11 @@ UNITS = {
     "rr_interval": "ms",
     "acc_magnitude": "g",
     "acc_breathing_magnitude": "g",
+    "breathing_volume": "0-1",
+    "breathing_signal_confidence": "0-1",
+    "breathing_signal_ready": "0/1",
     "breathing_phase": "class",
+    "vernier_breathing": "0-1",
 }
 
 

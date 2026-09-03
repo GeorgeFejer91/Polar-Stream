@@ -4,6 +4,8 @@
   const SCHEMA_VERSION = 2;
   const RECORDING_SCHEMA_VERSION = 3;
   const DEFAULT_MAX_ROWS = 300_000;
+  const MAX_SOURCE_IDENTITIES = 32;
+  const MAX_SOURCE_FIELD_LENGTH = 128;
   const CHANNEL_NAME = "polar-stream-live-v1";
   const CSV_COLUMNS = [
     "host_timestamp_ms",
@@ -31,6 +33,7 @@
     breathing_axis_range: "g",
     breathing_signal_confidence: "0-1",
     breathing_signal_ready: "0/1",
+    vernier_breathing: "0-1",
     heart_rate: "bpm",
     rr_interval: "ms",
   });
@@ -48,6 +51,48 @@
 
   function csvRow(values) {
     return `${values.map(csvCell).join(",")}\n`;
+  }
+
+  function boundedSourceField(value, fallback = "") {
+    const text = String(value ?? fallback)
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .trim()
+      .slice(0, MAX_SOURCE_FIELD_LENGTH);
+    if (!text) return String(fallback).slice(0, MAX_SOURCE_FIELD_LENGTH);
+    return /^[=+\-@]/.test(text) ? `'${text}` : text;
+  }
+
+  function inferredInputKind(eventKind) {
+    if (eventKind === "force") return "vernierGoDirect";
+    if (eventKind === "ecg" || eventKind === "accelerometer") return "polarH10";
+    return "";
+  }
+
+  function inferredDeviceFamily(source, inputKind, eventKind) {
+    const explicit = String(source?.deviceFamily || "").trim().toLowerCase();
+    if (explicit === "polar" || explicit === "vernier") return explicit;
+    const evidence = [inputKind, source?.deviceModel, source?.deviceName, source?.label]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    if (eventKind === "force" || /vernier|go\s*direct|gdx/.test(evidence)) return "vernier";
+    if (eventKind === "ecg" || eventKind === "accelerometer" || /polar|h10/.test(evidence)) return "polar";
+    return "unknown";
+  }
+
+  function boundedPalette(palette) {
+    if (!palette?.id || !palette?.light || !palette?.dark) return null;
+    return {
+      id: boundedSourceField(palette.id),
+      light: {
+        primary: boundedSourceField(palette.light.primary),
+        secondary: boundedSourceField(palette.light.secondary),
+      },
+      dark: {
+        primary: boundedSourceField(palette.dark.primary),
+        secondary: boundedSourceField(palette.dark.secondary),
+      },
+    };
   }
 
   function safeName(value) {
@@ -93,8 +138,12 @@
       this.stopReason = null;
       this.startedAtMs = null;
       this.stoppedAtMs = null;
+      this.sessionDeviceName = null;
+      this.sessionInputKind = null;
       this.source = null;
+      this.sourceIdentities = new Map();
       this.sourcePalettes = new Map();
+      this.activeSourceIds = new Set();
       this.rowCount = 0;
       this.chunks = [];
       this.pendingLines = [];
@@ -135,7 +184,7 @@
       for (const listener of this.listeners) listener(snapshot);
     }
 
-    start({ deviceName = "Browser input", inputKind = "browser", source = null } = {}) {
+    start({ deviceName = "Browser input", inputKind = "browser", source = null, sources = [] } = {}) {
       if (this.state === "recording") return this.snapshot();
       if (this.rowCount > 0) {
         throw new Error("Export or discard the previous browser recording before starting another.");
@@ -144,13 +193,24 @@
       this.stopReason = null;
       this.startedAtMs = this.now();
       this.stoppedAtMs = null;
+      this.sessionDeviceName = boundedSourceField(deviceName, "Browser input");
+      this.sessionInputKind = boundedSourceField(inputKind, "browser");
       this.source = {
-        deviceName: String(deviceName),
-        inputKind: String(inputKind),
+        deviceName: boundedSourceField(source?.deviceName || deviceName, "Browser input"),
+        inputKind: boundedSourceField(source?.inputKind || inputKind, "browser"),
         id: String(source?.id || "browser-source"),
+        slot: String(source?.slot || source?.id || "browser-source"),
+        label: source?.label ? String(source.label) : "",
+        deviceFamily: source?.deviceFamily ? String(source.deviceFamily) : "",
+        deviceModel: source?.deviceModel ? String(source.deviceModel) : "",
         palette: source?.palette || null,
       };
-      this.rememberSource(this.source);
+      const primary = this.rememberSource(this.source);
+      if (primary) this.activeSourceIds.add(primary.id);
+      for (const activeSource of [source, ...sources].filter(Boolean)) {
+        const remembered = this.rememberSource(activeSource);
+        if (remembered) this.activeSourceIds.add(remembered.id);
+      }
       this.notify();
       return this.snapshot();
     }
@@ -188,18 +248,59 @@
       return true;
     }
 
-    rememberSource(source) {
-      const id = String(source?.id || this.source?.id || "browser-source");
-      const palette = source?.palette || this.source?.palette;
-      if (!palette?.id) return { id, paletteId: "" };
-      this.sourcePalettes.set(id, structuredClone(palette));
-      return { id, paletteId: String(palette.id) };
+    rememberSource(source, eventKind = "") {
+      const candidate = source || this.source || {};
+      const id = boundedSourceField(candidate.id || this.source?.id, "browser-source");
+      const existing = this.sourceIdentities.get(id);
+      if (!existing && this.sourceIdentities.size >= MAX_SOURCE_IDENTITIES) {
+        this.stop("source-capacity");
+        return null;
+      }
+      const isPrimary = id === boundedSourceField(this.source?.id, "browser-source");
+      const inputKind = boundedSourceField(
+        candidate.inputKind || existing?.inputKind || (isPrimary ? this.source?.inputKind : "") || inferredInputKind(eventKind),
+        "unknown",
+      );
+      const inferredFamily = inferredDeviceFamily(candidate, inputKind, eventKind);
+      const deviceFamily = boundedSourceField(
+        inferredFamily !== "unknown" ? inferredFamily : existing?.deviceFamily,
+        "unknown",
+      );
+      const palette = boundedPalette(candidate.palette)
+        || existing?.palette
+        || boundedPalette(isPrimary ? this.source?.palette : null);
+      const identity = {
+        id,
+        slot: boundedSourceField(candidate.slot || existing?.slot || id, id),
+        inputKind,
+        deviceFamily,
+        deviceName: boundedSourceField(
+          candidate.deviceName || candidate.label || existing?.deviceName || (isPrimary ? this.source?.deviceName : ""),
+          "unknown",
+        ),
+        paletteId: boundedSourceField(palette?.id || existing?.paletteId, ""),
+        palette,
+      };
+      this.sourceIdentities.set(id, identity);
+      if (palette?.id) this.sourcePalettes.set(id, palette);
+      return identity;
     }
 
     capture(event, hostTimestampMs = this.now()) {
       if (this.state !== "recording" || !event || typeof event !== "object") return;
       const elapsed = Math.max(0, (hostTimestampMs - this.startedAtMs) / 1000);
-      const source = this.rememberSource(event.source || this.source);
+      const source = this.rememberSource(event.source || this.source, event.kind);
+      if (!source) return;
+      if (event.kind === "connection") {
+        if (event.connected === false) {
+          this.activeSourceIds.delete(source.id);
+          if (!this.activeSourceIds.size) this.stop("input-disconnected");
+        } else if (event.connected === true) {
+          this.activeSourceIds.add(source.id);
+        }
+        return;
+      }
+      this.activeSourceIds.add(source.id);
       if (event.kind === "ecg") {
         const values = Array.isArray(event.microvolts) ? event.microvolts : [];
         for (let index = 0; index < values.length; index += 1) {
@@ -232,8 +333,10 @@
       }
       if (event.kind === "force") {
         const values = Array.isArray(event.values) ? event.values : [];
+        const breathingValues = Array.isArray(event.breathingValues) ? event.breathingValues : [];
         const rateHz = 1_000_000 / Math.max(1, Number(event.samplePeriodUs) || 100_000);
-        const stream = event.source?.slot ? `${event.source.slot}_raw_force` : "raw_force";
+        const stream = event.source?.slot ? `${source.slot}_raw_force` : "raw_force";
+        const breathingStream = event.source?.slot ? `${source.slot}_vernier_breathing` : "vernier_breathing";
         for (let index = 0; index < values.length; index += 1) {
           const offsetSeconds = (values.length - 1 - index) / rateHz;
           if (!this.append([
@@ -241,6 +344,15 @@
             Math.max(0, elapsed - offsetSeconds).toFixed(6),
             sensorTimestamp(event.hostReceiveTimestampNs, index, values.length, rateHz), source.id, source.paletteId,
             stream, index, "", "", "", finite(values[index]), units.raw_force,
+          ])) break;
+        }
+        for (let index = 0; index < breathingValues.length; index += 1) {
+          const offsetSeconds = (breathingValues.length - 1 - index) / rateHz;
+          if (!this.append([
+            (hostTimestampMs - offsetSeconds * 1000).toFixed(3),
+            Math.max(0, elapsed - offsetSeconds).toFixed(6),
+            sensorTimestamp(event.hostReceiveTimestampNs, index, breathingValues.length, rateHz), source.id, source.paletteId,
+            breathingStream, index, "", "", "", finite(breathingValues[index]), units.vernier_breathing,
           ])) break;
         }
         return;
@@ -261,16 +373,22 @@
     header() {
       const started = new Date(this.startedAtMs || this.now()).toISOString();
       const stopped = this.stoppedAtMs ? new Date(this.stoppedAtMs).toISOString() : "";
+      const sourceIdentityHeaders = [...this.sourceIdentities.values()].map((source) => (
+        `# source_identity,${csvCell(source.id)},${csvCell(source.slot)},${csvCell(source.inputKind)},${csvCell(source.deviceFamily)},${csvCell(source.deviceName)},${csvCell(source.paletteId)}\n`
+      ));
       const paletteHeaders = [...this.sourcePalettes.entries()].map(([sourceId, palette]) => (
-        `# source_palette,${csvCell(sourceId)},${csvCell(palette.id)},${palette.light.primary},${palette.light.secondary},${palette.dark.primary},${palette.dark.secondary}\n`
+        `# source_palette,${csvCell(sourceId)},${csvCell(palette.id)},${csvCell(palette.light.primary)},${csvCell(palette.light.secondary)},${csvCell(palette.dark.primary)},${csvCell(palette.dark.secondary)}\n`
       ));
       return [
         "# Polar Stream browser recording\n",
         `# schema_version,${RECORDING_SCHEMA_VERSION}\n`,
         `# started_at_utc,${csvCell(started)}\n`,
         `# stopped_at_utc,${csvCell(stopped)}\n`,
-        `# source,${csvCell(this.source?.deviceName || "Browser input")}\n`,
-        `# input_kind,${csvCell(this.source?.inputKind || "browser")}\n`,
+        `# source,${csvCell(this.sessionDeviceName || "Browser input")}\n`,
+        `# input_kind,${csvCell(this.sessionInputKind || "browser")}\n`,
+        `# source_identity_limit,${MAX_SOURCE_IDENTITIES}\n`,
+        "# source_identity_columns,source_id,source_slot,input_kind,device_family,device_name,palette_id\n",
+        ...sourceIdentityHeaders,
         "# source_palette_columns,source_id,palette_id,light_primary,light_secondary,dark_primary,dark_secondary\n",
         ...paletteHeaders,
         `# configured_outputs,${csvCell(this.config.outputs.join("|"))}\n`,
@@ -311,9 +429,6 @@
   function publish(event) {
     const hostTimestampMs = Date.now();
     recorder.capture(event, hostTimestampMs);
-    if (event?.kind === "connection" && event.connected === false && recorder.snapshot().state === "recording") {
-      recorder.stop("input-disconnected");
-    }
     const detail = { schemaVersion: SCHEMA_VERSION, hostTimestampMs, event };
     window.dispatchEvent(new CustomEvent("polar-stream-data", { detail }));
     if (typeof BroadcastChannel === "function") {

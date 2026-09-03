@@ -62,9 +62,13 @@ def resample(values: np.ndarray | list[float], count: int = PREVIEW_POINTS) -> n
     return np.interp(np.linspace(0, len(values) - 1, count), np.arange(len(values)), values)
 
 
-def close_loop(values: np.ndarray | list[float]) -> np.ndarray:
+def close_loop(values: np.ndarray | list[float], *, step: bool = False) -> np.ndarray:
     """Blend the final 14% back to the first sample for seamless SVG repetition."""
     result = finite(values).copy()
+    if step:
+        if len(result) > 1:
+            result[-1] = result[0]
+        return result
     blend_count = max(4, round(len(result) * 0.14))
     start = len(result) - blend_count
     delta = result[-1] - result[0]
@@ -235,64 +239,73 @@ def smooth_standardize(values: np.ndarray) -> np.ndarray:
     return (values - np.mean(values)) / max(np.std(values), 1e-9)
 
 
-def breathing_quality_preview(
+def timed_breathing_preview(
     acc: np.ndarray,
     acc_rate: int,
-    projection: np.ndarray,
     times: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Mirror the documented causal quality terms for the recorded fixture."""
-    alpha = max(0.001, min(1.0, 2 / (0.75 * acc_rate + 1)))
-    filtered = acc[0] / 1_000
-    previous = filtered.copy()
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Mirror the release Timed PCA v1 waveform and quality equations."""
+    dt = 1 / acc_rate
+    volume_alpha = dt / (0.18 + dt)
+    motion_alpha = dt / (0.50 + dt)
+    raw_g = np.asarray(acc, dtype=float) / 1_000
+    motion_filtered = raw_g[0].copy()
+    previous_motion = motion_filtered.copy()
+    selected_filtered = raw_g[0].copy()
+    selected_filtered[1] = 0.0
+    filtered_history = np.empty_like(raw_g)
+    filtered_history[0] = selected_filtered
     motion_delta_ema = 0.0
     motion_scores = np.ones(len(acc), dtype=float)
     for index in range(1, len(acc)):
-        filtered = filtered + (acc[index] / 1_000 - filtered) * alpha
-        delta = float(np.linalg.norm(filtered - previous))
-        previous = filtered.copy()
-        motion_delta_ema += (delta - motion_delta_ema) * 0.01
+        motion_filtered += (raw_g[index] - motion_filtered) * volume_alpha
+        delta = float(np.linalg.norm(motion_filtered - previous_motion))
+        previous_motion = motion_filtered.copy()
+        motion_delta_ema += (delta - motion_delta_ema) * motion_alpha
         motion_scores[index] = 1 / (1 + (motion_delta_ema / 0.001) ** 2)
+        selected = raw_g[index].copy()
+        selected[1] = 0.0
+        selected_filtered += (selected - selected_filtered) * volume_alpha
+        filtered_history[index] = selected_filtered
 
-    calibration_samples = projection[: 12 * acc_rate]
-    low, high = np.quantile(calibration_samples, [0.05, 0.95])
-    contracted_span = max(0.0, float(high - low) * 0.94)
-    calibrated = contracted_span >= 0.01
-    range_score = min(1.0, contracted_span / 0.02)
-    projection_20_hz = projection[:: max(1, round(acc_rate / 20))]
-    projection_times = np.arange(len(projection_20_hz)) / 20
-    readiness = np.zeros(len(times), dtype=float)
-    confidence = np.zeros(len(times), dtype=float)
-    for index, second in enumerate(times):
-        motion = float(np.interp(second, np.arange(len(acc)) / acc_rate, motion_scores))
-        ready = calibrated and second >= 12 and motion >= 0.35
-        readiness[index] = 1.0 if ready else 0.0
-        if not ready:
-            continue
-        history = projection_20_hz[
-            (projection_times >= max(12, second - 20)) & (projection_times <= second)
-        ]
-        coverage = min(1.0, len(history) / 160)
-        periodicity = 0.0
-        if len(history) >= 80:
-            centered = history - np.mean(history)
-            maximum_lag = min(250, len(centered) - 40)
-            for lag in range(29, maximum_lag + 1):
-                left = centered[:-lag]
-                right = centered[lag:]
-                denominator = float(np.sqrt(np.sum(left * left) * np.sum(right * right)))
-                if denominator > 1e-12:
-                    correlation = float(np.sum(left * right) / denominator)
-                    periodicity = max(periodicity, max(0.0, correlation))
-        confidence[index] = min(
-            1.0,
-            range_score * motion * (0.40 + 0.60 * coverage * periodicity),
+    calibration_count = min(len(filtered_history), round(12 * acc_rate) + 1)
+    calibration = filtered_history[:calibration_count]
+    center = np.mean(calibration, axis=0)
+    covariance = np.cov(calibration - center, rowvar=False, bias=True)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    dominant_index = int(np.argmax(eigenvalues))
+    axis = eigenvectors[:, dominant_index]
+    sign_index = int(np.argmax(np.abs(axis)))
+    if axis[sign_index] < 0:
+        axis = -axis
+    trace = float(np.trace(covariance))
+    dominance = float(eigenvalues[dominant_index] / trace) if trace > 1e-10 else 0.0
+    projection = (filtered_history - center) @ axis
+    low, high = np.quantile(projection[:calibration_count], [0.05, 0.95])
+    span = max(0.0, float(high - low))
+    calibrated = dominance >= 0.05 and span >= 0.01 and calibration_count >= 8
+    full_volume = np.full(len(acc), 0.5, dtype=float)
+    if calibrated:
+        full_volume[calibration_count - 1 :] = np.clip(
+            (projection[calibration_count - 1 :] - low) / span,
+            0,
+            1,
         )
-    return readiness, confidence
+    sample_times = np.arange(len(acc)) / acc_rate
+    volume = np.interp(times, sample_times, full_volume)
+    motion = np.interp(times, sample_times, motion_scores)
+    readiness = ((times >= 12) & calibrated & (motion >= 0.35)).astype(float)
+    range_score = min(1.0, span / 0.02)
+    confidence = np.where(
+        readiness > 0,
+        np.clip(range_score * motion * dominance, 0, 1),
+        0,
+    )
+    return volume, readiness, confidence
 
 
 def path_for(values: np.ndarray, minimum: float, maximum: float, *, step: bool = False) -> str:
-    values = close_loop(values)
+    values = close_loop(values, step=step)
     scale = max(maximum - minimum, 1e-9)
     points = []
     previous_y = None
@@ -336,7 +349,7 @@ def make_preview(series: list[tuple[str, str, np.ndarray]], *, step: bool = Fals
                 "label": label,
                 "color": color,
                 "path": path_for(values, plot_minimum, plot_maximum, step=step),
-                "values": [rounded(value) for value in close_loop(values)],
+                "values": [rounded(value) for value in close_loop(values, step=step)],
             }
             for label, color, values in series
         ],
@@ -401,7 +414,8 @@ def generate() -> dict:
     values.update(coherence_windows(peaks, times))
 
     values["acc_breathing_magnitude"] = np.interp(times, acc_time, rsp_clean)
-    values["breathing_volume"] = rsp_preview
+    breathing_volume, readiness, confidence = timed_breathing_preview(acc, acc_rate, times)
+    values["breathing_volume"] = breathing_volume
     derivative = np.gradient(rsp_preview)
     threshold = np.quantile(np.abs(derivative), 0.22)
     phase = np.where(derivative > threshold, 1, np.where(derivative < -threshold, -1, 0)).astype(float)
@@ -412,7 +426,6 @@ def generate() -> dict:
         for second in times
     ])
     values["breathing_axis_range"] = rolling_range
-    readiness, confidence = breathing_quality_preview(acc, acc_rate, rsp_clean, times)
     values["breathing_signal_ready"] = readiness
     values["breathing_signal_confidence"] = confidence
 

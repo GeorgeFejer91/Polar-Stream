@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_UI = ROOT / "apps/polar-stream/ui"
+CANONICAL_DOWNLOAD = ROOT / "download"
 DEFAULT_BASE_URL = "https://georgefejer91.github.io/Polar-Stream/"
 DEFAULT_OUTPUT_ROOT = ROOT / "artifacts/real-world-pages"
 TEXT_ASSET_SUFFIXES = {".cjs", ".css", ".html", ".js", ".json", ".md", ".txt"}
@@ -125,8 +126,8 @@ def verify(base_url: str) -> dict[str, object]:
     manifest_bytes, manifest_response = fetch(manifest_url)
     responses["browser-demo-manifest.json"] = manifest_response
     manifest = json.loads(manifest_bytes)
-    if manifest.get("schemaVersion") != 1:
-        raise ValueError("Live manifest schemaVersion is not 1")
+    if manifest.get("schemaVersion") != 2:
+        raise ValueError("Live manifest schemaVersion is not 2")
     if manifest.get("canonicalSource") != "apps/polar-stream/ui":
         raise ValueError("Live manifest does not identify the canonical UI source")
     declared_hashes = manifest.get("sha256")
@@ -154,6 +155,37 @@ def verify(base_url: str) -> dict[str, object]:
         )
     checks.append("live manifest hashes match the canonical UI in this checkout")
 
+    if manifest.get("canonicalDownloadSource") != "download":
+        raise ValueError("Live manifest does not identify the canonical download source")
+    declared_download_hashes = manifest.get("downloadSha256")
+    if not isinstance(declared_download_hashes, dict) or not declared_download_hashes:
+        raise ValueError("Live manifest has no download-asset hash map")
+    if any(
+        not isinstance(name, str) or not safe_asset_name(name)
+        for name in declared_download_hashes
+    ):
+        raise ValueError("Live manifest contains an unsafe download-asset path")
+    local_download_assets = {
+        path.relative_to(CANONICAL_DOWNLOAD).as_posix(): sha256(
+            canonical_asset_bytes(path)
+        )
+        for path in CANONICAL_DOWNLOAD.rglob("*")
+        if path.is_file()
+    }
+    if declared_download_hashes != local_download_assets:
+        missing_live = sorted(set(local_download_assets) - set(declared_download_hashes))
+        unexpected_live = sorted(set(declared_download_hashes) - set(local_download_assets))
+        changed = sorted(
+            name
+            for name in set(local_download_assets) & set(declared_download_hashes)
+            if local_download_assets[name] != declared_download_hashes[name]
+        )
+        raise ValueError(
+            "Live download manifest differs from this checkout "
+            f"(missing={missing_live}, unexpected={unexpected_live}, changed={changed})"
+        )
+    checks.append("live manifest hashes match the canonical download page in this checkout")
+
     asset_bytes: dict[str, bytes] = {}
     for name, expected_hash in sorted(declared_hashes.items()):
         data, response = fetch(urljoin(base_url, name))
@@ -166,6 +198,24 @@ def verify(base_url: str) -> dict[str, object]:
             raise ValueError(f"Live asset left HTTPS: {name}")
         asset_bytes[name] = data
     checks.append("every live asset returned HTTP 200 over HTTPS and matched SHA-256")
+
+    download_asset_bytes: dict[str, bytes] = {}
+    for name, expected_hash in sorted(declared_download_hashes.items()):
+        response_name = f"download/{name}"
+        data, response = fetch(urljoin(base_url, response_name))
+        responses[response_name] = response
+        if response["status"] != 200:
+            raise ValueError(f"Live download asset did not return HTTP 200: {name}")
+        if response["sha256"] != expected_hash:
+            raise ValueError(f"Live download asset hash differs from its manifest entry: {name}")
+        final = urlparse(str(response["finalUrl"]))
+        base = urlparse(base_url)
+        if final.scheme != "https" or final.netloc != base.netloc:
+            raise ValueError(f"Live download asset left GitHub Pages HTTPS: {name}")
+        download_asset_bytes[name] = data
+    checks.append(
+        "every live download asset returned HTTP 200 over HTTPS and matched SHA-256"
+    )
 
     index = asset_bytes.get("index.html", b"").decode("utf-8")
     parser = ResourceParser()
@@ -220,6 +270,37 @@ def verify(base_url: str) -> dict[str, object]:
     if "strict-transport-security" not in manifest_response["headers"]:
         raise ValueError("Manifest response omitted Strict-Transport-Security")
     checks.append("GitHub Pages server and HSTS response headers are present")
+
+    download_html = download_asset_bytes.get("index.html", b"")
+    download_response = responses["download/index.html"]
+    download_text = download_html.decode("utf-8")
+    if download_response["status"] != 200:
+        raise ValueError("Public download page did not return HTTP 200")
+    for marker in ("Release 0.6 series", "macOS 14 or later", "Vernier GDX-RB"):
+        if marker not in download_text:
+            raise ValueError(f"Public download page is missing release marker: {marker}")
+    if any(stale in download_text for stale in ("Private repository", "Release 0.1.0", "Private preview")):
+        raise ValueError("Public download page still contains private/stale release copy")
+    if "release candidates" not in download_text.lower() or "Latest stable" not in download_text:
+        raise ValueError("Public download page does not distinguish prereleases from latest stable")
+    download_parser = ResourceParser()
+    download_parser.feed(download_text)
+    for resource in download_parser.resources:
+        resolved = urlparse(urljoin(urljoin(base_url, "download/index.html"), resource))
+        base = urlparse(base_url)
+        if resolved.scheme != "https" or resolved.netloc != base.netloc:
+            raise ValueError(f"download/index.html references a non-Pages runtime resource: {resource}")
+        prefix = f"{base.path.rstrip('/')}/download/"
+        if not resolved.path.startswith(prefix):
+            raise ValueError(f"download/index.html references an asset outside /download: {resource}")
+        relative = resolved.path.removeprefix(prefix)
+        if relative not in declared_download_hashes:
+            raise ValueError(
+                f"download/index.html references an asset absent from the manifest: {resource}"
+            )
+    checks.append(
+        "public /download assets are current, hash-bound, and distinguish prereleases from stable"
+    )
 
     return {
         "schemaVersion": 1,

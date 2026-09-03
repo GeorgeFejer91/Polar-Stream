@@ -106,6 +106,13 @@ test("formula templates execute against the same recorded fixture", () => {
   }
 });
 
+test("timed PCA release waveform is not offered as a legacy scalar formula template", () => {
+  const waveform = catalog.find((metric) => metric.id === "breathing_volume");
+  assert.ok(waveform);
+  assert.equal(waveform.formulaTemplate, null);
+  assert.match(waveform.formula, /outputLower/);
+});
+
 test("categorical formula previews keep stepped integer classes at the loop seam", () => {
   const result = formulaPreview.preview(fixture, {
     id: "preview-phase",

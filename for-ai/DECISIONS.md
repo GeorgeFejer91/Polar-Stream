@@ -1,5 +1,68 @@
 # Decision log
 
+## 2026-09-03 — Gate publication and hash-bind the complete Pages surface
+
+Require every release tag to be an exact match for the Cargo/Cargo.lock, Tauri, npm, and
+npm-lock versions before package jobs start, and require its commit to be an
+ancestor of `origin/main`. Publication retains the complete-set draft boundary
+and is additionally authorized through a `release` environment with at least
+one required reviewer. Repository policy must separately protect `main` with
+required CI and no force-pushes. A prerelease version belongs in every version
+surface and publishes outside GitHub's latest-stable route; a later stable
+version is a separate reviewed commit, tag, build, and approval.
+
+Treat the download landing page as part of the canonical Pages artifact rather
+than an unverified copy step. Manifest schema 2 hashes every staged UI and
+download asset, the local and live verifiers compare both surfaces, and the
+Pages workflow reuses CI against the exact deployment commit before upload.
+The landing page routes release candidates to **All releases** and exposes
+**Latest stable** as a separate choice; installer binaries remain GitHub
+Release assets rather than duplicated Pages files.
+
+## 2026-09-03 — Ship one quality-gated Polar respiration waveform
+
+This supersedes the 2026-08-27 primary/extra ACC respiration picker. New Polar
+respiration configurations expose only `breathing_volume` together with
+`breathing_signal_ready` and `breathing_signal_confidence`; the UI adds/removes
+the three as a set and keeps `raw_acc` automatic. Treat the waveform as relative
+0–1 chest motion, readiness as a processing gate, and confidence as the
+Timed-PCA range × motion × PCA-dominance quality index. Do not present rate,
+phase, airflow, or lung volume as a release-facing H10 measurement. Lock new
+configs to Timed PCA v1 and prevent a second normalization of the canonical 0–1
+waveform.
+
+Retain all older IDs, processors, suffixes, and migrated selections, but hide
+the 22 compatibility-tier respiratory outputs from new selection and label
+restored cards unvalidated. Because the seven base breathing snapshots emit
+once per BLE notification rather than at a resampled cadence, advertise them as
+irregular-rate streams. Record processor modes/settings in LSL and CSV metadata
+so legacy and timed streams remain distinguishable.
+
+Treat **Upgrade to current set** as an explicit replacement boundary: remove
+selected compatibility respiration outputs and their options, then configure
+exactly the three release outputs with Timed PCA v1 plus hysteresis v1. Loading
+or normalizing compatibility-only configurations remains non-destructive. As a
+defense against stale or independently constructed mixed payloads, a complete
+release trio owns the shared processor settings and cannot be overridden by a
+coexisting Legacy v0 phase output.
+
+Polar and Vernier derived breathing must coexist across native LSL, OSC,
+source-scoped CSV, and the time-aligned 0–1 visual comparison; browser CSV must
+retain both sources through a single-source disconnect. Automated mixed
+transport tests are required, but do not claim physical validation until an
+overlapping H10 + GDX-RB run is recorded and inspected. Version 0.6 packages
+target Windows x64/ARM64, macOS 14+ universal, and Ubuntu-22.04-based Linux
+x64/ARM64. Unsigned/ad-hoc packages remain research previews.
+
+Treat an output-configuration change as a serialized renderer/native
+transaction. Advance the cached configuration and close a settings workflow
+only after native acceptance; otherwise restore the last accepted output IDs,
+options, formulas, breathing settings, stream name, and destination toggles
+without changing active sensor ownership. Apply the same compensation rule to
+the renderer-owned audio modem. Browser mixed-source CSV exports must include a
+bounded identity manifest keyed by each data row's source ID so late-added
+Polar and Vernier inputs remain reconstructable.
+
 ## 2026-08-27 — Make breathing comparison opt-in and source identity a two-color contract
 
 This supersedes the 2026-08-26 automatic mixed force+ACC comparison presets and
@@ -59,7 +122,7 @@ one compatible Qt ABI without weakening the pinned-source boundary.
 
 ## 2026-08-26 — Run the universal Mac package on both native architectures
 
-Keep one `universal-apple-darwin` DMG for macOS 10.15 and later, but treat a
+Keep one `universal-apple-darwin` DMG for macOS 14 and later, but treat a
 successful universal build as insufficient package evidence. Before a release
 can publish, mount the exact staged DMG on both an Apple Silicon GitHub runner
 and a separate Intel runner, launch Polar Stream and the bundled LabRecorder,

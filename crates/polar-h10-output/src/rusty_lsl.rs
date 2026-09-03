@@ -29,6 +29,7 @@ use rusty_lsl::{
 
 use crate::{
     CustomFormulaConfig, MetricSpec, SourcePalette, custom_output_stream_name, output_stream_name,
+    provenance::PolarRespirationProvenance,
 };
 
 const RUSTY_LSL_REVISION: &str = "8b6b2a6cd0c0e5147b7e1cc076a116ef226cddbd";
@@ -136,6 +137,10 @@ impl RustyLslPublisher {
         &self.status
     }
 
+    pub(crate) fn outlet_count(&self) -> usize {
+        self.outlets.len()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.cancelled.store(true, Ordering::Release);
         if let Some(registry) = self.registry.take() {
@@ -160,8 +165,10 @@ impl RustyLslPublisher {
         base_name: &str,
         spec: MetricSpec,
         palette: Option<&SourcePalette>,
+        respiration_provenance: Option<&PolarRespirationProvenance>,
     ) {
-        if let Err(message) = self.try_add_outlet(base_name, spec, palette) {
+        if let Err(message) = self.try_add_outlet(base_name, spec, palette, respiration_provenance)
+        {
             self.initialization_failed = true;
             self.status = message;
         }
@@ -172,8 +179,15 @@ impl RustyLslPublisher {
         base_name: &str,
         spec: MetricSpec,
         palette: Option<&SourcePalette>,
+        respiration_provenance: Option<&PolarRespirationProvenance>,
     ) -> Result<(), String> {
-        self.try_add_outlet_with_key_and_palette(base_name, spec, spec.id.to_string(), palette)
+        self.try_add_outlet_with_key_and_palette(
+            base_name,
+            spec,
+            spec.id.to_string(),
+            palette,
+            respiration_provenance,
+        )
     }
 
     pub(crate) fn try_add_outlet_with_key(
@@ -182,7 +196,7 @@ impl RustyLslPublisher {
         spec: MetricSpec,
         outlet_key: String,
     ) -> Result<(), String> {
-        self.try_add_outlet_with_key_and_palette(base_name, spec, outlet_key, None)
+        self.try_add_outlet_with_key_and_palette(base_name, spec, outlet_key, None, None)
     }
 
     fn try_add_outlet_with_key_and_palette(
@@ -191,6 +205,7 @@ impl RustyLslPublisher {
         spec: MetricSpec,
         outlet_key: String,
         palette: Option<&SourcePalette>,
+        respiration_provenance: Option<&PolarRespirationProvenance>,
     ) -> Result<(), String> {
         let output_name = output_stream_name(base_name, spec.id)
             .ok_or_else(|| format!("Unknown output module: {}", spec.id))?;
@@ -205,7 +220,7 @@ impl RustyLslPublisher {
             spec.stream_type.into(),
             spec.rate_hz,
             channels,
-            || stream_metadata(spec, palette),
+            || stream_metadata(spec, palette, respiration_provenance),
         )
     }
 
@@ -825,6 +840,7 @@ fn stream_info_limits() -> PersistentFloat32StreamInfoLimits {
 fn stream_metadata(
     spec: MetricSpec,
     palette: Option<&SourcePalette>,
+    respiration_provenance: Option<&PolarRespirationProvenance>,
 ) -> Result<MetadataTree, String> {
     let (manufacturer, model) = if spec.id == "raw_force" {
         ("Vernier", "Go Direct")
@@ -869,11 +885,32 @@ fn stream_metadata(
         ));
     }
     append_palette_nodes(&mut nodes, palette);
+    append_polar_respiration_nodes(&mut nodes, spec, respiration_provenance);
     MetadataTree::new(
         MetadataTreeLimits::new(96, 8, 64, 64, 1024).expect("static metadata limits must be valid"),
         nodes,
     )
     .map_err(|error| format!("Rusty LSL metadata rejected: {error:?}"))
+}
+
+fn append_polar_respiration_nodes(
+    nodes: &mut Vec<MetadataNodeInput>,
+    spec: MetricSpec,
+    provenance: Option<&PolarRespirationProvenance>,
+) {
+    let Some(provenance) = provenance.filter(|_| PolarRespirationProvenance::applies_to(spec))
+    else {
+        return;
+    };
+    let parent = nodes.len();
+    nodes.push(MetadataNodeInput::new(Some(0), "processing".into(), None));
+    for field in provenance.fields() {
+        nodes.push(MetadataNodeInput::new(
+            Some(parent),
+            field.name.into(),
+            Some(field.value),
+        ));
+    }
 }
 
 fn custom_stream_metadata(
@@ -960,6 +997,64 @@ mod tests {
     use super::*;
     use rusty_lsl::PersistentFloat32AcceptError;
     use std::{collections::VecDeque, io::Write, net::TcpStream};
+
+    #[test]
+    fn builtin_respiration_descriptor_carries_processing_provenance_only_when_applicable() {
+        let provenance = PolarRespirationProvenance::new(Default::default());
+        let tree = stream_metadata(
+            MetricSpec::for_id("breathing_volume").unwrap(),
+            None,
+            Some(&provenance),
+        )
+        .unwrap();
+        let processing = tree
+            .nodes()
+            .iter()
+            .position(|node| node.parent_index() == Some(0) && node.name() == "processing")
+            .unwrap();
+        let fields = tree
+            .nodes()
+            .iter()
+            .filter(|node| node.parent_index() == Some(processing))
+            .map(|node| (node.name(), node.value().unwrap()))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(fields["algorithm"], "polar-stream-acc-respiration");
+        assert_eq!(fields["volume_mode"], "timed-pca-v1");
+        assert_eq!(fields["state_mode"], "hysteresis-v1");
+        assert_eq!(fields["application_version"], env!("CARGO_PKG_VERSION"));
+
+        let legacy = PolarRespirationProvenance::new(polar_h10_metrics::BreathingSettings {
+            volume_mode: polar_h10_metrics::BreathingVolumeMode::LegacyV0,
+            state_mode: polar_h10_metrics::BreathingStateMode::LegacyV0,
+            ..Default::default()
+        });
+        let legacy_tree = stream_metadata(
+            MetricSpec::for_id("breathing_volume").unwrap(),
+            None,
+            Some(&legacy),
+        )
+        .unwrap();
+        assert!(
+            legacy_tree
+                .nodes()
+                .iter()
+                .any(|node| { node.name() == "volume_mode" && node.value() == Some("legacy-v0") })
+        );
+        assert!(
+            legacy_tree
+                .nodes()
+                .iter()
+                .any(|node| { node.name() == "state_mode" && node.value() == Some("legacy-v0") })
+        );
+
+        let raw = stream_metadata(
+            MetricSpec::for_id("raw_acc").unwrap(),
+            None,
+            Some(&provenance),
+        )
+        .unwrap();
+        assert!(raw.nodes().iter().all(|node| node.name() != "processing"));
+    }
 
     #[test]
     fn outlet_port_selection_reserves_one_tcp_udp_port_pair() {
@@ -1092,10 +1187,12 @@ mod tests {
             "participant_07",
             MetricSpec::for_id("raw_ecg").unwrap(),
             None,
+            None,
         );
         publisher.add_outlet_with_palette(
             "participant_07",
             MetricSpec::for_id("raw_acc").unwrap(),
+            None,
             None,
         );
 

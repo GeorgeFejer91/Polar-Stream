@@ -137,7 +137,7 @@ fn parse_native_csv(contents: &str, role: RecordingRole) -> Result<ParsedRecordi
         }
         if !header_seen {
             if line.trim_end_matches('\r') != CSV_HEADER {
-                return Err("native CSV header did not match schema 2".into());
+                return Err("native CSV header did not match a supported schema".into());
             }
             header_seen = true;
             continue;
@@ -253,8 +253,8 @@ fn parse_native_csv(contents: &str, role: RecordingRole) -> Result<ParsedRecordi
     }
     finish_acc_batch(&mut parsed, &mut pending_acc)?;
 
-    if !header_seen || parsed.schema_version.as_deref() != Some("2") {
-        return Err("native CSV did not declare schema version 2".into());
+    if !header_seen || !matches!(parsed.schema_version.as_deref(), Some("2") | Some("3")) {
+        return Err("native CSV did not declare supported schema version 2 or 3".into());
     }
     match role {
         RecordingRole::H10 if parsed.raw_acc_samples == 0 || parsed.raw_force_samples != 0 => {
@@ -568,12 +568,13 @@ fn main() {
 mod tests {
     use super::*;
 
-    const HEADER: &str = "# Polar Stream native recording\n# schema_version,2\nhost_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream,sample_index,x_mg,y_mg,z_mg,value,unit\n";
+    const HEADER_V2: &str = "# Polar Stream native recording\n# schema_version,2\nhost_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream,sample_index,x_mg,y_mg,z_mg,value,unit\n";
+    const HEADER_V3: &str = "# Polar Stream native recording\n# schema_version,3\nhost_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream,sample_index,x_mg,y_mg,z_mg,value,unit\n";
 
     #[test]
     fn parses_h10_batches_and_preserves_notification_boundaries() {
         let csv = format!(
-            "{HEADER}1000.000,0.000000,1000000000,raw_acc,0,1,2,3,,mg\n1005.000,0.005000,1005000000,raw_acc,1,4,5,6,,mg\n1005.100,0.005100,1005000000,breathing_volume,0,,,,0.5,0–1\n1010.000,0.010000,1010000000,raw_acc,0,7,8,9,,mg\n1015.000,0.015000,1015000000,raw_acc,1,10,11,12,,mg\n"
+            "{HEADER_V2}1000.000,0.000000,1000000000,raw_acc,0,1,2,3,,mg\n1005.000,0.005000,1005000000,raw_acc,1,4,5,6,,mg\n1005.100,0.005100,1005000000,breathing_volume,0,,,,0.5,0–1\n1010.000,0.010000,1010000000,raw_acc,0,7,8,9,,mg\n1015.000,0.015000,1015000000,raw_acc,1,10,11,12,,mg\n"
         );
         let parsed = parse_native_csv(&csv, RecordingRole::H10).unwrap();
         assert_eq!(parsed.raw_acc_samples, 4);
@@ -583,30 +584,40 @@ mod tests {
     }
 
     #[test]
-    fn parses_only_isolated_force_for_gdx_role() {
+    fn parses_schema_v3_force_and_ignores_derived_vernier_rows() {
         let csv = format!(
-            "{HEADER}1000.000,0.000000,0,raw_force,0,,,,1.25,N\n1100.000,0.100000,100000000,raw_force,0,,,,1.50,N\n"
+            "{HEADER_V3}1000.000,0.000000,0,raw_force,0,,,,1.25,N\n1000.100,0.000100,0,vernier_breathing,0,,,,0.25,0–1\n1100.000,0.100000,100000000,raw_force,0,,,,1.50,N\n1100.100,0.100100,100000000,vernier_breathing,0,,,,0.75,0–1\n"
         );
         let parsed = parse_native_csv(&csv, RecordingRole::Gdx).unwrap();
+        assert_eq!(parsed.schema_version.as_deref(), Some("3"));
         assert_eq!(parsed.force.len(), 2);
         assert_eq!(parsed.force[1].force_n, 1.5);
         assert!(parse_native_csv(&csv, RecordingRole::H10).is_err());
     }
 
     #[test]
+    fn rejects_unsupported_native_csv_schema_versions() {
+        let csv = "# Polar Stream native recording\n# schema_version,4\nhost_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream,sample_index,x_mg,y_mg,z_mg,value,unit\n1000.000,0.000000,0,raw_force,0,,,,1.25,N\n";
+        assert_eq!(
+            parse_native_csv(csv, RecordingRole::Gdx).unwrap_err(),
+            "native CSV did not declare supported schema version 2 or 3"
+        );
+    }
+
+    #[test]
     fn rejects_reordered_rows_and_damaged_batches() {
         let reordered = format!(
-            "{HEADER}1000.000,0.000000,1000000000,raw_acc,0,1,2,3,,mg\n999.000,0.001000,999000000,raw_acc,1,4,5,6,,mg\n"
+            "{HEADER_V2}1000.000,0.000000,1000000000,raw_acc,0,1,2,3,,mg\n999.000,0.001000,999000000,raw_acc,1,4,5,6,,mg\n"
         );
         assert!(parse_native_csv(&reordered, RecordingRole::H10).is_err());
-        let damaged = format!("{HEADER}1000.000,0.000000,1000000000,raw_acc,1,1,2,3,,mg\n");
+        let damaged = format!("{HEADER_V2}1000.000,0.000000,1000000000,raw_acc,1,1,2,3,,mg\n");
         assert!(parse_native_csv(&damaged, RecordingRole::H10).is_err());
     }
 
     #[test]
     fn failure_codes_do_not_include_private_paths_or_identifiers() {
         assert_eq!(
-            failure_code("native CSV header did not match schema 2"),
+            failure_code("native CSV header did not match a supported schema"),
             "CSV_CONTRACT_FAILED"
         );
         assert_eq!(

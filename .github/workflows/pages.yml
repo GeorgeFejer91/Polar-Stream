@@ -15,8 +15,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate:
+    name: Validate the exact Pages source
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
     name: Build canonical browser demo
+    needs: validate
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -28,6 +28,44 @@ pub struct MetricCitation {
     pub url: &'static str,
 }
 
+/// Controls which built-in metrics may be selected in a new release-facing
+/// configuration. Compatibility metrics remain in the catalog and runtime so
+/// saved configurations keep their IDs, processors, and stream names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MetricSelectionTier {
+    Release,
+    Compatibility,
+}
+
+/// The deliberately small Polar respiration surface offered for new work.
+/// `breathing_volume` is the continuous research waveform; the other two are
+/// quality indicators and are not physiological breathing measures.
+pub const RELEASE_POLAR_RESPIRATION_IDS: &[&str] = &[
+    "breathing_volume",
+    "breathing_signal_confidence",
+    "breathing_signal_ready",
+];
+
+/// Returns the release-facing selection tier without retiring any public ID.
+pub fn metric_selection_tier(id: &str) -> MetricSelectionTier {
+    if matches!(
+        id,
+        "acc_breathing_magnitude"
+            | "breathing_phase"
+            | "breathing_calibration"
+            | "breathing_axis_range"
+            | "breathing_rate"
+            | "breathing_dynamics_confidence"
+    ) || id.starts_with("breath_interval_")
+        || id.starts_with("breath_amplitude_")
+    {
+        MetricSelectionTier::Compatibility
+    } else {
+        MetricSelectionTier::Release
+    }
+}
+
 /// Mathematical context kept alongside the scientific metric catalog. This is
 /// resolved at runtime because stable Rust cannot match string IDs in a const
 /// initializer.
@@ -279,9 +317,6 @@ fn formula_template_for(id: &str) -> Option<&'static str> {
         "sd1" => Some("rr_sd1(rr, 300)"),
         "acc_breathing_magnitude" => {
             Some("breathing_magnitude(x, y, z, true, false, true, 0.75, false, false)")
-        }
-        "breathing_volume" => {
-            Some("breathing_magnitude(x, y, z, true, false, true, 0.75, true, false)")
         }
         "breathing_phase" => Some("breathing_phase(x, y, z, true, false, true, 0.75, 0.60, false)"),
         "excitement_score" => Some("excitement(rr, 300)"),
@@ -809,7 +844,7 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         false,
         true,
         1,
-        20.0,
+        0.0,
         "Breathing"
     ),
     metric!(
@@ -825,27 +860,27 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         BREATH_ACC_URL,
         "breath respiration waveform volume chest",
         false,
-        true,
+        false,
         1,
-        20.0,
+        0.0,
         "Breathing"
     ),
     metric!(
         "breathing_signal_confidence",
         "breathingSignalConfidence",
         "ACC breathing signal confidence",
-        "Range, motion, coverage, and periodicity quality index",
+        "Calibrated range, motion, and PCA-dominance quality index",
         "0–1",
         "Breathing",
-        "Confidence summarizes whether the calibrated H10 chest-motion projection is strong, recent, relatively periodic, and not dominated by broadband movement. It is an app-specific signal-quality index rather than a probability of physiological correctness, and low values should cause downstream analyses to reject or flag the waveform.",
+        "Under the default timed-pca-v1 processor, confidence multiplies calibrated-range quality, all-axis motion quality, and PCA dominance while the signal is ready; it is zero otherwise. Restored legacy-v0 settings retain their historical coverage-and-periodicity confidence term. Both are app-specific signal-quality indices rather than probabilities of physiological correctness, and low values should cause downstream analyses to reject or flag the waveform.",
         "experimental quality indicator",
         BREATH_ACC,
         BREATH_ACC_URL,
-        "breath respiration waveform signal confidence quality motion periodicity",
+        "breath respiration waveform signal confidence quality motion pca dominance periodicity",
         false,
         false,
         1,
-        20.0,
+        0.0,
         "Breathing"
     ),
     metric!(
@@ -863,7 +898,7 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         false,
         false,
         1,
-        20.0,
+        0.0,
         "Breathing"
     ),
     metric!(
@@ -881,7 +916,7 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         false,
         false,
         1,
-        20.0,
+        0.0,
         "Breathing"
     ),
     metric!(
@@ -899,7 +934,7 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         false,
         false,
         1,
-        4.0,
+        0.0,
         "Breathing"
     ),
     metric!(
@@ -917,7 +952,7 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         false,
         true,
         1,
-        4.0,
+        0.0,
         "Breathing"
     ),
     metric!(
@@ -1287,4 +1322,52 @@ pub fn metric_definition(id: &str) -> Option<MetricDefinition> {
         .iter()
         .copied()
         .find(|metric| metric.id == id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_polar_respiration_surface_is_small_and_quality_gated() {
+        assert_eq!(
+            RELEASE_POLAR_RESPIRATION_IDS,
+            [
+                "breathing_volume",
+                "breathing_signal_confidence",
+                "breathing_signal_ready",
+            ]
+        );
+        for metric in METRIC_CATALOG.iter().filter(|metric| {
+            metric.category == "Breathing" || metric.category == "Breathing dynamics"
+        }) {
+            let expected = if RELEASE_POLAR_RESPIRATION_IDS.contains(&metric.id) {
+                MetricSelectionTier::Release
+            } else {
+                MetricSelectionTier::Compatibility
+            };
+            assert_eq!(metric_selection_tier(metric.id), expected, "{}", metric.id);
+        }
+    }
+
+    #[test]
+    fn non_respiration_metrics_remain_release_selectable() {
+        for id in ["raw_ecg", "raw_acc", "acc_magnitude", "rmssd"] {
+            assert_eq!(metric_selection_tier(id), MetricSelectionTier::Release);
+        }
+    }
+
+    #[test]
+    fn canonical_breathing_waveform_cannot_be_secondarily_normalized() {
+        let metric = metric_definition("breathing_volume").unwrap();
+        assert_eq!(metric.unit, "0–1");
+        assert!(!metric.normalizable);
+    }
+
+    #[test]
+    fn timed_pca_waveform_is_not_misrepresented_as_a_scalar_formula_template() {
+        let definition = metric_formula_definition("breathing_volume");
+        assert!(definition.formula.contains("outputLower"));
+        assert_eq!(definition.formula_template, None);
+    }
 }

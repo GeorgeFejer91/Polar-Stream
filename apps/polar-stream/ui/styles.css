@@ -360,6 +360,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, label:has(input
 .output-card > header button:hover { background: #f5dddd; color: #8f3737; }
 .raw-output-card { border-color: #bad7c8; background: #f4faf6; }
 .automatic-output-badge { align-self: start; padding: 4px 5px; border-radius: 4px; background: color-mix(in srgb, var(--source-color, var(--green)) 12%, white); color: color-mix(in srgb, var(--source-color, var(--green)) 75%, #243d31); font: 800 7px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; white-space: nowrap; }
+.compatibility-output-card { border-style: dashed; border-color: #c89d5a; background: #fffaf1; }
+.compatibility-output-note { color: #8b5f20; font-size: 10px; font-style: normal; font-weight: 700; line-height: 1.35; }
 .source-marked { border-left: 4px solid var(--source-color) !important; }
 .source-panel-marked { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--source-secondary, var(--source-color)) 28%, transparent); }
 .output-card.unavailable { border-style: dashed; opacity: .66; }
@@ -401,6 +403,7 @@ html[data-theme="dark"] .device-profile-card[data-profile="vernier"],
 html[data-theme="dark"] .vernier-breathing-card,
 html[data-theme="dark"] .device-protocol-card,
 html[data-theme="dark"] .raw-output-card,
+html[data-theme="dark"] .compatibility-output-card,
 html[data-theme="dark"] .lab-recorder-launch,
 html[data-theme="dark"] .browser-local-destination,
 html[data-theme="dark"] .browser-recorder-actions { background: var(--surface-2); color: var(--ink); }
@@ -430,6 +433,7 @@ html[data-theme="dark"] .formula-keyboard-groups button,
 html[data-theme="dark"] .formula-preview-card canvas,
 html[data-theme="dark"] .settings-note,
 html[data-theme="dark"] .module-tune-button { background: var(--surface-2); color: var(--ink); }
+html[data-theme="dark"] .compatibility-output-note { color: #e5bc7d; }
 .chart-shell::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(to right, rgb(42 84 64 / 5%) 1px, transparent 1px), linear-gradient(to bottom, rgb(42 84 64 / 5%) 1px, transparent 1px); background-size: 10% 25%; pointer-events: none; }
 .chart-shell.phase-visual::before { background-image: radial-gradient(circle at center, rgb(42 84 64 / 5%) 1px, transparent 1px); background-size: 22px 22px; }
 .chart-shell.phase-visual .chart-y-labels { display: none; }
@@ -580,6 +584,7 @@ html[data-theme="dark"] .module-tune-button { background: var(--surface-2); colo
 .module-dialog form > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--surface-2); }
 .module-dialog form > footer > span { color: var(--muted); font-size: 10px; }
 .module-tune-button { min-height: 25px; margin-left: auto; border: 1px solid var(--line); border-radius: 5px; padding: 0 8px; background: white; color: var(--green-dark); font-size: 8px; font-weight: 800; }
+.compatibility-upgrade-button { border-color: #c89d5a; background: #fff5e4; color: #744b0f; }
 .module-summary { color: var(--muted); font: 650 8px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .formula-output-card { border-left-color: #7b70b4; }
 

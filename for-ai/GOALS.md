@@ -52,6 +52,9 @@ items into the dated history instead of silently deleting them.
    - Keep Formula Lab source-clock constraints, automatic time axis, templates,
      explained insert keyboard, recorded before/after preview, native resource
      bounds, and per-formula fault isolation.
+   - Offer only the quality-gated `breathing_volume` + readiness + confidence
+     set for new Polar respiration work. Keep legacy respiration IDs restorable
+     but hidden and visibly compatibility-only.
 3. Keep repository context agent-ready.
    - Root `AGENTS.md` routes agents to `for-ai/`.
    - Context validation passes in local work and CI when adopted.
@@ -84,8 +87,9 @@ items into the dated history instead of silently deleting them.
      one opt-in comparator only when another source already exposes an active,
      family-safe signal; keep normalized Polar/Vernier breathing on a shared
      fixed 0–1 host-time view and reject force/ACC or ECG/breathing pairings.
-   - Retain the exact four-inlet official pylsl gate for ECG, ACC, rawVernier,
-     and vernierBreathing with an overlapping local-LSL-clock interval. A
+   - Retain the exact five-inlet official pylsl gate for ECG, ACC, Polar
+     breathingVolume, rawVernier, and vernierBreathing with an overlapping
+     local-LSL-clock interval. A
      physical paired H10/GDX run remains required before hardware qualification.
    - Keep search results as classified, non-widget candidates. Promote only a
      successful connection into a device widget with source-owned controls and

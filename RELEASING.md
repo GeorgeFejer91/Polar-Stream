@@ -1,7 +1,9 @@
 # Releasing Polar Stream
 
-The release workflow builds on native GitHub-hosted x64 and ARM64 runners. It
-does not cross-compile GUI packages. liblsl 1.17.7 is downloaded from its
+The release workflow builds Windows and Linux packages on matching native
+GitHub-hosted x64 and ARM64 runners. The universal macOS target is composed on
+an Apple Silicon runner and the exact DMG is then launch-tested on both Apple
+Silicon and Intel runners. liblsl 1.17.7 is downloaded from its
 upstream release and accepted only when its pinned SHA-256 checksum matches.
 The official LabRecorder 1.17.0 is pinned to upstream release v1.17.1. Published
 Windows x64 and macOS universal archives are checksum-verified; both native
@@ -12,21 +14,43 @@ recorder includes its Qt/liblsl runtime and the Polar Stream profile that
 disables remote control. Its reviewed Qt notice and checksum-pinned LGPL/GPL
 license texts are required bundle files.
 
+The bundled macOS recorder/runtime requires macOS 14 or later, so the app and
+download copy use 14.0 as the minimum supported system.
+
 ## Publish a version
 
-1. Update the version in the workspace and `apps/polar-stream/tauri.conf.json`.
-2. Run `cargo test --workspace` and strict Clippy locally.
-3. Push `main`, then create and push a matching version tag such as `v0.1.0`.
-4. Watch **Release native packages** in GitHub Actions.
+1. Set the exact intended tag version in Cargo/Cargo.lock, npm/package-lock, and
+   `apps/polar-stream/tauri.conf.json`. For a release candidate, every surface
+   must contain the full prerelease version such as `0.6.0-rc.1`; for stable,
+   every surface must contain `0.6.0`.
+2. Run the full workspace, frontend, package-script, and strict Clippy gates locally.
+3. Push the reviewed commit to `main`. The release workflow rejects a tag whose
+   commit is not on `origin/main`.
+4. In repository settings, keep the `release` environment protected by at
+   least one required reviewer. The workflow fails before package builds when
+   that protection is absent, and the publisher job enters that environment
+   before it receives `contents: write`.
+5. Create a fresh tag that exactly matches step 1, such as `v0.6.0-rc.1`; never
+   move or reuse a published tag. A later stable `v0.6.0` is a separate reviewed
+   version commit and package build, not a relabeling of release-candidate assets.
+6. Watch **Release native packages** in GitHub Actions. Tags containing a
+   hyphen publish as prereleases and stay out of GitHub's latest-stable route;
+   a plain `vX.Y.Z` tag becomes the stable latest release after approval.
+
+Protect `main` with the required CI checks and disallow force-pushes in the
+repository ruleset. The workflow's ancestry check rejects an off-main tag, but
+it is not a substitute for branch review policy.
 
 Each read-only matrix job builds its native installers with the exact Tauri CLI
 in `package-lock.json`, creates a real LSL outlet using the bundled runtime, and
 smoke-tests Polar Stream plus LabRecorder from the staged package itself
-(AppImage and DEB on Linux, MSI payload on Windows, DMG on macOS). The macOS
+(AppImage and an installed DEB on Linux, extracted MSI payload plus an
+install/uninstall cycle for NSIS on Windows, and mounted DMG on macOS). The macOS
 gate also verifies that Polar Stream, the packaged liblsl runtime, LabRecorder,
 and LabRecorder's liblsl framework each contain native Apple Silicon and Intel
-slices. The mounted DMG is launched on both an Apple Silicon runner and a
-separate Intel runner before publication. The matrix then
+slices, and that the packaged app declares the documented macOS 14.0 minimum.
+The mounted DMG is launched on both an Apple Silicon runner and a separate Intel
+runner before publication. The matrix then
 uploads workflow artifacts without a repository
 write token. Only the final publisher job has `contents: write`; it downloads
 the complete package set, verifies all nine required installer classes,
@@ -44,15 +68,18 @@ step so a failed child bundler remains diagnosable from the Actions log.
 All reusable GitHub Actions are pinned to full commit SHAs. Review dependency
 updates deliberately rather than replacing these pins with floating major tags.
 
-The public repository's latest Release page and its stable
-`releases/latest/download/...` asset URLs are the canonical native downloads.
-GitHub Pages remains the browser demo rather than a second package host.
+The public repository's **All releases** page is the canonical route for release
+candidates and stable packages. GitHub's `releases/latest` and
+`releases/latest/download/...` routes intentionally resolve only the current
+stable release. GitHub Pages hosts the browser demo and a landing page with both
+choices, but never a second copy of installer assets.
 
 ## Signing
 
-The initial private preview packages are unsigned (macOS uses an ad-hoc
-signature). Before public distribution, configure an Apple Developer ID with
-notarization and a trusted Windows Authenticode certificate. Do not store
+The current public research-preview packages are unsigned (macOS uses an ad-hoc
+signature). Before describing them as trusted production installers, configure
+an Apple Developer ID with notarization and a trusted Windows Authenticode
+certificate. Do not store
 certificate material in the repository; use encrypted GitHub Actions secrets.
 
 Linux package signing is optional. Release assets are also covered by GitHub's

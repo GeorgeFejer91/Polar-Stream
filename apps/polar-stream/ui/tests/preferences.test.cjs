@@ -37,5 +37,6 @@ test("saving Vernier keep-connected policy preserves other preferences", () => {
     lastDevice: { id: "vernier:opaque-device", name: "GDX-RB" },
     outputConfig: { outputs: ["raw_force"] },
     keepVernierAwake: false,
+    devicePalettes: {},
   });
 });

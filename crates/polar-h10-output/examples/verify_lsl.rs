@@ -121,7 +121,7 @@ async fn main() -> Result<(), String> {
             },
         ],
     );
-    router.publish_vernier_breathing(100_000_000, &[0.25, 0.75], 100_000);
+    let _ = router.publish_vernier_breathing(100_000_000, &[0.25, 0.75], 100_000);
     let health = router.health();
     if !health.lsl.starts_with("Publishing ") {
         return Err(format!(

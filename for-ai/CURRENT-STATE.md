@@ -1,9 +1,40 @@
 # Current state
 
-Last verified: 2026-08-27
+Last verified: 2026-09-03
 
 ## Implemented
 
+- The 0.6 release surface offers one H10 chest-motion waveform plus readiness
+  and confidence as an inseparable new-selection set. Raw ACC remains automatic;
+  22 older respiration IDs remain executable only for saved compatibility
+  configurations. Base breathing snapshots are correctly described as
+  irregular-rate, new configuration is Timed-PCA-v1-only, and the canonical
+  waveform cannot be normalized a second time in the release UI. An explicit
+  upgrade replaces selected compatibility respiration outputs with the exact
+  three-output release set; a complete release set also owns shared processor
+  precedence if a stale mixed payload reaches native validation.
+- Native Polar and Vernier derived breathing now publish concurrently over LSL
+  and OSC, write source-scoped CSV rows, and render as a time-aligned 0–1
+  comparison. Browser recording writes both derived sources into one
+  source-tagged CSV, records a bounded per-source identity manifest (slot,
+  input kind, device family/name, and palette), and continues after either
+  single source disconnects. Renderer/native output reconfiguration is
+  serialized and restores the last accepted outputs, settings, formulas, name,
+  and destination toggles after a rejection without disturbing connected
+  sources. Mixed LSL, focused OSC, CSV, browser lifecycle, rollback, and
+  renderer checks are automated; a simultaneous two-physical-device acceptance
+  run remains open.
+- Release metadata is synchronized at 0.6.0. The matrix covers Windows
+  x64/ARM64, universal macOS 14+, and Linux x64/ARM64 with an Ubuntu 22.04
+  baseline. The Pages artifact now contains a current `/download/` landing page;
+  installers remain GitHub Release assets. Its manifest hash-binds both the
+  canonical application UI and the complete download surface, and Pages deploys
+  only after the exact commit passes reusable CI. Release tags must exactly
+  match every repository version surface and point to a commit on `main`; the
+  publisher additionally requires a reviewer-protected `release` environment.
+  Prereleases remain on **All releases** and do not replace the latest-stable
+  route. Production signing/notarization is not configured, so packages remain
+  unsigned research previews.
 - Native desktop packages stage the official LabRecorder 1.17.0 from pinned,
   checksum-verified upstream release/source revisions together with its own
   Qt/liblsl runtime. The shared Output UI exposes **Open Lab Recorder**; native
@@ -118,9 +149,11 @@ Last verified: 2026-08-27
   UI temporal buffers are per source, so selecting a device cannot mix samples
   from another device.
   The shared UI has a first-paint-safe persistent light/dark theme and reduces
-  the primary ACC library to raw X/Y/Z, 3D motion magnitude, and normalized
-  **ACC breathing magnitude (0–1)**. Signed projection, phase, diagnostics,
-  rate, and dynamics remain under Extra options without changing IDs. Mixed
+  the release ACC library to raw X/Y/Z, 3D motion magnitude, and an inseparable
+  set containing **ACC breathing magnitude (0–1)**, signal confidence, and
+  signal readiness. Signed projection, phase, diagnostics, rate, and dynamics
+  retain their IDs and runtime support only when restored from an older saved
+  configuration; they are not offered for new selection. Mixed
   visual comparison is opt-in and permits one active compatible comparator;
   Polar `breathing_volume` and Vernier `vernier_breathing` share a fixed 0–1
   host-monotonic view, while ECG/breathing and raw-force/ACC pairs are excluded.
@@ -137,9 +170,10 @@ Last verified: 2026-08-27
   exact-name candidate instead of waiting for total capacity. With one Polar
   and one Vernier source active, source selection remains display-only and both
   routers continue publishing concurrently. A pinned official pylsl
-  1.18.2/liblsl 1.17.7 synthetic gate resolves exact ECG, ACC, rawVernier, and
-  vernierBreathing inlets, receives advancing rows from all four, and requires
-  at least 1.5 seconds of overlapping LSL time.
+  1.18.2/liblsl 1.17.7 synthetic gate resolves exact ECG, ACC, Polar
+  breathingVolume, rawVernier, and vernierBreathing inlets, receives advancing
+  rows from all five, and requires at least 1.5 seconds of overlapping LSL
+  time.
 - Independent MIT `vernier-gdx-core` and `vernier-gdx-input` crates implement
   Go Direct command framing, decrementing counters/checksums, 20-byte writes
   without a GATT response when the characteristic advertises that mode (with a
@@ -421,8 +455,10 @@ Last verified: 2026-08-27
   release matrices rather than inferred locally. The macOS release gate verifies
   universal slices for the app and both liblsl runtimes, checks the mounted app's
   metadata/signature, and launches the exact DMG on Apple Silicon and Intel.
-- Both public ACC-derived respiration outputs are unvalidated and require
-  comparison with a reference respiratory sensor before interpretation.
+- The release-facing ACC-derived waveform and its two quality indicators are
+  unvalidated and require comparison with a reference respiratory sensor before
+  physiological interpretation. Compatibility respiration outputs are not new
+  selection options.
 - Windows and macOS public packages are currently unsigned/ad-hoc unless release
   infrastructure states otherwise.
 - Physical-device latency percentiles, queue high-water marks, and transport

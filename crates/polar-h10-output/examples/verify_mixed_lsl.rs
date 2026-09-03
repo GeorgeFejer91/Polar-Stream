@@ -4,7 +4,7 @@
 use std::{env, path::PathBuf, thread, time::Duration};
 
 use polar_h10_core::AccSample;
-use polar_h10_output::{OutputConfig, OutputRouter};
+use polar_h10_output::{MetricValue, OutputConfig, OutputRouter};
 use vernier_gdx_core::{
     NumericMeasurementType, SampleEncoding, SamplingMode, SensorInfo, SensorSamples,
 };
@@ -51,7 +51,11 @@ async fn main() -> Result<(), String> {
         .configure(OutputConfig {
             stream_name: POLAR_BASE.into(),
             lsl_enabled: true,
-            outputs: vec!["raw_ecg".into(), "raw_acc".into()],
+            outputs: vec![
+                "raw_ecg".into(),
+                "raw_acc".into(),
+                "breathing_volume".into(),
+            ],
             ..OutputConfig::default()
         })
         .await?;
@@ -99,7 +103,7 @@ async fn main() -> Result<(), String> {
         polar_health.lsl, vernier_health.lsl
     );
 
-    // Let four independently resolved official inlets open before the bounded
+    // Let five independently resolved official inlets open before the bounded
     // interleaved publication. Both routers stay live for the complete loop.
     thread::sleep(Duration::from_secs(2));
     for index in 0..50_u64 {
@@ -116,6 +120,13 @@ async fn main() -> Result<(), String> {
             .collect::<Vec<_>>();
         let _ = polar.publish_ecg(timestamp_ns, &ecg);
         let _ = polar.publish_accelerometer(timestamp_ns, &acc);
+        let _ = polar.publish_metrics_at(
+            timestamp_ns,
+            &[MetricValue {
+                id: "breathing_volume",
+                value: 0.5 + 0.35 * (index as f32 / 6.0).sin(),
+            }],
+        );
 
         let force = 12.0 + (index as f64 / 6.0).sin();
         vernier.publish_vernier_raw(
@@ -131,7 +142,7 @@ async fn main() -> Result<(), String> {
                 values: vec![force],
             }],
         );
-        vernier.publish_vernier_breathing(
+        let _ = vernier.publish_vernier_breathing(
             timestamp_ns,
             &[0.5 + 0.4 * (index as f32 / 6.0).sin()],
             100_000,

@@ -1,11 +1,40 @@
 use std::collections::VecDeque;
 
-const WINDOW_SECONDS: f64 = 30.0;
-const ROBUST_BOUNDS_MINIMUM_SAMPLES: usize = 20;
-const BOUNDS_UPDATE_SAMPLES: usize = 5;
-const MAX_HISTORY_SAMPLES: usize = 30_000;
-const LOWER_QUANTILE: f64 = 0.05;
-const UPPER_QUANTILE: f64 = 0.95;
+/// Stable, machine-readable contract for the fixed Vernier force-to-breathing
+/// transform. Output transports use this same value for provenance metadata so
+/// recorded settings cannot drift from the implementation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VernierBreathingContract {
+    pub algorithm: &'static str,
+    pub settings_schema: &'static str,
+    pub window_seconds: f64,
+    pub robust_bounds_minimum_samples: usize,
+    pub bounds_update_samples: usize,
+    pub maximum_history_samples: usize,
+    pub lower_quantile: f64,
+    pub upper_quantile: f64,
+    pub warmup_bounds: &'static str,
+    pub nonfinite_policy: &'static str,
+    pub degenerate_range_value: f32,
+    pub inhale_direction: &'static str,
+    pub output_range: &'static str,
+}
+
+pub const VERNIER_BREATHING_CONTRACT: VernierBreathingContract = VernierBreathingContract {
+    algorithm: "polar-stream-vernier-force-respiration",
+    settings_schema: "vernier-breathing-settings-v1",
+    window_seconds: 30.0,
+    robust_bounds_minimum_samples: 20,
+    bounds_update_samples: 5,
+    maximum_history_samples: 30_000,
+    lower_quantile: 0.05,
+    upper_quantile: 0.95,
+    warmup_bounds: "observed-min-max",
+    nonfinite_policy: "hold-last-output",
+    degenerate_range_value: 0.5,
+    inhale_direction: "increasing-force",
+    output_range: "0,1",
+};
 
 /// Causal, bounded normalization for the GDX-RB Force channel.
 ///
@@ -45,8 +74,8 @@ impl VernierBreathingProcessor {
                 self.history.push_back((self.elapsed_seconds, force_n));
                 self.samples_since_bounds = self.samples_since_bounds.saturating_add(1);
                 self.prune_history();
-                if self.history.len() <= BOUNDS_UPDATE_SAMPLES
-                    || self.samples_since_bounds >= BOUNDS_UPDATE_SAMPLES
+                if self.history.len() <= VERNIER_BREATHING_CONTRACT.bounds_update_samples
+                    || self.samples_since_bounds >= VERNIER_BREATHING_CONTRACT.bounds_update_samples
                 {
                     self.update_bounds();
                 }
@@ -60,9 +89,9 @@ impl VernierBreathingProcessor {
     }
 
     fn prune_history(&mut self) {
-        let cutoff = self.elapsed_seconds - WINDOW_SECONDS;
+        let cutoff = self.elapsed_seconds - VERNIER_BREATHING_CONTRACT.window_seconds;
         while self.history.front().is_some_and(|(time, _)| *time < cutoff)
-            || self.history.len() > MAX_HISTORY_SAMPLES
+            || self.history.len() > VERNIER_BREATHING_CONTRACT.maximum_history_samples
         {
             self.history.pop_front();
         }
@@ -76,9 +105,9 @@ impl VernierBreathingProcessor {
             .collect::<Vec<_>>();
         values.sort_by(f64::total_cmp);
         if let (Some(first), Some(last)) = (values.first(), values.last()) {
-            if values.len() >= ROBUST_BOUNDS_MINIMUM_SAMPLES {
-                self.lower_force_n = quantile(&values, LOWER_QUANTILE);
-                self.upper_force_n = quantile(&values, UPPER_QUANTILE);
+            if values.len() >= VERNIER_BREATHING_CONTRACT.robust_bounds_minimum_samples {
+                self.lower_force_n = quantile(&values, VERNIER_BREATHING_CONTRACT.lower_quantile);
+                self.upper_force_n = quantile(&values, VERNIER_BREATHING_CONTRACT.upper_quantile);
             } else {
                 self.lower_force_n = *first;
                 self.upper_force_n = *last;
@@ -90,7 +119,7 @@ impl VernierBreathingProcessor {
 
 fn normalize_force(value: f64, lower: f64, upper: f64) -> f32 {
     if !value.is_finite() || !lower.is_finite() || !upper.is_finite() || upper - lower < 1e-9 {
-        return 0.5;
+        return VERNIER_BREATHING_CONTRACT.degenerate_range_value;
     }
     ((value - lower) / (upper - lower)).clamp(0.0, 1.0) as f32
 }

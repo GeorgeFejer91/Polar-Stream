@@ -23,6 +23,7 @@
   let formulaPreviewAnimationResult = null;
   let formulaPreviewAnimationStartedAt = 0;
   let formulaPreviewLastDrawAt = 0;
+  let rendererOutputConfigFailure = null;
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
@@ -99,12 +100,12 @@
     fallbackMetric("mean_heart_rate", "meanHeartRate", "Mean heart rate", "bpm", "Heart rate"),
     ...[["rmssd","rmssd","RMSSD","ms"],["ln_rmssd","lnRMSSD","lnRMSSD","ln(ms)"],["sdnn","sdnn","SDNN","ms"],["pnn50","pNN50","pNN50","%"],["sd1","sd1","Poincaré SD1","ms"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"HRV & relaxation")),
     ...[["coherence","coherence","Normalized coherence","0–1"],["coherence_confidence","coherenceConfidence","Coherence confidence","0–1"],["heartmath_coherence","heartMathCoherence","HeartMath-style coherence ratio","ratio"],["coherence_peak_frequency","coherencePeakFrequency","Coherence peak frequency","Hz"],["coherence_peak_power","coherencePeakPower","Coherence peak-band power","ms²"],["coherence_total_power","coherenceTotalPower","Coherence total power","ms²"]].map(([id,suffix,label,unit]) => fallbackMetric(id,suffix,label,unit,"Coherence","resonance")),
-    fallbackMetric("acc_breathing_magnitude", "accBreathingMagnitude", "ACC breathing projection (g)", "g", "Breathing", "breathing", "Signed selected-axis chest-motion projection", false, true, 20),
-    fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing magnitude (0–1)", "0–1", "Breathing", "breathing", "Normalized waveform for direct respiration-belt comparison; not lung volume", false, true, 20),
-    fallbackMetric("breathing_signal_confidence", "breathingSignalConfidence", "ACC breathing signal confidence", "0–1", "Breathing", "breathing", "Range, motion, coverage, and periodicity quality index", false, false, 20),
-    fallbackMetric("breathing_signal_ready", "breathingSignalReady", "ACC breathing signal ready", "0/1", "Breathing", "breathing", "Calibration, freshness, and motion gate", false, false, 20),
-    fallbackMetric("breathing_phase", "breathingPhase", "Breath phase classifier", "class", "Breathing", "breathing", "+1 inhale · −1 exhale · 0 pause or not ready", false, false, 20),
-    fallbackMetric("breathing_calibration", "breathingCalibration", "Breathing calibration", "0–1", "Breathing", "breathing", "Principal-axis calibration progress", false, false, 4),
+    fallbackMetric("acc_breathing_magnitude", "accBreathingMagnitude", "ACC breathing projection (g)", "g", "Breathing", "breathing", "Signed selected-axis chest-motion projection", false, true, 0),
+    fallbackMetric("breathing_volume", "breathingVolume", "ACC breathing magnitude (0–1)", "0–1", "Breathing", "breathing", "Normalized waveform for direct respiration-belt comparison; not lung volume", false, false, 0),
+    fallbackMetric("breathing_signal_confidence", "breathingSignalConfidence", "ACC breathing signal confidence", "0–1", "Breathing", "breathing", "Range × motion × PCA-dominance quality index", false, false, 0),
+    fallbackMetric("breathing_signal_ready", "breathingSignalReady", "ACC breathing signal ready", "0/1", "Breathing", "breathing", "Calibration, freshness, and motion gate", false, false, 0),
+    fallbackMetric("breathing_phase", "breathingPhase", "Breath phase classifier", "class", "Breathing", "breathing", "+1 inhale · −1 exhale · 0 pause or not ready", false, false, 0),
+    fallbackMetric("breathing_calibration", "breathingCalibration", "Breathing calibration", "0–1", "Breathing", "breathing", "Principal-axis calibration progress", false, false, 0),
     fallbackMetric("breathing_axis_range", "breathingAxisRange", "Breathing axis range", "g", "Breathing", "breathing"),
     fallbackMetric("breathing_rate", "breathingRate", "Breathing rate", "breaths/min", "Breathing", "breathing"),
     fallbackMetric("breathing_dynamics_confidence", "breathingDynamicsConfidence", "Breathing-dynamics confidence", "0–1", "Breathing dynamics", "complexity"),
@@ -207,16 +208,71 @@
       || metric.category === "Breathing"
       || metric.category === "Breathing dynamics")
     .map((metric) => metric.id));
-  const primaryAccLibraryIds = new Set(["raw_acc", "acc_magnitude", "breathing_volume"]);
-  const breathingOutputIds = new Set([
-    "acc_breathing_magnitude",
+  const releaseAccCoreIds = new Set(["raw_acc", "acc_magnitude"]);
+  const releasePolarBreathingIds = Object.freeze([
     "breathing_volume",
-    "breathing_phase",
-    "breathing_calibration",
-    "breathing_axis_range",
     "breathing_signal_confidence",
     "breathing_signal_ready",
   ]);
+  const releasePolarBreathingIdSet = new Set(releasePolarBreathingIds);
+  const compatibilityPolarRespirationIds = new Set([
+    "acc_breathing_magnitude",
+    "breathing_phase",
+    "breathing_calibration",
+    "breathing_axis_range",
+    "breathing_rate",
+    "breathing_dynamics_confidence",
+    ...fallbackCatalog
+      .filter((metric) => metric.id.startsWith("breath_interval_") || metric.id.startsWith("breath_amplitude_"))
+      .map((metric) => metric.id),
+  ]);
+  const breathingOutputIds = new Set([
+    ...releasePolarBreathingIds,
+    "acc_breathing_magnitude",
+    "breathing_phase",
+    "breathing_calibration",
+    "breathing_axis_range",
+  ]);
+  function isCompatibilityPolarRespirationMetric(metric) {
+    return metric?.selectionTier === "compatibility"
+      || compatibilityPolarRespirationIds.has(metric?.id);
+  }
+  function isReleasePolarBreathingMetric(metric) {
+    return releasePolarBreathingIdSet.has(metric?.id);
+  }
+  function polarRespirationReleaseState() {
+    const selectedIds = releasePolarBreathingIds.filter((id) => app.outputs.has(id));
+    const selectedCompatibilityIds = [...compatibilityPolarRespirationIds]
+      .filter((id) => app.outputs.has(id));
+    const settings = app.breathingSettings || defaultBreathingSettings();
+    const currentProcessor = settings.volumeMode === "timed-pca-v1"
+      && settings.stateMode === "hysteresis-v1";
+    return {
+      selectedIds,
+      selectedCompatibilityIds,
+      complete: selectedIds.length === releasePolarBreathingIds.length,
+      currentProcessor,
+      compatibilityOnly: selectedIds.length > 0
+        && (selectedIds.length !== releasePolarBreathingIds.length
+          || !currentProcessor
+          || selectedCompatibilityIds.length > 0),
+    };
+  }
+  function isCompatibilityPolarRespirationOutput(metric, releaseState = polarRespirationReleaseState()) {
+    return isCompatibilityPolarRespirationMetric(metric)
+      || (isReleasePolarBreathingMetric(metric) && releaseState.compatibilityOnly);
+  }
+  function compatibilityOutputNote(metric, releaseState) {
+    if (!isReleasePolarBreathingMetric(metric)) return "Compatibility only · restored legacy output";
+    if (!releaseState.complete && !releaseState.currentProcessor) {
+      return "Compatibility only · legacy processor and incomplete waveform + quality set";
+    }
+    if (!releaseState.currentProcessor) return "Compatibility only · restored Legacy v0 processor";
+    if (releaseState.selectedCompatibilityIds.length) {
+      return "Compatibility only · current set mixed with restored legacy outputs";
+    }
+    return "Compatibility only · incomplete waveform + quality set";
+  }
   const formulaSources = Object.freeze({
     ecg: { label: "ECG · 130 Hz", variables: "ecg", color: "#d85151" },
     accelerometer: { label: "Accelerometer · 200 Hz", variables: "x, y, z", color: "#3b78aa" },
@@ -497,6 +553,8 @@
     selectedVisual: "raw_ecg",
     sampleCount: 0,
     outputSequence: 0,
+    outputConfigQueue: Promise.resolve(),
+    committedOutputState: null,
     connectionGeneration: 0,
     currentDeviceId: null,
     currentInputKind: null,
@@ -986,8 +1044,8 @@
     app.outputs = new Set();
     app.metricOptions = structuredClone(initialConfig.metricOptions || {});
     app.customFormulas = (initialConfig.customFormulas || []).map(normalizeFormulaDraft);
-    app.breathingSettings = configuredBreathingSettings(app.metricOptions);
-    app.breathingPresentationSettings = configuredBreathingPresentationSettings(app.metricOptions);
+    app.breathingSettings = configuredBreathingSettings(app.metricOptions, initialConfig.outputs);
+    app.breathingPresentationSettings = configuredBreathingPresentationSettings(app.metricOptions, initialConfig.outputs);
     installCatalogVisuals();
     installCustomFormulaVisuals();
     app.streamName = normalizeStreamBase(app.preferences.streamName)
@@ -1038,6 +1096,7 @@
     syncScanAction();
     renderMetricFilters();
     renderOutputs();
+    app.committedOutputState = captureOutputState();
     installInteractions();
     updateThemeUi();
     if (isNative) {
@@ -1095,6 +1154,7 @@
               deviceName: selectedSourceName(),
               inputKind: app.currentInputKind || "browser",
               source: app.activeSources.get(app.selectedSourceId) || null,
+              sources: [...app.activeSources.values()],
             });
             addActivity("Browser CSV recording started");
             toast("Recording all incoming browser data in this tab");
@@ -1110,25 +1170,32 @@
           toast(error.message || String(error), true);
         }
       }
-      await configureOutputs();
+      try {
+        await configureOutputs();
+      } catch (_error) {
+        // The last accepted toggle state has already been restored.
+      }
     });
     elements["audio-toggle"].addEventListener("change", async () => {
       if (!audioDataLink) return;
+      const requestedEnabled = elements["audio-toggle"].checked;
+      const wasCommittedEnabled = Boolean(app.committedOutputState?.config.audioEnabled);
       try {
-        if (elements["audio-toggle"].checked) {
+        if (requestedEnabled) {
           await audioDataLink.enable({ streamName: app.streamName });
+        }
+        await configureOutputs({ quiet: true });
+        if (requestedEnabled) {
           addActivity("Experimental audio data output started");
           toast("Stereo PCM data modem active · use a cable or digital recorder");
         } else {
           audioDataLink.disable();
           addActivity("Audio data output stopped");
         }
-        await configureOutputs();
       } catch (error) {
-        elements["audio-toggle"].checked = false;
-        audioDataLink.disable();
+        elements["audio-toggle"].checked = wasCommittedEnabled;
+        if (requestedEnabled && !wasCommittedEnabled) audioDataLink.disable();
         toast(error.message || String(error), true);
-        await configureOutputs({ quiet: true });
       }
     });
     if (runtime.isBrowser && browserSession) {
@@ -1157,7 +1224,7 @@
     window.addEventListener("polar-stream-audio-error", (event) => {
       elements["audio-toggle"].checked = false;
       toast(event.detail || "Audio data output stopped.", true);
-      void configureOutputs({ quiet: true });
+      void configureOutputs({ quiet: true }).catch(() => {});
     });
 
     let nameTimer;
@@ -1165,7 +1232,9 @@
       app.streamName = elements["stream-name"].value;
       renderOutputs();
       window.clearTimeout(nameTimer);
-      nameTimer = window.setTimeout(configureOutputs, 320);
+      nameTimer = window.setTimeout(() => {
+        void configureOutputs().catch(() => {});
+      }, 320);
     });
 
     elements["open-output-dialog"].addEventListener("click", async () => {
@@ -1213,9 +1282,13 @@
         elements["metric-options"].querySelector(".metric-option.selected")?.focus({ preventScroll: true });
       });
     });
-    elements["save-metric-output"].addEventListener("click", () => {
+    elements["save-metric-output"].addEventListener("click", async () => {
       const metric = app.catalog.find((candidate) => candidate.id === app.selectedMetricId);
-      if (!metric || app.outputs.has(metric.id)) return;
+      if (!metric) return;
+      const outputIds = isReleasePolarBreathingMetric(metric)
+        ? releasePolarBreathingIds
+        : [metric.id];
+      if (outputIds.every((id) => app.outputs.has(id))) return;
       const support = runtime.outputSupport(metric.id, app.currentInputKind);
       if (!support.supported) {
         toast(support.reason, true);
@@ -1227,13 +1300,28 @@
         app.breathingSettings = structuredClone(draft.processing.breathing);
         app.breathingPresentationSettings = structuredClone(draft.presentation.breathing);
       }
-      app.metricOptions[metric.id] = draft;
-      app.outputs.add(metric.id);
-      app.savedOutputIds.add(metric.id);
+      for (const id of outputIds) {
+        const option = breathingOutputIds.has(id)
+          ? {
+            ...structuredClone(metricOptionFor(id, { forSelection: true })),
+            processing: { breathing: structuredClone(app.breathingSettings) },
+            presentation: { breathing: structuredClone(app.breathingPresentationSettings) },
+          }
+          : structuredClone(draft);
+        app.metricOptions[id] = option;
+        app.outputs.add(id);
+        app.savedOutputIds.add(id);
+      }
       renderOutputs();
-      configureOutputs();
+      try {
+        await configureOutputs();
+      } catch (_error) {
+        return;
+      }
       elements["output-dialog"].close();
-      toast(`${metric.label} added as ${streamOutputName(metric)}`);
+      toast(isReleasePolarBreathingMetric(metric)
+        ? "ACC breathing waveform, confidence, and readiness added together"
+        : `${metric.label} added as ${streamOutputName(metric)}`);
     });
     elements["metric-search"].addEventListener("input", () => {
       app.metricSearch = elements["metric-search"].value.trim().toLowerCase();
@@ -1286,7 +1374,9 @@
       selectSource(elements["visual-device"].value);
     });
     elements["adjust-visual"].addEventListener("click", () => openModuleSettings(optionIdForVisual(app.selectedVisual)));
-    elements["save-module-settings"].addEventListener("click", saveModuleSettings);
+    elements["save-module-settings"].addEventListener("click", () => {
+      void saveModuleSettings().catch(() => {});
+    });
 
     elements["output-dialog"].addEventListener("close", () => {
       app.selectedMetricId = null;
@@ -1730,7 +1820,7 @@
           elements["csv-toggle"].checked = false;
           elements["csv-detail"].textContent = event.message;
           elements["csv-detail"].classList.add("warning");
-          void configureOutputs({ quiet: true });
+          void configureOutputs({ quiet: true }).catch(() => {});
         }
         addActivity(event.message);
         toast(event.message, true);
@@ -2026,6 +2116,7 @@
           deviceName: resolved.deviceName || resolved.label,
           inputKind: resolved.inputKind || "browser",
           source: resolved,
+          sources: [...app.activeSources.values()],
         });
       }
       elements["source-palette-status"].textContent = affected.length
@@ -2217,7 +2308,7 @@
       renderMetricOptions();
     }
     renderOutputs();
-    if (event.connected && source) void configureOutputs({ quiet: true });
+    if (event.connected && source) void configureOutputs({ quiet: true }).catch(() => {});
     if (runtime.isBrowser && browserSession) renderBrowserRecorder(browserSession.status());
     markTelemetryDirty();
   }
@@ -2641,8 +2732,12 @@
     return section;
   }
 
-  function configuredBreathingSettings(metricOptions) {
-    for (const id of breathingOutputIds) {
+  function configuredBreathingSettings(metricOptions, outputIds = []) {
+    const selected = new Set(outputIds);
+    const preferredIds = releasePolarBreathingIds.every((id) => selected.has(id))
+      ? releasePolarBreathingIds
+      : breathingOutputIds;
+    for (const id of preferredIds) {
       const processing = metricOptions?.[id]?.processing || {};
       const stored = processing.breathing || processing.breathingPhase;
       if (stored) {
@@ -2658,8 +2753,12 @@
     return defaultBreathingSettings();
   }
 
-  function configuredBreathingPresentationSettings(metricOptions) {
-    for (const id of breathingOutputIds) {
+  function configuredBreathingPresentationSettings(metricOptions, outputIds = []) {
+    const selected = new Set(outputIds);
+    const preferredIds = releasePolarBreathingIds.every((id) => selected.has(id))
+      ? releasePolarBreathingIds
+      : breathingOutputIds;
+    for (const id of preferredIds) {
       const stored = metricOptions?.[id]?.presentation?.breathing;
       if (stored) return { ...defaultBreathingPresentationSettings(), ...structuredClone(stored) };
     }
@@ -2672,9 +2771,9 @@
     }
     if (app.metricFamily === "acc") {
       return app.catalog.filter((metric) => (
-        app.accLibraryExtra
-          ? accLibraryIds.has(metric.id) && !primaryAccLibraryIds.has(metric.id) && metric.id !== "raw_force"
-          : primaryAccLibraryIds.has(metric.id)
+        releaseAccCoreIds.has(metric.id)
+        || ((metric.category === "Breathing" || metric.category === "Breathing dynamics")
+          && !isCompatibilityPolarRespirationMetric(metric))
       ));
     }
     return app.catalog.filter((metric) => (
@@ -2696,7 +2795,7 @@
     else if (app.metricFamily === "vernier") app.metricFamily = "ecg";
     elements["output-dialog"].dataset.family = app.metricFamily;
     elements["metric-family-toggle"].hidden = vernier;
-    elements["acc-extra-toggle"].hidden = vernier || app.metricFamily !== "acc";
+    elements["acc-extra-toggle"].hidden = true;
     for (const button of elements["metric-family-toggle"].querySelectorAll("button[data-family]")) {
       const active = button.dataset.family === app.metricFamily;
       button.classList.toggle("active", active);
@@ -2710,19 +2809,17 @@
     }
     const acc = app.metricFamily === "acc";
     elements["metric-family-context"].textContent = acc
-      ? app.accLibraryExtra ? "ACC extra options" : "Three primary ACC signals"
+      ? "Five release ACC signals"
       : "ECG-first outputs";
     elements["metric-family-note"].textContent = acc
-      ? app.accLibraryExtra
-        ? "Signed projection, phase, diagnostics, breathing rate, and dynamics remain available here for specialist workflows and saved configurations."
-        : "Start with raw X/Y/Z, general 3D motion, or the normalized 0–1 ACC breathing waveform for direct comparison with a respiration belt."
+      ? "One unvalidated 0–1 chest-motion waveform is paired with readiness and confidence indicators; raw ACC and general motion remain available for audit and reprocessing. Older phase, rate, and dynamics selections still run when restored from saved configurations."
       : app.currentInputKind === "web-bluetooth"
         ? "Browser H10 input exposes raw ECG plus HR/RR here. Other derived ECG processors remain desktop-only."
         : "Start with ECG for the signal the H10 is designed to measure; interpretation limits still apply.";
     elements["metric-search"].placeholder = acc
       ? "Search raw motion or breathing…"
       : "Search ECG, heart rate, HRV…";
-    elements["acc-extra-toggle"].textContent = app.accLibraryExtra ? "← Primary ACC signals" : "Extra options";
+    elements["acc-extra-toggle"].textContent = "Compatibility outputs hidden";
   }
 
   function renderMetricFilters() {
@@ -2872,7 +2969,9 @@
 
     article.append(header, createMetricPreviewPanel(metric), summary, source);
     elements["metric-detail"].replaceChildren(article);
-    const alreadyAdded = app.outputs.has(metric.id);
+    const alreadyAdded = isReleasePolarBreathingMetric(metric)
+      ? releasePolarBreathingIds.every((id) => app.outputs.has(id))
+      : app.outputs.has(metric.id);
     const support = runtime.outputSupport(metric.id, app.currentInputKind);
     const invalidAxes = breathingOutputIds.has(metric.id)
       && selectedAxisCount(app.libraryMetricDraft.processing.breathing.axes) < 2;
@@ -2880,14 +2979,21 @@
       && app.libraryMetricDraft.processing.breathing.upperQuantile
         - app.libraryMetricDraft.processing.breathing.lowerQuantile < 0.10;
     save.disabled = alreadyAdded || invalidAxes || invalidBounds || !support.supported;
-    save.textContent = alreadyAdded ? "Already added" : support.supported ? "Save output" : "Desktop only";
+    save.textContent = alreadyAdded
+      ? "Already added"
+      : support.supported && isReleasePolarBreathingMetric(metric)
+        ? "Add waveform + quality"
+        : support.supported ? "Save output" : "Desktop only";
     status.textContent = alreadyAdded
       ? `${metric.label} is already in Output`
       : !support.supported
         ? support.reason
       : invalidAxes
         ? "Choose at least two axes"
-        : invalidBounds ? "Keep at least 0.10 between quantile bounds" : `Ready to add ${metric.label}`;
+        : invalidBounds ? "Keep at least 0.10 between quantile bounds"
+          : isReleasePolarBreathingMetric(metric)
+            ? "Adds the waveform with confidence and readiness so quality is never omitted"
+            : `Ready to add ${metric.label}`;
   }
 
   function selectedAxisCount(axes) {
@@ -2973,7 +3079,9 @@
   }
 
   function renderFormulaTemplates() {
-    const buttons = app.catalog.filter((metric) => metric.formulaTemplate).map((metric) => {
+    const buttons = app.catalog
+      .filter((metric) => metric.formulaTemplate && !isCompatibilityPolarRespirationMetric(metric))
+      .map((metric) => {
       const button = document.createElement("button");
       button.type = "button";
       const name = document.createElement("strong");
@@ -2989,7 +3097,7 @@
         unit: metric.unit,
       })));
       return button;
-    });
+      });
     elements["formula-template-buttons"].replaceChildren(...buttons);
   }
 
@@ -3175,21 +3283,25 @@
       else app.customFormulas.push(normalized);
       installCustomFormulaVisuals();
       renderOutputs();
-      await configureOutputs();
+      await configureOutputs({ quiet: true });
       elements["formula-dialog"].close();
       toast(`${normalized.name} added as ${customStreamName(normalized)}`);
     } catch (error) {
-      toast(error.message || runtime.formatError(error), true);
+      toast(runtime.formatError(error), true);
     }
   }
 
-  function deleteCustomFormula() {
+  async function deleteCustomFormula() {
     if (!app.editingFormulaId) return;
     const formula = app.customFormulas.find((candidate) => candidate.id === app.editingFormulaId);
     app.customFormulas = app.customFormulas.filter((candidate) => candidate.id !== app.editingFormulaId);
     if (app.selectedVisual === `formula:${app.editingFormulaId}`) app.selectedVisual = "raw_ecg";
     renderOutputs();
-    void configureOutputs();
+    try {
+      await configureOutputs();
+    } catch (_error) {
+      return;
+    }
     elements["formula-dialog"].close();
     toast(`${formula?.name || "Custom output"} removed`);
   }
@@ -3214,12 +3326,17 @@
   function renderOutputs() {
     const profile = selectedDeviceProfile();
     const byId = new Map(app.catalog.map((metric) => [metric.id, metric]));
+    const releaseState = polarRespirationReleaseState();
+    const releaseUpgradeCardId = releaseState.compatibilityOnly ? releaseState.selectedIds[0] : null;
     const cards = [...app.outputs].map((id) => {
       const metric = byId.get(id);
       if (!metric || !metricMatchesDeviceProfile(metric, profile)) return null;
       const support = runtime.outputSupport(id, app.currentInputKind);
       const card = document.createElement("article");
-      card.className = `output-card${metric.raw ? " raw-output-card" : ""}${support.supported ? "" : " unavailable"}`;
+      const compatibilityOnly = isCompatibilityPolarRespirationOutput(metric, releaseState);
+      card.className = `output-card${metric.raw ? " raw-output-card" : ""}${compatibilityOnly ? " compatibility-output-card" : ""}${support.supported ? "" : " unavailable"}`;
+      card.dataset.metricId = id;
+      card.dataset.outputTier = compatibilityOnly ? "compatibility" : "release";
       const header = document.createElement("header");
       const identity = document.createElement("span");
       const label = document.createElement("strong");
@@ -3227,6 +3344,12 @@
       const stream = document.createElement("small");
       stream.textContent = streamOutputName(metric, elements["stream-name"].value);
       identity.append(label, stream);
+      if (compatibilityOnly) {
+        const compatibility = document.createElement("em");
+        compatibility.className = "compatibility-output-note";
+        compatibility.textContent = compatibilityOutputNote(metric, releaseState);
+        identity.append(compatibility);
+      }
       if (metric.raw) {
         const automatic = document.createElement("span");
         automatic.className = "automatic-output-badge";
@@ -3237,12 +3360,24 @@
         remove.type = "button";
         remove.setAttribute("aria-label", `Remove ${metric.label}`);
         remove.textContent = "×";
-        remove.addEventListener("click", () => {
-          app.outputs.delete(id);
-          app.savedOutputIds.delete(id);
-          delete app.metricOptions[id];
+        remove.addEventListener("click", async () => {
+          const outputIds = isReleasePolarBreathingMetric(metric)
+            ? releasePolarBreathingIds
+            : [id];
+          for (const outputId of outputIds) {
+            app.outputs.delete(outputId);
+            app.savedOutputIds.delete(outputId);
+            delete app.metricOptions[outputId];
+          }
           renderOutputs();
-          configureOutputs();
+          try {
+            await configureOutputs();
+          } catch (_error) {
+            return;
+          }
+          if (isReleasePolarBreathingMetric(metric)) {
+            toast("ACC breathing waveform and both quality indicators removed together");
+          }
         });
         header.append(identity, remove);
       }
@@ -3253,7 +3388,9 @@
       const options = metricOptionFor(id);
       const summary = document.createElement("span");
       summary.className = "module-summary";
-      const scaling = options.normalization === "slidingWindow"
+      const scaling = id === "breathing_volume"
+        ? "canonical 0–1"
+        : options.normalization === "slidingWindow"
         ? `0–1 / ${options.windowSeconds}s`
         : options.normalization === "session" ? "0–1 / whole run" : "original scale";
       const axes = breathingOutputIds.has(id)
@@ -3266,7 +3403,20 @@
       tune.textContent = "Adjust";
       tune.setAttribute("aria-label", `Adjust ${metric.label} module`);
       tune.addEventListener("click", () => openModuleSettings(id));
-      controls.append(summary, tune);
+      controls.append(summary);
+      if (id === releaseUpgradeCardId) {
+        const upgrade = document.createElement("button");
+        upgrade.type = "button";
+        upgrade.className = "module-tune-button compatibility-upgrade-button";
+        upgrade.dataset.action = "upgrade-polar-respiration";
+        upgrade.textContent = "Upgrade to current set";
+        upgrade.setAttribute("aria-label", "Upgrade Polar respiration to the complete Timed PCA v1 waveform and quality set");
+        upgrade.addEventListener("click", () => {
+          void upgradePolarRespirationReleaseSet().catch(() => {});
+        });
+        controls.append(upgrade);
+      }
+      controls.append(tune);
       card.append(controls);
       return card;
     }).filter(Boolean);
@@ -3284,10 +3434,14 @@
       remove.type = "button";
       remove.textContent = "×";
       remove.setAttribute("aria-label", `Remove ${formula.name}`);
-      remove.addEventListener("click", () => {
+      remove.addEventListener("click", async () => {
         app.customFormulas = app.customFormulas.filter((candidate) => candidate.id !== formula.id);
         renderOutputs();
-        void configureOutputs();
+        try {
+          await configureOutputs();
+        } catch (_error) {
+          // configureOutputs restored the last accepted formula set.
+        }
       });
       header.append(identity, remove);
       const controls = document.createElement("div");
@@ -3323,7 +3477,9 @@
       ? app.breathingSettings
       : stored.processing?.breathing || stored.processing?.breathingPhase || app.breathingSettings;
     const options = {
-      normalization: stored.normalization || (forSelection && id === "acc_breathing_magnitude" ? "slidingWindow" : "none"),
+      normalization: id === "breathing_volume"
+        ? "none"
+        : stored.normalization || (forSelection && id === "acc_breathing_magnitude" ? "slidingWindow" : "none"),
       windowSeconds: Number(stored.windowSeconds) || (id === "acc_breathing_magnitude" ? 20 : 60),
       displayWindowSeconds: Number(stored.displayWindowSeconds) || 5,
       processing: {},
@@ -3365,6 +3521,50 @@
     return options;
   }
 
+  async function upgradePolarRespirationReleaseSet() {
+    const removedCompatibilityIds = [...compatibilityPolarRespirationIds]
+      .filter((id) => app.outputs.has(id) || app.savedOutputIds.has(id));
+    for (const id of removedCompatibilityIds) {
+      app.outputs.delete(id);
+      app.savedOutputIds.delete(id);
+      delete app.metricOptions[id];
+    }
+    app.breathingSettings = {
+      ...app.breathingSettings,
+      volumeMode: "timed-pca-v1",
+      stateMode: "hysteresis-v1",
+    };
+    for (const id of releasePolarBreathingIds) {
+      const option = metricOptionFor(id, { forSelection: true });
+      option.normalization = "none";
+      option.processing = { breathing: structuredClone(app.breathingSettings) };
+      option.presentation = {
+        ...(option.presentation || {}),
+        breathing: structuredClone(app.breathingPresentationSettings),
+      };
+      app.metricOptions[id] = option;
+      app.outputs.add(id);
+      app.savedOutputIds.add(id);
+    }
+    renderOutputs();
+    updateVisualLabels();
+    await configureOutputs();
+    for (const state of breathingPresentation.values()) {
+      state.points = [];
+      state.value = null;
+      state.lastTime = null;
+      state.lastRenderClock = null;
+    }
+    for (const id of [...releasePolarBreathingIds, ...removedCompatibilityIds]) {
+      resetVisualTransform(id);
+    }
+    if (elements["module-dialog"].open) elements["module-dialog"].close();
+    const replacement = removedCompatibilityIds.length
+      ? ` · replaced ${removedCompatibilityIds.length} compatibility output${removedCompatibilityIds.length === 1 ? "" : "s"}`
+      : "";
+    toast(`Polar respiration upgraded to the complete Timed PCA v1 waveform and quality set${replacement}`);
+  }
+
   function numberOr(value, fallback) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;
@@ -3381,7 +3581,7 @@
     app.moduleDraft = structuredClone(metricOptionFor(id));
     elements["module-dialog-title"].textContent = `Adjust ${metric.label}`;
     elements["module-dialog-intro"].textContent = breathingOutputIds.has(id)
-      ? "Tune the shared experimental ACC breathing estimate. Saving restarts calibration and applies the settings to both breathing outputs."
+      ? "Tune the shared experimental ACC breathing estimate. Saving restarts calibration and applies the settings to every active Polar respiration output."
       : "Tune this visualizer and output transform. Changes remain a draft until Save module is pressed.";
     renderModuleSettings();
     elements["module-dialog"].showModal();
@@ -3394,7 +3594,7 @@
     general.append(numberSetting("Display window", "Seconds visible in the low-latency visualizer.", app.moduleDraft.displayWindowSeconds, 1, 600, 1, (value) => {
       app.moduleDraft.displayWindowSeconds = clampNumber(value, 1, 600, 5);
     }));
-    if (metric.normalizable) {
+    if (metric.normalizable && metric.id !== "breathing_volume") {
       general.append(selectSetting("Normalization", "Choose original units or a 0–1 transform.", app.moduleDraft.normalization, [
         ["none", "Original units"], ["slidingWindow", "0–1 sliding window"], ["session", "0–1 whole run"],
       ], (value) => {
@@ -3409,7 +3609,9 @@
     } else {
       const note = document.createElement("div");
       note.className = "settings-note";
-      note.textContent = metric.raw
+      note.textContent = metric.id === "breathing_volume"
+        ? "The release waveform is already canonical 0–1. Additional normalization is locked off so Polar and Vernier retain the same comparison contract."
+        : metric.raw
         ? "Raw device streams stay in native units; only their visualizer history can be adjusted."
         : "This is a categorical or quality signal, so its published class values remain unscaled.";
       general.append(note);
@@ -3431,21 +3633,38 @@
           classifier.axes = next;
         }));
       });
-      processing.append(
-        selectSetting("Volume algorithm", "Timed PCA uses sensor-time spacing; legacy-v0 preserves older behavior.", classifier.volumeMode, [
-          ["timed-pca-v1", "Timed PCA v1"], ["legacy-v0", "Legacy v0"],
-        ], (value) => {
-          classifier.volumeMode = value;
-          if (value === "legacy-v0") classifier.stateMode = "legacy-v0";
+      const processingVersion = document.createElement("div");
+      processingVersion.className = "settings-note";
+      const legacyProcessing = classifier.volumeMode === "legacy-v0";
+      const releaseCompatibility = isReleasePolarBreathingMetric(metric)
+        && polarRespirationReleaseState().compatibilityOnly;
+      processingVersion.textContent = legacyProcessing
+        ? "Restored compatibility processor: Legacy v0. This remains available only to reproduce a saved configuration."
+        : "Release processor: Timed PCA v1 uses sensor-time spacing. New configurations cannot select the legacy algorithm.";
+      processing.append(processingVersion);
+      if (releaseCompatibility) {
+        const upgrade = document.createElement("button");
+        upgrade.type = "button";
+        upgrade.className = "module-tune-button compatibility-upgrade-button";
+        upgrade.dataset.action = "upgrade-polar-respiration";
+        upgrade.textContent = "Upgrade to complete Timed PCA v1 set";
+        upgrade.addEventListener("click", () => {
+          void upgradePolarRespirationReleaseSet().catch(() => {});
+        });
+        processing.append(upgrade);
+      } else if (legacyProcessing) {
+        const upgrade = document.createElement("button");
+        upgrade.type = "button";
+        upgrade.className = "module-tune-button";
+        upgrade.textContent = "Use Timed PCA v1 for this draft";
+        upgrade.addEventListener("click", () => {
+          classifier.volumeMode = "timed-pca-v1";
+          classifier.stateMode = "hysteresis-v1";
           renderModuleSettings();
-        }),
-        selectSetting("Phase algorithm", "Hysteresis v1 requires timed PCA and separates Hold (0) from invalid using ready; legacy-v0 is retained for saved configurations.", classifier.stateMode, classifier.volumeMode === "legacy-v0" ? [
-          ["legacy-v0", "Legacy v0"],
-        ] : [
-          ["hysteresis-v1", "Hysteresis v1"], ["legacy-v0", "Legacy v0"],
-        ], (value) => { classifier.stateMode = value; renderModuleSettings(); }),
-        checkSetting("Invert direction", "Flips the learned movement axis when strap orientation reverses the curve.", classifier.invertDirection, (value) => classifier.invertDirection = value),
-      );
+        });
+        processing.append(upgrade);
+      }
+      processing.append(checkSetting("Invert direction", "Flips the learned movement axis when strap orientation reverses the curve.", classifier.invertDirection, (value) => classifier.invertDirection = value));
       if (classifier.volumeMode === "legacy-v0") {
         processing.append(numberSetting("Smoothing window", "Legacy ACC smoothing window; longer is steadier but adds lag.", classifier.smoothingWindowSeconds, 0.05, 5, 0.05, (value) => classifier.smoothingWindowSeconds = clampNumber(value, 0.05, 5, 0.75)));
       }
@@ -3455,7 +3674,7 @@
       if (classifier.volumeMode === "timed-pca-v1") {
         processing.append(numberSetting("Timed volume filter tau", "Source-time EMA time constant for the canonical waveform.", classifier.volumeFilterTauSeconds, 0.01, 5, 0.01, (value) => classifier.volumeFilterTauSeconds = clampNumber(value, 0.01, 5, 0.18)));
       }
-      if (classifier.stateMode === "hysteresis-v1") {
+      if (metric.id === "breathing_phase" && classifier.stateMode === "hysteresis-v1") {
         processing.append(
           numberSetting("Phase derivative tau", "Source-time smoothing for normalized projected velocity.", classifier.phaseDerivativeTauSeconds, 0.01, 5, 0.01, (value) => classifier.phaseDerivativeTauSeconds = clampNumber(value, 0.01, 5, 0.40)),
           numberSetting("Phase enter threshold", "Velocity at which inhale/exhale is requested (0–1 volume/s).", classifier.phaseEnterThresholdPerSecond, 0.001, 5, 0.005, (value) => classifier.phaseEnterThresholdPerSecond = clampNumber(value, 0.001, 5, 0.030)),
@@ -3583,6 +3802,12 @@
           app.metricOptions[outputId].presentation = structuredClone(draft.presentation);
         }
       }
+    }
+    app.metricOptions[id] = draft;
+    renderOutputs();
+    updateVisualLabels();
+    await configureOutputs();
+    if (breathingOutputIds.has(id)) {
       for (const state of breathingPresentation.values()) {
         state.points = [];
         state.value = null;
@@ -3590,14 +3815,10 @@
         state.lastRenderClock = null;
       }
     }
-    app.metricOptions[id] = draft;
     resetVisualTransform(id);
     for (const [visualId, definition] of Object.entries(visualDefinitions)) {
       if (definition.parent === id) resetVisualTransform(visualId);
     }
-    renderOutputs();
-    updateVisualLabels();
-    await configureOutputs();
     elements["module-dialog"].close();
     toast(`${metric.label} settings saved${breathingOutputIds.has(id) ? " · calibration restarted" : ""}`);
   }
@@ -3834,7 +4055,7 @@
       toast(`${protocol} is available only in the installed Polar Stream app. Use the download link below.`, true);
       return;
     }
-    void configureOutputs();
+    void configureOutputs().catch(() => {});
   }
 
   async function ensureAutomaticRawLsl() {
@@ -3845,52 +4066,135 @@
     await configureOutputs();
   }
 
-  async function configureOutputs({ quiet = false } = {}) {
-    const streamName = normalizeStreamBase(elements["stream-name"].value);
-    if (!streamName) {
-      elements["stream-name"].setAttribute("aria-invalid", "true");
-      updateStreamNamePreview();
-      return;
-    }
-    elements["stream-name"].removeAttribute("aria-invalid");
-    app.streamName = streamName;
-    const config = {
+  function outputConfigFromUi(streamName = normalizeStreamBase(elements["stream-name"].value)) {
+    const outputIds = [...new Set([...app.savedOutputIds, ...app.outputs])];
+    return {
       streamName,
       lslEnabled: runtime.isBrowser ? false : elements["lsl-toggle"].checked,
       oscEnabled: runtime.isBrowser ? false : elements["osc-toggle"].checked,
       csvEnabled: elements["csv-toggle"].checked,
       audioEnabled: elements["audio-toggle"].checked,
-      outputs: [...new Set([...app.savedOutputIds, ...app.outputs])],
-      metricOptions: Object.fromEntries([...new Set([...app.savedOutputIds, ...app.outputs])].map((id) => [id, metricOptionFor(id)])),
+      outputs: outputIds,
+      metricOptions: Object.fromEntries(outputIds.map((id) => [id, metricOptionFor(id)])),
       customFormulas: app.customFormulas.map((formula) => ({ ...formula })),
     };
-    app.savedOutputIds = new Set(config.outputs);
-    const sequence = ++app.outputSequence;
-    try {
-      const health = await runtime.updateOutputConfig(config);
-      if (sequence !== app.outputSequence) return;
-      if (runtime.isBrowser && browserSession) {
-        browserSession.configure({
-          ...config,
-          metricUnits: Object.fromEntries(app.catalog.map((metric) => [metric.id, metric.unit])),
-        });
+  }
+
+  function captureOutputState(config = outputConfigFromUi()) {
+    return {
+      outputs: [...app.outputs],
+      savedOutputIds: [...app.savedOutputIds],
+      metricOptions: structuredClone(app.metricOptions),
+      customFormulas: structuredClone(app.customFormulas),
+      breathingSettings: structuredClone(app.breathingSettings),
+      breathingPresentationSettings: structuredClone(app.breathingPresentationSettings),
+      selectedVisual: app.selectedVisual,
+      config: structuredClone(config),
+      health: null,
+      destinationDetails: {
+        lsl: elements["lsl-detail"].textContent,
+        osc: elements["osc-detail"].textContent,
+        csv: elements["csv-detail"].textContent,
+        audio: elements["audio-detail"].textContent,
+        lslWarning: elements["lsl-detail"].classList.contains("warning"),
+        oscWarning: elements["osc-detail"].classList.contains("warning"),
+        csvWarning: elements["csv-detail"].classList.contains("warning"),
+      },
+    };
+  }
+
+  function applyOutputState(state) {
+    if (!state) return;
+    app.outputs = new Set(state.outputs);
+    app.savedOutputIds = new Set(state.savedOutputIds);
+    app.metricOptions = structuredClone(state.metricOptions);
+    app.customFormulas = structuredClone(state.customFormulas);
+    app.breathingSettings = structuredClone(state.breathingSettings);
+    app.breathingPresentationSettings = structuredClone(state.breathingPresentationSettings);
+    app.selectedVisual = state.selectedVisual;
+    app.streamName = state.config.streamName;
+    app.preferences = {
+      ...app.preferences,
+      streamName: state.config.streamName,
+      outputConfig: structuredClone(state.config),
+    };
+    elements["stream-name"].value = state.config.streamName;
+    elements["lsl-toggle"].checked = !runtime.isBrowser && state.config.lslEnabled;
+    elements["osc-toggle"].checked = !runtime.isBrowser && state.config.oscEnabled;
+    elements["csv-toggle"].checked = state.config.csvEnabled;
+    elements["audio-toggle"].checked = state.config.audioEnabled;
+    installCustomFormulaVisuals();
+    renderOutputs();
+    updateVisualLabels();
+    if (state.health) {
+      updateDestinationHealth(state.health);
+    } else {
+      for (const id of ["lsl", "osc", "csv", "audio"]) {
+        elements[`${id}-detail`].textContent = state.destinationDetails[id];
       }
-      audioDataLink?.configure(config);
-      app.streamName = health.streamName || streamName;
-      elements["stream-name"].value = app.streamName;
-      config.streamName = app.streamName;
-      app.preferences = !isNative
-        ? preferences.saveOutputConfig(config)
-        : { ...app.preferences, streamName: config.streamName, outputConfig: structuredClone(config) };
-      renderOutputs();
-      updateDestinationHealth(health);
-    } catch (error) {
-      if (runtime.isBrowser) {
-        elements["lsl-toggle"].checked = false;
-        elements["osc-toggle"].checked = false;
-      }
-      if (!quiet) toast(runtime.formatError(error), true);
+      elements["lsl-detail"].classList.toggle("warning", state.destinationDetails.lslWarning);
+      elements["osc-detail"].classList.toggle("warning", state.destinationDetails.oscWarning);
+      elements["csv-detail"].classList.toggle("warning", state.destinationDetails.csvWarning);
     }
+  }
+
+  async function configureOutputs({ quiet = false } = {}) {
+    const streamName = normalizeStreamBase(elements["stream-name"].value);
+    if (!streamName) {
+      const error = new Error("Enter a valid signal base name before applying output changes.");
+      applyOutputState(app.committedOutputState);
+      elements["stream-name"].removeAttribute("aria-invalid");
+      updateStreamNamePreview();
+      if (!quiet) toast(error.message, true);
+      throw error;
+    }
+    elements["stream-name"].removeAttribute("aria-invalid");
+    app.streamName = streamName;
+    const config = outputConfigFromUi(streamName);
+    const candidateState = captureOutputState(config);
+    candidateState.savedOutputIds = [...config.outputs];
+    candidateState.metricOptions = structuredClone(config.metricOptions);
+    const sequence = ++app.outputSequence;
+    const apply = async () => {
+      try {
+        if (rendererOutputConfigFailure) {
+          const error = rendererOutputConfigFailure;
+          rendererOutputConfigFailure = null;
+          throw error;
+        }
+        const health = await runtime.updateOutputConfig(config);
+        config.streamName = health.streamName || streamName;
+        candidateState.config = structuredClone(config);
+        candidateState.health = structuredClone(health);
+        candidateState.savedOutputIds = [...config.outputs];
+        candidateState.metricOptions = structuredClone(config.metricOptions);
+        app.committedOutputState = candidateState;
+        const acceptedPreferences = !isNative
+          ? preferences.saveOutputConfig(config)
+          : { ...app.preferences, streamName: config.streamName, outputConfig: structuredClone(config) };
+        if (sequence === app.outputSequence) {
+          applyOutputState(candidateState);
+          app.preferences = acceptedPreferences;
+          if (runtime.isBrowser && browserSession) {
+            browserSession.configure({
+              ...config,
+              metricUnits: Object.fromEntries(app.catalog.map((metric) => [metric.id, metric.unit])),
+            });
+          }
+          audioDataLink?.configure(config);
+        }
+        return health;
+      } catch (error) {
+        if (sequence === app.outputSequence) {
+          applyOutputState(app.committedOutputState);
+          if (!quiet) toast(runtime.formatError(error), true);
+        }
+        throw error;
+      }
+    };
+    const pending = app.outputConfigQueue.then(apply, apply);
+    app.outputConfigQueue = pending.catch(() => {});
+    return pending;
   }
 
   function updateDestinationHealth(health) {
@@ -4660,8 +4964,68 @@
     });
   }
 
+  function rendererOutputTransactionState() {
+    return {
+      outputs: [...app.outputs],
+      savedOutputIds: [...app.savedOutputIds],
+      metricOptions: structuredClone(app.metricOptions),
+      config: structuredClone(app.preferences.outputConfig),
+      breathingSettings: structuredClone(app.breathingSettings),
+      activeSourceIds: [...app.activeSources.keys()],
+      outputDialogOpen: elements["output-dialog"].open,
+      moduleDialogOpen: elements["module-dialog"].open,
+      formulaDialogOpen: elements["formula-dialog"].open,
+      toastMessages: [...elements["toast-region"].children].map((node) => ({
+        message: node.textContent,
+        error: node.classList.contains("error"),
+      })),
+    };
+  }
+
   async function renderInterfaceScenario(name) {
     ensureRendererPolarSource();
+    await app.outputConfigQueue;
+    if (name === "output-config-transaction-baseline") {
+      for (const dialog of [elements["output-dialog"], elements["module-dialog"], elements["formula-dialog"]]) {
+        if (dialog.open) dialog.close();
+      }
+      app.outputs = new Set(["raw_ecg", "raw_acc"]);
+      app.savedOutputIds = new Set(["raw_ecg", "raw_acc"]);
+      app.metricOptions = {};
+      app.customFormulas = [];
+      app.breathingSettings = defaultBreathingSettings();
+      app.breathingPresentationSettings = defaultBreathingPresentationSettings();
+      app.selectedVisual = "raw_ecg";
+      elements["lsl-toggle"].checked = false;
+      elements["osc-toggle"].checked = false;
+      elements["csv-toggle"].checked = false;
+      elements["audio-toggle"].checked = false;
+      elements["toast-region"].replaceChildren();
+      renderOutputs();
+      await configureOutputs({ quiet: true });
+      return { scenario: name, ...rendererOutputTransactionState() };
+    }
+    if (name === "output-config-transaction-legacy") {
+      if (elements["module-dialog"].open) elements["module-dialog"].close();
+      const legacySettings = {
+        ...defaultBreathingSettings(),
+        volumeMode: "legacy-v0",
+        stateMode: "legacy-v0",
+      };
+      app.breathingSettings = structuredClone(legacySettings);
+      app.breathingPresentationSettings = defaultBreathingPresentationSettings();
+      app.outputs = new Set(["raw_ecg", "raw_acc", ...releasePolarBreathingIds]);
+      app.savedOutputIds = new Set(app.outputs);
+      app.metricOptions = Object.fromEntries(releasePolarBreathingIds.map((id) => [id, {
+        ...structuredClone(metricOptionFor(id, { forSelection: true })),
+        processing: { breathing: structuredClone(legacySettings) },
+      }]));
+      elements["toast-region"].replaceChildren();
+      renderOutputs();
+      await configureOutputs({ quiet: true });
+      openModuleSettings("breathing_volume");
+      return { scenario: name, ...rendererOutputTransactionState() };
+    }
     if (name === "multiple-colored-sources") {
       app.outputs = new Set(["raw_ecg", "raw_acc", "raw_force"]);
       app.comparisonSourceId = null;
@@ -4841,10 +5205,158 @@
       app.metricFamily = "acc";
       app.accLibraryExtra = false;
       const primaryIds = libraryCatalog().map((metric) => metric.id);
-      app.accLibraryExtra = true;
-      const extraIds = libraryCatalog().map((metric) => metric.id);
-      app.accLibraryExtra = false;
-      return { scenario: name, primaryIds, extraIds };
+      const compatibilityIds = app.catalog
+        .filter(isCompatibilityPolarRespirationMetric)
+        .map((metric) => metric.id);
+      return { scenario: name, primaryIds, compatibilityIds };
+    }
+    if (name === "compatibility-output-restore") {
+      selectSource("source-1");
+      const snapshot = {
+        outputs: app.outputs,
+        savedOutputIds: app.savedOutputIds,
+        metricOptions: app.metricOptions,
+        breathingSettings: app.breathingSettings,
+        breathingPresentationSettings: app.breathingPresentationSettings,
+        preferences: app.preferences,
+        committedOutputState: app.committedOutputState,
+      };
+      app.outputs = new Set();
+      app.savedOutputIds = new Set(["breathing_phase"]);
+      app.metricOptions = {};
+      app.breathingSettings = { ...defaultBreathingSettings(), volumeMode: "legacy-v0", stateMode: "legacy-v0" };
+      activateDeviceOutputs(deviceProfiles.polar);
+      renderOutputs();
+      const card = [...elements["output-chips"].querySelectorAll(".output-card")]
+        .find((candidate) => candidate.textContent.includes("Breath phase classifier"));
+      openModuleSettings("breathing_phase");
+      const before = {
+        restored: app.outputs.has("breathing_phase"),
+        className: card?.className || "",
+        note: card?.querySelector(".compatibility-output-note")?.textContent || "",
+        settings: elements["module-settings"].textContent,
+        upgradeButton: Boolean([...elements["module-settings"].querySelectorAll("button")]
+          .find((button) => button.textContent.includes("Timed PCA v1"))),
+        visibleInNewSelection: libraryCatalog().some((metric) => metric.id === "breathing_phase"),
+      };
+      elements["module-dialog"].close();
+      card?.querySelector('button[aria-label^="Remove "]')?.click();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const result = {
+        scenario: name,
+        before,
+        presentAfterRemove: app.outputs.has("breathing_phase"),
+      };
+      Object.assign(app, snapshot);
+      renderOutputs();
+      return result;
+    }
+    if (name === "release-breathing-compatibility") {
+      selectSource("source-1");
+      const snapshot = {
+        outputs: app.outputs,
+        savedOutputIds: app.savedOutputIds,
+        metricOptions: app.metricOptions,
+        breathingSettings: app.breathingSettings,
+        breathingPresentationSettings: app.breathingPresentationSettings,
+        preferences: app.preferences,
+        committedOutputState: app.committedOutputState,
+      };
+      const seedRestoredSet = (ids, settings) => {
+        app.outputs = new Set();
+        app.savedOutputIds = new Set(ids);
+        app.metricOptions = Object.fromEntries(ids.map((id) => [id, {
+          normalization: id === "breathing_volume" ? "slidingWindow" : "none",
+          windowSeconds: 45,
+          displayWindowSeconds: id === "breathing_volume" ? 7 : 5,
+          processing: { breathing: structuredClone(settings) },
+          presentation: { breathing: structuredClone(defaultBreathingPresentationSettings()) },
+        }]));
+        app.breathingSettings = structuredClone(settings);
+        app.breathingPresentationSettings = defaultBreathingPresentationSettings();
+        const storedBeforeRender = JSON.stringify(app.metricOptions);
+        activateDeviceOutputs(deviceProfiles.polar);
+        renderOutputs();
+        return storedBeforeRender === JSON.stringify(app.metricOptions);
+      };
+      const captureReleaseSet = () => {
+        const respirationIds = new Set([
+          ...releasePolarBreathingIds,
+          ...compatibilityPolarRespirationIds,
+        ]);
+        const configured = app.preferences?.outputConfig || null;
+        const configuredModes = Object.fromEntries(releasePolarBreathingIds.map((id) => {
+          const breathing = configured?.metricOptions?.[id]?.processing?.breathing;
+          return [id, breathing ? {
+            volumeMode: breathing.volumeMode,
+            stateMode: breathing.stateMode,
+          } : null];
+        }));
+        const phaseSettings = app.metricOptions.breathing_phase?.processing?.breathing;
+        const cards = releasePolarBreathingIds
+          .map((id) => elements["output-chips"].querySelector(`.output-card[data-metric-id="${id}"]`))
+          .filter(Boolean);
+        return {
+          selectedIds: releasePolarBreathingIds.filter((id) => app.outputs.has(id)),
+          selectedRespirationIds: [...app.outputs].filter((id) => respirationIds.has(id)).sort(),
+          selectedCompatibilityIds: [...compatibilityPolarRespirationIds]
+            .filter((id) => app.outputs.has(id)).sort(),
+          savedIds: releasePolarBreathingIds.filter((id) => app.savedOutputIds.has(id)),
+          allSavedIds: [...app.savedOutputIds],
+          compatibilityIds: cards
+            .filter((card) => card.classList.contains("compatibility-output-card"))
+            .map((card) => card.dataset.metricId),
+          notes: cards.map((card) => card.querySelector(".compatibility-output-note")?.textContent || ""),
+          upgradeButtonCount: elements["output-chips"].querySelectorAll('[data-action="upgrade-polar-respiration"]').length,
+          volumeSummary: elements["output-chips"].querySelector('.output-card[data-metric-id="breathing_volume"] .module-summary')?.textContent || "",
+          storedVolumeNormalization: app.metricOptions.breathing_volume?.normalization || null,
+          effectiveVolumeNormalization: metricOptionFor("breathing_volume").normalization,
+          volumeMode: app.breathingSettings.volumeMode,
+          stateMode: app.breathingSettings.stateMode,
+          phaseModes: phaseSettings ? {
+            volumeMode: phaseSettings.volumeMode,
+            stateMode: phaseSettings.stateMode,
+          } : null,
+          configuredRespirationIds: (configured?.outputs || [])
+            .filter((id) => respirationIds.has(id)).sort(),
+          configuredModes,
+        };
+      };
+
+      const legacySettings = {
+        ...defaultBreathingSettings(),
+        volumeMode: "legacy-v0",
+        stateMode: "legacy-v0",
+        staleTimeoutSeconds: 3,
+      };
+      const legacyRestoredIds = [...releasePolarBreathingIds, "breathing_phase"];
+      const legacyStoredOptionsPreserved = seedRestoredSet(legacyRestoredIds, legacySettings);
+      openModuleSettings("breathing_volume");
+      const legacyModule = {
+        text: elements["module-settings"].textContent,
+        upgradeButtonCount: elements["module-settings"].querySelectorAll('[data-action="upgrade-polar-respiration"]').length,
+      };
+      elements["module-dialog"].close();
+      const legacyBefore = captureReleaseSet();
+      elements["output-chips"].querySelector('[data-action="upgrade-polar-respiration"]')?.click();
+      await app.outputConfigQueue;
+      const legacyAfter = captureReleaseSet();
+
+      const partialIds = ["breathing_volume", "breathing_signal_ready"];
+      const partialStoredOptionsPreserved = seedRestoredSet(partialIds, defaultBreathingSettings());
+      const partialBefore = captureReleaseSet();
+      elements["output-chips"].querySelector('[data-action="upgrade-polar-respiration"]')?.click();
+      await app.outputConfigQueue;
+      const partialAfter = captureReleaseSet();
+
+      const result = {
+        scenario: name,
+        legacy: { storedOptionsPreserved: legacyStoredOptionsPreserved, module: legacyModule, before: legacyBefore, after: legacyAfter },
+        partial: { storedOptionsPreserved: partialStoredOptionsPreserved, before: partialBefore, after: partialAfter },
+      };
+      Object.assign(app, snapshot);
+      renderOutputs();
+      return result;
     }
     if (name === "metric-library-previews") {
       if (app.activeSources.has("source-1")) selectSource("source-1");
@@ -4986,6 +5498,10 @@
         "multiple-colored-sources",
         "multi-source-comparison",
         "acc-primary-library",
+        "compatibility-output-restore",
+        "release-breathing-compatibility",
+        "output-config-transaction-baseline",
+        "output-config-transaction-legacy",
         "metric-library-previews",
       ]),
       ready: () => initialization,
@@ -4994,6 +5510,18 @@
         return renderInterfaceScenario(scenario);
       },
       metricOptions: (id) => structuredClone(metricOptionFor(id)),
+      rejectNextOutputConfig: (message = "Renderer-injected output configuration rejection") => {
+        const error = new Error(message);
+        error.code = "TEST_OUTPUT_CONFIG_REJECTED";
+        rendererOutputConfigFailure = error;
+      },
+      waitForOutputConfig: async () => {
+        await Promise.resolve();
+        await app.outputConfigQueue;
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        return rendererOutputTransactionState();
+      },
+      outputTransactionState: () => rendererOutputTransactionState(),
     });
   }
 })();

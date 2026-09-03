@@ -8,12 +8,95 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-native-packages
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Reusable CI preflight
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  release-policy:
+    name: Validate release tag and publication state
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      prerelease: ${{ steps.classify.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Validate exact source version and reviewed-main ancestry
+        shell: bash
+        run: |
+          git fetch --force --no-tags origin main:refs/remotes/origin/main
+          tag_commit=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            echo "Release tag ${GITHUB_REF_NAME} does not point to a commit on origin/main." >&2
+            exit 1
+          fi
+          python scripts/stage_release_assets.py \
+            --version "${GITHUB_REF_NAME}" \
+            --check-version-only
+      - name: Require a reviewer-protected release environment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh api "repos/${GITHUB_REPOSITORY}/environments/release" > release-environment.json; then
+            echo "Configure a repository environment named release before publishing." >&2
+            exit 1
+          fi
+          reviewer_count=$(jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length' release-environment.json)
+          if [ "$reviewer_count" -lt 1 ]; then
+            echo "The release environment must require at least one reviewer." >&2
+            exit 1
+          fi
+      - name: Classify the tag and refuse an existing published release
+        id: classify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=${GITHUB_REF_NAME}
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Release tags must be semantic versions such as v1.2.3 or v1.2.3-rc.1: $tag" >&2
+            exit 1
+          fi
+
+          version_without_build=${tag#v}
+          version_without_build=${version_without_build%%+*}
+          if [[ "$version_without_build" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          set +e
+          is_draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>release-view-error.log)
+          status=$?
+          set -e
+          if [[ $status -eq 0 ]]; then
+            if [[ "$is_draft" != "true" ]]; then
+              echo "Refusing to overwrite the existing published release $tag." >&2
+              exit 1
+            fi
+            echo "Existing draft $tag may receive the newly verified assets."
+          elif grep -Eqi 'release not found|HTTP 404' release-view-error.log; then
+            echo "No existing release for $tag; a draft will be created after package verification."
+          else
+            cat release-view-error.log >&2
+            echo "Could not establish the publication state for $tag." >&2
+            exit 1
+          fi
+
   build:
     name: ${{ matrix.label }}
+    needs: [preflight, release-policy]
     permissions:
       contents: read
     strategy:
@@ -126,6 +209,16 @@ jobs:
           esac
           cargo run -p polar-h10-output --example verify_lsl --locked -- "$library"
           cargo run -p polar-h10-output --example verify_mixed_lsl --locked -- "$library"
+      - name: Install the pinned official pylsl consumer
+        if: matrix.platform == 'linux' && matrix.arch == 'x86_64'
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: pylsl==1.18.2
+      - name: Verify simultaneous Polar and Vernier outlets through official pylsl
+        if: matrix.platform == 'linux' && matrix.arch == 'x86_64'
+        env:
+          PYLSL_LIB: ${{ github.workspace }}/apps/polar-stream/resources/liblsl.so
+          LD_LIBRARY_PATH: ${{ github.workspace }}/apps/polar-stream/resources
+        run: python scripts/verify_mixed_lsl.py apps/polar-stream/resources/liblsl.so
       - name: Build Linux installers with staged LabRecorder libraries discoverable
         if: runner.os == 'Linux'
         working-directory: apps/polar-stream
@@ -160,9 +253,12 @@ jobs:
           set -e
           if [ "$appimage_status" -ne 124 ]; then cat appimage-smoke.log; exit 1; fi
           appimage_extract=$(mktemp -d)
-          deb_root=$(mktemp -d)
+          deb_package=''
           cleanup() {
-            rm -rf "$appimage_extract" "$deb_root"
+            rm -rf "$appimage_extract"
+            if [ -n "$deb_package" ] && dpkg-query -W "$deb_package" >/dev/null 2>&1; then
+              sudo dpkg --purge "$deb_package" >/dev/null 2>&1 || true
+            fi
           }
           trap cleanup EXIT
           (
@@ -177,56 +273,131 @@ jobs:
           appimage_recorder_status=$?
           set -e
           if [ "$appimage_recorder_status" -ne 124 ]; then cat appimage-recorder-smoke.log; exit 1; fi
-          dpkg-deb --info "$deb" >/dev/null
-          dpkg-deb --extract "$deb" "$deb_root"
-          deb_binary=$(find "$deb_root" -type f -path '*/bin/polar-stream' -print -quit)
-          test -n "$deb_binary"
+          candidate_package=$(dpkg-deb --field "$deb" Package)
+          if [[ ! "$candidate_package" =~ ^[a-z0-9][a-z0-9+.-]+$ ]]; then
+            echo "The DEB reported an unsafe package name: $candidate_package" >&2
+            exit 1
+          fi
+          deb_package=$candidate_package
+          sudo dpkg --install "$deb"
+          mapfile -t deb_binaries < <(dpkg-query -L "$deb_package" | grep -E '/bin/polar-stream$')
+          mapfile -t desktop_entries < <(dpkg-query -L "$deb_package" | grep -E '/share/applications/[^/]+\.desktop$')
+          if [ "${#deb_binaries[@]}" -ne 1 ] || [ "${#desktop_entries[@]}" -ne 1 ]; then
+            echo "The DEB must install exactly one app binary and desktop entry." >&2
+            exit 1
+          fi
+          deb_binary=${deb_binaries[0]}
+          desktop_entry=${desktop_entries[0]}
+          test -x "$deb_binary"
+          test -f "$desktop_entry"
           set +e
           timeout 12s xvfb-run -a "$deb_binary" > deb-smoke.log 2>&1
           deb_status=$?
           set -e
           if [ "$deb_status" -ne 124 ]; then cat deb-smoke.log; exit 1; fi
-          deb_recorder=$(find "$deb_root" -type f -path '*/lab-recorder/LabRecorder' -print -quit)
-          test -n "$deb_recorder"
+          mapfile -t deb_recorders < <(dpkg-query -L "$deb_package" | grep -E '/lab-recorder/LabRecorder$')
+          if [ "${#deb_recorders[@]}" -ne 1 ]; then
+            echo "The DEB must install exactly one bundled LabRecorder executable." >&2
+            exit 1
+          fi
+          deb_recorder=${deb_recorders[0]}
+          test -x "$deb_recorder"
           deb_recorder_root=$(dirname "$deb_recorder")
           set +e
           env LD_LIBRARY_PATH="$deb_recorder_root/lib" QT_PLUGIN_PATH="$deb_recorder_root/plugins" QT_QPA_PLATFORM_PLUGIN_PATH="$deb_recorder_root/plugins/platforms" timeout 12s xvfb-run -a "$deb_recorder" -c "$deb_recorder_root/PolarStream-LabRecorder.cfg" > deb-recorder-smoke.log 2>&1
           deb_recorder_status=$?
           set -e
           if [ "$deb_recorder_status" -ne 124 ]; then cat deb-recorder-smoke.log; exit 1; fi
+          sudo dpkg --purge "$deb_package"
+          if dpkg-query -W "$deb_package" >/dev/null 2>&1; then
+            echo "The DEB package remained installed after purge: $deb_package" >&2
+            exit 1
+          fi
+          deb_package=''
       - name: Smoke-test exact macOS DMG
         if: runner.os == 'macOS'
         shell: bash
         run: bash scripts/smoke_macos_dmg.sh release-assets
-      - name: Smoke-test exact Windows MSI payload
+      - name: Smoke-test exact Windows MSI and NSIS packages
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $msi = (Get-ChildItem release-assets -Filter *.msi -File -ErrorAction Stop).FullName
-          $nsis = (Get-ChildItem release-assets -Filter *.exe -File -ErrorAction Stop).FullName
-          $extract = Join-Path $env:RUNNER_TEMP "polar-stream-msi"
+          $msiCandidates = @(Get-ChildItem release-assets -Filter *.msi -File -ErrorAction Stop)
+          $nsisCandidates = @(Get-ChildItem release-assets -Filter *.exe -File -ErrorAction Stop)
+          if ($msiCandidates.Count -ne 1) { throw "Expected one MSI, found $($msiCandidates.Count)" }
+          if ($nsisCandidates.Count -ne 1) { throw "Expected one NSIS installer, found $($nsisCandidates.Count)" }
+          $msi = $msiCandidates[0].FullName
+          $nsis = $nsisCandidates[0].FullName
+
+          function Assert-ProcessStaysRunning {
+            param(
+              [Parameter(Mandatory = $true)][string]$Path,
+              [string[]]$Arguments = @(),
+              [int]$Seconds = 6
+            )
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $Path
+            $startInfo.WorkingDirectory = Split-Path -Parent $Path
+            $startInfo.UseShellExecute = $false
+            foreach ($argument in $Arguments) { $startInfo.ArgumentList.Add($argument) }
+            $process = [Diagnostics.Process]::Start($startInfo)
+            try {
+              Start-Sleep -Seconds $Seconds
+              if ($process.HasExited) {
+                throw "$Path exited during its smoke window with code $($process.ExitCode)"
+              }
+            } finally {
+              if (-not $process.HasExited) {
+                $process.Kill()
+                $process.WaitForExit()
+              }
+              $process.Dispose()
+            }
+          }
+
+          $extract = Join-Path $env:RUNNER_TEMP "polar-stream-msi-${{ matrix.arch }}-${{ github.run_attempt }}"
+          if (Test-Path -LiteralPath $extract) { throw "Refusing to reuse MSI extraction directory $extract" }
           $installer = Start-Process msiexec.exe -ArgumentList @("/a", "`"$msi`"", "/qn", "TARGETDIR=`"$extract`"") -Wait -PassThru
           if ($installer.ExitCode -ne 0) { throw "MSI administrative extraction failed with code $($installer.ExitCode)" }
-          $executable = Get-ChildItem $extract -Recurse -File -Filter polar-stream.exe | Select-Object -First 1
-          if (-not $executable) { throw "The MSI did not contain polar-stream.exe" }
-          $process = Start-Process $executable.FullName -PassThru
-          Start-Sleep -Seconds 8
-          if ($process.HasExited) { throw "Packaged Polar Stream exited with code $($process.ExitCode)" }
-          Stop-Process -Id $process.Id
-          $recorder = Get-ChildItem $extract -Recurse -File -Filter LabRecorder.exe | Select-Object -First 1
-          if (-not $recorder) { throw "The MSI did not contain the bundled LabRecorder.exe" }
+          $executables = @(Get-ChildItem $extract -Recurse -File -Filter polar-stream.exe)
+          $recorders = @(Get-ChildItem $extract -Recurse -File -Filter LabRecorder.exe)
+          if ($executables.Count -ne 1) { throw "The MSI contained $($executables.Count) polar-stream executables" }
+          if ($recorders.Count -ne 1) { throw "The MSI contained $($recorders.Count) LabRecorder executables" }
+          $executable = $executables[0]
+          $recorder = $recorders[0]
           $recorderConfig = Join-Path $recorder.Directory.FullName "PolarStream-LabRecorder.cfg"
           if (-not (Test-Path -LiteralPath $recorderConfig -PathType Leaf)) { throw "The MSI did not contain the safe LabRecorder config" }
-          $startInfo = [Diagnostics.ProcessStartInfo]::new()
-          $startInfo.FileName = $recorder.FullName
-          $startInfo.ArgumentList.Add("-c")
-          $startInfo.ArgumentList.Add($recorderConfig)
-          $recorderProcess = [Diagnostics.Process]::Start($startInfo)
-          Start-Sleep -Seconds 6
-          if ($recorderProcess.HasExited) { throw "Bundled LabRecorder exited with code $($recorderProcess.ExitCode)" }
-          Stop-Process -Id $recorderProcess.Id
-          $header = [IO.File]::ReadAllBytes($nsis)[0..1]
-          if ($header[0] -ne 0x4d -or $header[1] -ne 0x5a) { throw "The NSIS package is not a Windows executable" }
+          Assert-ProcessStaysRunning -Path $executable.FullName -Seconds 8
+          Assert-ProcessStaysRunning -Path $recorder.FullName -Arguments @("-c", $recorderConfig)
+
+          $nsisRoot = Join-Path $env:RUNNER_TEMP "polar-stream-nsis-${{ matrix.arch }}-${{ github.run_attempt }}"
+          if (Test-Path -LiteralPath $nsisRoot) { throw "Refusing to reuse NSIS install directory $nsisRoot" }
+          $installedExecutable = $null
+          try {
+            $nsisInstall = Start-Process -FilePath $nsis -ArgumentList @("/S", "/D=$nsisRoot") -Wait -PassThru
+            if ($nsisInstall.ExitCode -ne 0) { throw "NSIS installation failed with code $($nsisInstall.ExitCode)" }
+            $installedExecutables = @(Get-ChildItem $nsisRoot -Recurse -File -Filter polar-stream.exe)
+            $installedRecorders = @(Get-ChildItem $nsisRoot -Recurse -File -Filter LabRecorder.exe)
+            if ($installedExecutables.Count -ne 1) { throw "The NSIS install contained $($installedExecutables.Count) polar-stream executables" }
+            if ($installedRecorders.Count -ne 1) { throw "The NSIS install contained $($installedRecorders.Count) LabRecorder executables" }
+            $installedExecutable = $installedExecutables[0]
+            $installedRecorder = $installedRecorders[0]
+            $installedRecorderConfig = Join-Path $installedRecorder.Directory.FullName "PolarStream-LabRecorder.cfg"
+            if (-not (Test-Path -LiteralPath $installedRecorderConfig -PathType Leaf)) { throw "The NSIS install omitted the safe LabRecorder config" }
+            Assert-ProcessStaysRunning -Path $installedExecutable.FullName -Seconds 8
+            Assert-ProcessStaysRunning -Path $installedRecorder.FullName -Arguments @("-c", $installedRecorderConfig)
+          } finally {
+            $uninstallers = @(Get-ChildItem $nsisRoot -Recurse -File -Filter "uninstall*.exe" -ErrorAction SilentlyContinue)
+            if ($uninstallers.Count -eq 1) {
+              $uninstall = Start-Process -FilePath $uninstallers[0].FullName -ArgumentList "/S" -Wait -PassThru
+              if ($uninstall.ExitCode -ne 0) { throw "NSIS uninstall failed with code $($uninstall.ExitCode)" }
+            } elseif (Test-Path -LiteralPath $nsisRoot) {
+              throw "Expected one NSIS uninstaller, found $($uninstallers.Count)"
+            }
+          }
+          if ($null -eq $installedExecutable -or (Test-Path -LiteralPath $installedExecutable.FullName)) {
+            throw "NSIS uninstall left the installed application executable behind"
+          }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
@@ -251,8 +422,10 @@ jobs:
 
   publish:
     name: Verify package set and publish
-    needs: [build, macos-intel-smoke]
+    needs: [release-policy, build, macos-intel-smoke]
     runs-on: ubuntu-22.04
+    environment:
+      name: release
     permissions:
       contents: write
     steps:
@@ -262,30 +435,65 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
-      - name: Verify every supported package exists
-        run: python scripts/verify_release_assets.py release-assets
-      - name: Generate checksums
-        working-directory: release-assets
-        run: sha256sum Polar-Stream_* > SHA256SUMS.txt
+      - name: Generate checksums and verify the exact local asset manifest
+        run: |
+          (cd release-assets && sha256sum Polar-Stream_* > SHA256SUMS.txt)
+          python scripts/verify_release_assets.py release-assets \
+            --version "${{ github.ref_name }}" \
+            --checksums release-assets/SHA256SUMS.txt
       - name: Create or update the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.release-policy.outputs.prerelease }}
         run: |
-          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
-            gh release upload "${{ github.ref_name }}" release-assets/* --clobber
-          else
-            gh release create "${{ github.ref_name }}" release-assets/* \
-              --draft \
-              --title "Polar Stream ${{ github.ref_name }}" \
+          tag=${GITHUB_REF_NAME}
+          set +e
+          is_draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>release-view-error.log)
+          status=$?
+          set -e
+          if [[ $status -eq 0 ]]; then
+            if [[ "$is_draft" != "true" ]]; then
+              echo "Refusing to overwrite the existing published release $tag." >&2
+              exit 1
+            fi
+            gh release upload "$tag" release-assets/* --clobber
+          elif grep -Eqi 'release not found|HTTP 404' release-view-error.log; then
+            release_flags=(--draft --verify-tag --latest=false)
+            if [[ "$PRERELEASE" == "true" ]]; then
+              release_flags+=(--prerelease)
+            fi
+            gh release create "$tag" release-assets/* \
+              "${release_flags[@]}" \
+              --title "Polar Stream $tag" \
               --notes "Native Polar Stream packages for Windows, macOS, and Linux. Choose the installer matching your operating system and CPU. These packages are unsigned until platform signing credentials are configured."
+          else
+            cat release-view-error.log >&2
+            echo "Could not establish the publication state for $tag." >&2
+            exit 1
           fi
       - name: Verify uploaded release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "${{ github.ref_name }}" --json assets --jq '.assets' > release-assets.json
-          python scripts/verify_release_assets.py release-assets.json
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+            --jq '.assets' > release-assets.json
+          python scripts/verify_release_assets.py release-assets.json \
+            --version "${{ github.ref_name }}" \
+            --checksums release-assets/SHA256SUMS.txt \
+            --reference-directory release-assets
       - name: Publish the complete release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --draft=false --latest
+          PRERELEASE: ${{ needs.release-policy.outputs.prerelease }}
+        run: |
+          tag=${GITHUB_REF_NAME}
+          is_draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
+          if [[ "$is_draft" != "true" ]]; then
+            echo "Refusing to modify the already-published release $tag." >&2
+            exit 1
+          fi
+          if [[ "$PRERELEASE" == "true" ]]; then
+            gh release edit "$tag" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$tag" --draft=false --prerelease=false --latest
+          fi

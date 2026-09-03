@@ -139,6 +139,62 @@
     throw new GdxBrowserError("GDX_INVALID_SAMPLE_PERIOD", "The respiration-belt channel did not report a usable sample period.");
   }
 
+  class BreathingProcessor {
+    constructor() {
+      this.history = [];
+      this.elapsedSeconds = 0;
+      this.lowerForceN = 0;
+      this.upperForceN = 0;
+      this.samplesSinceBounds = 0;
+      this.lastValue01 = 0.5;
+    }
+
+    push(forceValuesN, samplePeriodUs) {
+      const stepSeconds = Math.max(1, Number(samplePeriodUs) || 100_000) / 1_000_000;
+      const normalized = [];
+      for (const input of forceValuesN) {
+        const forceN = Number(input);
+        if (Number.isFinite(forceN)) {
+          this.history.push([this.elapsedSeconds, forceN]);
+          this.samplesSinceBounds += 1;
+          const cutoff = this.elapsedSeconds - 30;
+          while (this.history.length && (this.history[0][0] < cutoff || this.history.length > 30_000)) {
+            this.history.shift();
+          }
+          if (this.history.length <= 5 || this.samplesSinceBounds >= 5) this.updateBounds();
+          this.lastValue01 = normalizeForce(forceN, this.lowerForceN, this.upperForceN);
+        }
+        normalized.push(this.lastValue01);
+        this.elapsedSeconds += stepSeconds;
+      }
+      return normalized;
+    }
+
+    updateBounds() {
+      const values = this.history.map(([, value]) => value).sort((left, right) => left - right);
+      if (values.length >= 20) {
+        this.lowerForceN = quantile(values, 0.05);
+        this.upperForceN = quantile(values, 0.95);
+      } else if (values.length) {
+        this.lowerForceN = values[0];
+        this.upperForceN = values.at(-1);
+      }
+      this.samplesSinceBounds = 0;
+    }
+  }
+
+  function normalizeForce(value, lower, upper) {
+    if (![value, lower, upper].every(Number.isFinite) || upper - lower < 1e-9) return 0.5;
+    return Math.max(0, Math.min(1, (value - lower) / (upper - lower)));
+  }
+
+  function quantile(sorted, fraction) {
+    const position = (sorted.length - 1) * fraction;
+    const low = Math.floor(position);
+    const high = Math.ceil(position);
+    return sorted[low] + (sorted[high] - sorted[low]) * (position - low);
+  }
+
   class BrowserSession {
     constructor(device, source, callback) {
       this.device = device;
@@ -151,6 +207,7 @@
       this.periodUs = 100000;
       this.sensorNumber = 1;
       this.connectedEventSent = false;
+      this.breathing = new BreathingProcessor();
       this.startedAt = performance.now();
       this.onValue = this.onValue.bind(this);
       this.onDisconnected = this.onDisconnected.bind(this);
@@ -329,10 +386,11 @@
       }
       const sequence = this.sequence;
       this.sequence += values.length;
+      const breathingValues = this.breathing.push(values, this.periodUs);
       this.emit({
         kind: "force", sensorNumber, sensorName: this.sensorName, sensorUnit: this.sensorUnit,
         hostReceiveTimestampNs: Math.round((performance.now() - this.startedAt) * 1000000),
-        samplePeriodUs: this.periodUs, sequence, values,
+        samplePeriodUs: this.periodUs, sequence, values, breathingValues,
         droppedBefore: 0, decodeLatencyNs: 0,
       });
     }
@@ -396,6 +454,7 @@
     supportStatus,
     connect,
     disconnect,
+    BreathingProcessor,
     activeSources: () => [...sessions.keys()],
   });
 })();

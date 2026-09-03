@@ -74,6 +74,14 @@ impl SourcePalette {
     }
 }
 
+const RELEASE_BREATHING_OUTPUT_IDS: [&str; 3] = [
+    "breathing_volume",
+    "breathing_signal_confidence",
+    "breathing_signal_ready",
+];
+
+// Outside the complete release set, keep the historical lookup order so a
+// restored compatibility-only configuration retains its saved processor.
 const BREATHING_OUTPUT_IDS: [&str; 7] = [
     "breathing_phase",
     "acc_breathing_magnitude",
@@ -112,7 +120,7 @@ impl Default for OutputConfig {
             csv_enabled: false,
             audio_enabled: false,
             source_palette: None,
-            outputs: vec!["raw_ecg".into(), "raw_acc".into(), "raw_force".into()],
+            outputs: vec!["raw_ecg".into(), "raw_acc".into()],
             metric_options: HashMap::new(),
             custom_formulas: Vec::new(),
         }
@@ -120,6 +128,49 @@ impl Default for OutputConfig {
 }
 
 impl OutputConfig {
+    fn has_complete_release_breathing_set(&self) -> bool {
+        RELEASE_BREATHING_OUTPUT_IDS
+            .iter()
+            .all(|id| self.outputs.iter().any(|selected| selected == id))
+    }
+
+    fn preferred_breathing_settings(&self) -> Option<BreathingSettings> {
+        let ids = if self.has_complete_release_breathing_set() {
+            // A complete release set is one atomic contract. Do not let a
+            // coexisting restored compatibility output silently select its
+            // legacy processor instead.
+            RELEASE_BREATHING_OUTPUT_IDS.as_slice()
+        } else {
+            BREATHING_OUTPUT_IDS.as_slice()
+        };
+        ids.iter().find_map(|id| {
+            self.metric_options
+                .get(*id)
+                .and_then(|options| options.processing.breathing)
+        })
+    }
+
+    fn preferred_breathing_presentation(&self) -> Option<BreathingPresentationSettings> {
+        let ids = if self.has_complete_release_breathing_set() {
+            RELEASE_BREATHING_OUTPUT_IDS.as_slice()
+        } else {
+            BREATHING_OUTPUT_IDS.as_slice()
+        };
+        ids.iter().find_map(|id| {
+            self.metric_options
+                .get(*id)
+                .and_then(|options| options.presentation.breathing)
+        })
+    }
+
+    /// Returns the one clamped processing configuration shared by every
+    /// built-in Polar ACC respiration output.
+    pub fn breathing_settings(&self) -> BreathingSettings {
+        self.preferred_breathing_settings()
+            .unwrap_or_default()
+            .clamped()
+    }
+
     /// Tolerant one-time migration for preferences produced by an older app.
     /// Size bounds still apply, but retired metric IDs may be discarded.
     pub fn migrated(self) -> Result<Self, String> {
@@ -197,11 +248,7 @@ impl OutputConfig {
                 options.presentation.breathing = None;
             }
         }
-        let shared_breathing = BREATHING_OUTPUT_IDS.iter().find_map(|id| {
-            self.metric_options
-                .get(*id)
-                .and_then(|options| options.processing.breathing)
-        });
+        let shared_breathing = self.preferred_breathing_settings();
         if let Some(shared_breathing) = shared_breathing {
             for id in BREATHING_OUTPUT_IDS {
                 if let Some(options) = self.metric_options.get_mut(id) {
@@ -209,11 +256,7 @@ impl OutputConfig {
                 }
             }
         }
-        let shared_breathing_presentation = BREATHING_OUTPUT_IDS.iter().find_map(|id| {
-            self.metric_options
-                .get(*id)
-                .and_then(|options| options.presentation.breathing)
-        });
+        let shared_breathing_presentation = self.preferred_breathing_presentation();
         if let Some(shared_breathing_presentation) = shared_breathing_presentation {
             for id in BREATHING_OUTPUT_IDS {
                 if let Some(options) = self.metric_options.get_mut(id) {
@@ -417,6 +460,7 @@ pub fn custom_output_stream_name(base_name: &str, formula: &CustomFormulaConfig)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use polar_h10_metrics::{MetricSelectionTier, metric_selection_tier};
 
     fn relative_luminance(color: &str) -> f64 {
         let channel = |offset| {
@@ -513,11 +557,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_all_supported_raw_streams() {
-        assert_eq!(
-            OutputConfig::default().outputs,
-            ["raw_ecg", "raw_acc", "raw_force"]
-        );
+    fn defaults_to_polar_raw_streams_without_the_compatibility_force_outlet() {
+        assert_eq!(OutputConfig::default().outputs, ["raw_ecg", "raw_acc"]);
     }
 
     #[test]
@@ -569,6 +610,83 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_metrics_survive_normalization_and_migration_with_exact_suffixes() {
+        const EXPECTED: [(&str, &str); 22] = [
+            ("acc_breathing_magnitude", "accBreathingMagnitude"),
+            ("breathing_phase", "breathingPhase"),
+            ("breathing_calibration", "breathingCalibration"),
+            ("breathing_axis_range", "breathingAxisRange"),
+            ("breathing_rate", "breathingRate"),
+            (
+                "breathing_dynamics_confidence",
+                "breathingDynamicsConfidence",
+            ),
+            ("breath_interval_mean", "breathIntervalMean"),
+            ("breath_interval_sd", "breathIntervalSD"),
+            ("breath_interval_cv", "breathIntervalCV"),
+            ("breath_interval_acw50", "breathIntervalACW50"),
+            ("breath_interval_psd_slope", "breathIntervalPsdSlope"),
+            ("breath_interval_lzc", "breathIntervalLZC"),
+            ("breath_interval_sampen", "breathIntervalSampEn"),
+            ("breath_interval_mse", "breathIntervalMSE"),
+            ("breath_amplitude_mean", "breathAmplitudeMean"),
+            ("breath_amplitude_sd", "breathAmplitudeSD"),
+            ("breath_amplitude_cv", "breathAmplitudeCV"),
+            ("breath_amplitude_acw50", "breathAmplitudeACW50"),
+            ("breath_amplitude_psd_slope", "breathAmplitudePsdSlope"),
+            ("breath_amplitude_lzc", "breathAmplitudeLZC"),
+            ("breath_amplitude_sampen", "breathAmplitudeSampEn"),
+            ("breath_amplitude_mse", "breathAmplitudeMSE"),
+        ];
+
+        let catalog_compatibility = METRIC_CATALOG
+            .iter()
+            .filter(|metric| metric_selection_tier(metric.id) == MetricSelectionTier::Compatibility)
+            .map(|metric| (metric.id, metric.stream_suffix))
+            .collect::<Vec<_>>();
+        assert_eq!(catalog_compatibility, EXPECTED);
+
+        let config = OutputConfig {
+            outputs: EXPECTED.iter().map(|(id, _)| (*id).into()).collect(),
+            ..OutputConfig::default()
+        };
+        let mut expected_ids = EXPECTED.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        expected_ids.sort_unstable();
+        for preserved in [
+            config.clone().normalized().unwrap(),
+            config.migrated().unwrap(),
+        ] {
+            assert_eq!(
+                preserved
+                    .outputs
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                expected_ids
+            );
+            for (id, suffix) in EXPECTED {
+                assert_eq!(MetricSpec::for_id(id).unwrap().suffix(), suffix);
+                let expected_stream_name = format!("compatibility_{suffix}");
+                assert_eq!(
+                    output_stream_name("compatibility", id).as_deref(),
+                    Some(expected_stream_name.as_str())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn notification_emitted_breathing_scalars_use_irregular_transport_rate() {
+        for id in BREATHING_OUTPUT_IDS {
+            let metric = MetricSpec::for_id(id).unwrap();
+            assert_eq!(
+                metric.rate_hz, 0.0,
+                "{id} must not claim a regular LSL rate"
+            );
+        }
+    }
+
+    #[test]
     fn clamps_normalization_windows_and_drops_orphaned_options() {
         let mut metric_options = HashMap::new();
         metric_options.insert(
@@ -590,6 +708,33 @@ mod tests {
         assert_eq!(config.metric_options["rmssd"].window_seconds, 5);
         assert_eq!(config.metric_options["rmssd"].display_window_seconds, 5);
         assert!(!config.metric_options.contains_key("not_selected"));
+    }
+
+    #[test]
+    fn submitted_and_legacy_configs_cannot_normalize_canonical_breathing_volume() {
+        for normalization in [NormalizationMode::SlidingWindow, NormalizationMode::Session] {
+            let mut metric_options = HashMap::new();
+            metric_options.insert(
+                "breathing_volume".into(),
+                MetricOutputOptions {
+                    normalization,
+                    ..MetricOutputOptions::default()
+                },
+            );
+            let config = OutputConfig {
+                outputs: vec!["breathing_volume".into()],
+                metric_options,
+                ..OutputConfig::default()
+            };
+
+            for normalized in [config.clone().validated(), config.migrated()] {
+                let normalized = normalized.unwrap();
+                assert_eq!(
+                    normalized.metric_options["breathing_volume"].normalization,
+                    NormalizationMode::None
+                );
+            }
+        }
     }
 
     #[test]
@@ -624,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn breathing_outputs_share_one_processing_configuration() {
+    fn compatibility_breathing_outputs_keep_historical_shared_precedence() {
         let mut metric_options = HashMap::new();
         metric_options.insert(
             "breathing_phase".into(),
@@ -640,7 +785,7 @@ mod tests {
             },
         );
         metric_options.insert(
-            "breathing_signal_confidence".into(),
+            "acc_breathing_magnitude".into(),
             MetricOutputOptions {
                 processing: MetricProcessingOptions {
                     breathing: Some(BreathingSettings {
@@ -652,11 +797,63 @@ mod tests {
                 ..MetricOutputOptions::default()
             },
         );
-        metric_options.insert("breathing_volume".into(), MetricOutputOptions::default());
+        let config = OutputConfig {
+            outputs: vec!["breathing_phase".into(), "acc_breathing_magnitude".into()],
+            metric_options,
+            ..OutputConfig::default()
+        }
+        .normalized()
+        .unwrap();
+        let phase = config.metric_options["breathing_phase"]
+            .processing
+            .breathing
+            .unwrap();
+        let projection = config.metric_options["acc_breathing_magnitude"]
+            .processing
+            .breathing
+            .unwrap();
+        assert_eq!(phase, projection);
+        assert_eq!(config.breathing_settings(), phase);
+        assert_eq!(phase.axes, [true, true, false]);
+        assert_eq!(phase.sensitivity, 0.25);
+    }
+
+    #[test]
+    fn complete_current_release_set_cannot_be_overridden_by_selected_legacy_phase() {
+        let legacy = BreathingSettings {
+            volume_mode: polar_h10_metrics::BreathingVolumeMode::LegacyV0,
+            state_mode: polar_h10_metrics::BreathingStateMode::LegacyV0,
+            axes: [true, true, false],
+            stale_timeout_seconds: 3.0,
+            ..BreathingSettings::default()
+        };
+        let current = BreathingSettings {
+            axes: [true, false, true],
+            stale_timeout_seconds: 0.75,
+            ..BreathingSettings::default()
+        };
+        let mut metric_options = HashMap::new();
         metric_options.insert(
-            "breathing_signal_ready".into(),
-            MetricOutputOptions::default(),
+            "breathing_phase".into(),
+            MetricOutputOptions {
+                processing: MetricProcessingOptions {
+                    breathing: Some(legacy),
+                },
+                ..MetricOutputOptions::default()
+            },
         );
+        for id in RELEASE_BREATHING_OUTPUT_IDS {
+            metric_options.insert(
+                id.into(),
+                MetricOutputOptions {
+                    processing: MetricProcessingOptions {
+                        breathing: Some(current),
+                    },
+                    ..MetricOutputOptions::default()
+                },
+            );
+        }
+
         let config = OutputConfig {
             outputs: vec![
                 "breathing_phase".into(),
@@ -667,30 +864,27 @@ mod tests {
             metric_options,
             ..OutputConfig::default()
         }
-        .normalized()
+        .validated()
         .unwrap();
-        let phase = config.metric_options["breathing_phase"]
-            .processing
-            .breathing
-            .unwrap();
-        let confidence = config.metric_options["breathing_signal_confidence"]
-            .processing
-            .breathing
-            .unwrap();
-        assert_eq!(phase, confidence);
-        assert_eq!(phase.axes, [true, true, false]);
-        assert_eq!(phase.sensitivity, 0.25);
+
+        assert!(config.outputs.iter().any(|id| id == "breathing_phase"));
+        assert_eq!(config.breathing_settings(), current.clamped());
+        for id in BREATHING_OUTPUT_IDS {
+            if let Some(options) = config.metric_options.get(id) {
+                assert_eq!(
+                    options.processing.breathing,
+                    Some(current.clamped()),
+                    "{id}"
+                );
+            }
+        }
         assert_eq!(
-            config.metric_options["breathing_volume"]
-                .processing
-                .breathing,
-            Some(phase)
+            config.breathing_settings().volume_mode,
+            polar_h10_metrics::BreathingVolumeMode::TimedPcaV1
         );
         assert_eq!(
-            config.metric_options["breathing_signal_ready"]
-                .processing
-                .breathing,
-            Some(phase)
+            config.breathing_settings().state_mode,
+            polar_h10_metrics::BreathingStateMode::HysteresisV1
         );
     }
 
@@ -759,6 +953,40 @@ mod tests {
                 .breathing
                 .is_none()
         );
+    }
+
+    #[test]
+    fn dynamics_only_configs_use_default_upstream_breathing_settings() {
+        let mut metric_options = HashMap::new();
+        metric_options.insert(
+            "breath_interval_mean".into(),
+            MetricOutputOptions {
+                processing: MetricProcessingOptions {
+                    breathing: Some(BreathingSettings {
+                        volume_mode: polar_h10_metrics::BreathingVolumeMode::LegacyV0,
+                        state_mode: polar_h10_metrics::BreathingStateMode::LegacyV0,
+                        invert_direction: true,
+                        ..BreathingSettings::default()
+                    }),
+                },
+                ..MetricOutputOptions::default()
+            },
+        );
+        let config = OutputConfig {
+            outputs: vec!["breath_interval_mean".into()],
+            metric_options,
+            ..OutputConfig::default()
+        }
+        .validated()
+        .unwrap();
+
+        assert!(
+            config.metric_options["breath_interval_mean"]
+                .processing
+                .breathing
+                .is_none()
+        );
+        assert_eq!(config.breathing_settings(), BreathingSettings::default());
     }
 
     #[test]

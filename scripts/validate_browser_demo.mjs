@@ -387,12 +387,20 @@ async function installFakeVernierWebBluetooth(page) {
 
 await mkdir(output, { recursive: true });
 const manifest = JSON.parse(await readFile(join(root, "browser-demo-manifest.json"), "utf8"));
+assert.equal(manifest.schemaVersion, 2);
 assert.equal(manifest.canonicalSource, "apps/polar-stream/ui");
 for (const [name, expected] of Object.entries(manifest.sha256)) {
   const canonical = await readFile(join(repository, manifest.canonicalSource, name));
   const staged = await readFile(join(root, name));
   assert.equal(sha256(canonicalAssetBytes(canonical, name)), expected, `${name} canonical hash differs from the manifest`);
   assert.equal(sha256(staged), expected, `${name} Pages artifact differs from the canonical UI`);
+}
+assert.equal(manifest.canonicalDownloadSource, "download");
+for (const [name, expected] of Object.entries(manifest.downloadSha256)) {
+  const canonical = await readFile(join(repository, manifest.canonicalDownloadSource, name));
+  const staged = await readFile(join(root, "download", name));
+  assert.equal(sha256(canonicalAssetBytes(canonical, name)), expected, `${name} download-source hash differs from the manifest`);
+  assert.equal(sha256(staged), expected, `${name} staged download asset differs from its canonical source`);
 }
 
 const server = await startServer();
@@ -401,6 +409,18 @@ const baseUrl = `http://127.0.0.1:${address.port}/`;
 const browser = await chromium.launch({ headless: true });
 
 try {
+  const downloadPage = await browser.newPage({ viewport: { width: 1200, height: 800 }, locale: "en-US" });
+  await downloadPage.goto(`${baseUrl}download/index.html`, { waitUntil: "networkidle" });
+  assert.equal(await downloadPage.title(), "Download Polar Stream");
+  assert.match(await downloadPage.locator("main").textContent(), /Release 0\.6 series/);
+  assert.match(await downloadPage.locator("main").textContent(), /macOS 14 or later/);
+  assert.match(await downloadPage.locator("main").textContent(), /simultaneous Polar H10.*Vernier GDX-RB/is);
+  assert.match(await downloadPage.locator("main").textContent(), /release candidates.*latest stable/is);
+  assert.doesNotMatch(await downloadPage.locator("body").textContent(), /Private repository|sign-in is required|Private preview/i);
+  assert.equal(await downloadPage.locator('a[href="https://github.com/GeorgeFejer91/Polar-Stream/releases"]').count() >= 4, true);
+  assert.equal(await downloadPage.locator('a[href="https://github.com/GeorgeFejer91/Polar-Stream/releases/latest"]').count(), 1);
+  await downloadPage.close();
+
   const desktop = await browser.newPage({
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 1,
@@ -459,8 +479,9 @@ try {
   assert.equal(
     await desktop.locator("#native-output-browser-error a").getAttribute("href"),
     "https://github.com/GeorgeFejer91/Polar-Stream/releases/latest",
-    "installed-app error does not link to the latest release",
+    "installed-app error does not link to the latest stable release",
   );
+  assert.equal((await desktop.locator("#desktop-app-download").textContent()).trim(), "Download latest stable");
   await desktop.locator("#osc-destination-row").click();
   assert.equal(await desktop.locator("#osc-toggle").isChecked(), false, "browser OSC must fail closed");
   assert.match(await desktop.locator("#native-output-browser-error").textContent(), /OSC output.*installed Polar Stream app/i);
@@ -574,6 +595,74 @@ try {
     return recorder.createBlob().text();
   });
   assert.match(metricTimestampCsv, /,3000000000,browser-source,,breathing_volume,0,,,,0\.75,/);
+  const mixedBreathingCsv = await desktop.evaluate(async () => {
+    let now = 3_000;
+    const recorder = window.PolarBrowserSession.createRecorder({ maxRows: 20, now: () => now });
+    recorder.configure({ streamName: "Mixed breathing test", outputs: ["breathing_volume"] });
+    const polar = {
+      id: "polar-source", slot: "source-1", inputKind: "polarH10", deviceName: "Polar fixture",
+      palette: window.PolarSourcePalettes.find(({ id }) => id === "ocean"),
+    };
+    const vernier = {
+      id: "vernier-source", slot: "source-2", inputKind: "vernierGoDirect", deviceName: "Vernier fixture",
+      palette: window.PolarSourcePalettes.find(({ id }) => id === "sunset"),
+    };
+    recorder.start({ deviceName: "Two fixtures", inputKind: "mixed", source: polar, sources: [polar] });
+    now = 3_100;
+    recorder.capture({
+      kind: "metrics",
+      source: polar,
+      sensorTimestampNs: "4000000000",
+      values: [{ id: "breathing_volume", value: 0.65 }],
+    }, now);
+    now = 3_200;
+    recorder.capture({
+      kind: "force",
+      source: vernier,
+      hostReceiveTimestampNs: "5000000000",
+      samplePeriodUs: 100_000,
+      values: [2.0, 2.5],
+      breathingValues: [0.25, 0.75],
+    }, now);
+    recorder.capture({ kind: "connection", connected: false, source: polar }, now + 10);
+    const afterOneDisconnect = recorder.snapshot();
+    recorder.capture({
+      kind: "force",
+      source: vernier,
+      hostReceiveTimestampNs: "5100000000",
+      samplePeriodUs: 100_000,
+      values: [2.75],
+      breathingValues: [0.9],
+    }, now + 100);
+    return { afterOneDisconnect, csv: await recorder.createBlob().text() };
+  });
+  assert.equal(mixedBreathingCsv.afterOneDisconnect.state, "recording");
+  assert.match(mixedBreathingCsv.csv, /# source_identity_columns,source_id,source_slot,input_kind,device_family,device_name,palette_id/);
+  assert.match(mixedBreathingCsv.csv, /# source_identity,polar-source,source-1,polarH10,polar,Polar fixture,ocean/);
+  assert.match(mixedBreathingCsv.csv, /# source_identity,vernier-source,source-2,vernierGoDirect,vernier,Vernier fixture,sunset/);
+  assert.match(mixedBreathingCsv.csv, /# source_palette,polar-source,ocean,#176B9E,#2AA8B8,#7CCBFF,#72E4EA/);
+  assert.match(mixedBreathingCsv.csv, /# source_palette,vernier-source,sunset,#B83E35,#C96815,#FF8E84,#FFB366/);
+  assert.match(mixedBreathingCsv.csv, /,polar-source,ocean,breathing_volume,0,,,,0\.65,/);
+  assert.match(mixedBreathingCsv.csv, /,vernier-source,sunset,source-2_vernier_breathing,0,,,,0\.25,0-1/);
+  assert.match(mixedBreathingCsv.csv, /,vernier-source,sunset,source-2_vernier_breathing,1,,,,0\.75,0-1/);
+  assert.match(mixedBreathingCsv.csv, /,vernier-source,sunset,source-2_vernier_breathing,0,,,,0\.9,0-1/);
+  const boundedSourceRegistry = await desktop.evaluate(async () => {
+    const recorder = window.PolarBrowserSession.createRecorder({ maxRows: 100, now: () => 4_000 });
+    const primary = { id: "primary", slot: "source-1", inputKind: "polarH10" };
+    recorder.start({ deviceName: "Source bound fixture", inputKind: "mixed", source: primary });
+    for (let index = 1; index <= 40; index += 1) {
+      recorder.capture({
+        kind: "metrics",
+        source: { id: `late-${index}`, slot: `source-${index + 1}`, inputKind: "polarH10" },
+        values: [{ id: "breathing_volume", value: 0.5 }],
+      }, 4_000 + index);
+    }
+    return { status: recorder.snapshot(), csv: await recorder.createBlob().text() };
+  });
+  assert.equal(boundedSourceRegistry.status.stopReason, "source-capacity");
+  assert.match(boundedSourceRegistry.csv, /# source_identity_limit,32/);
+  assert.equal((boundedSourceRegistry.csv.match(/^# source_identity,/gm) || []).length, 32);
+  assert.doesNotMatch(boundedSourceRegistry.csv, /^# source_identity,late-32,/m);
   const audioFixture = await desktop.evaluate(() => {
     const packet = window.PolarAudioDataLink.encodeBatch({
       ecg: [1, -2, 3],
@@ -653,15 +742,13 @@ try {
   await desktop.waitForFunction(() => Number(document.querySelector("#signal-canvas")?.dataset.trailPoints) > 10);
   assert.match(await desktop.locator("#chart-shell").getAttribute("class"), /breathing-trail-visual/);
   assert.match(await desktop.locator("#signal-canvas").getAttribute("aria-label"), /moving dot.*leftward trail/i);
-  assert.match(await desktop.locator("#signal-canvas").getAttribute("data-breath-direction"), /inhale|exhale|pause/);
-  await desktop.locator("#open-output-dialog").click();
-  await desktop.getByRole("button", { name: /ACC metrics/ }).click();
-  await desktop.getByRole("button", { name: "Extra options" }).click();
-  await desktop.locator('.metric-option[data-metric-id="breathing_phase"]').click();
-  await desktop.locator("#save-metric-output").click();
-  await desktop.locator("#visual-source").selectOption("breathing_phase");
-  await desktop.waitForFunction(() => /INHALE|EXHALE|PAUSE/.test(document.querySelector("#visual-current")?.textContent || ""));
-  assert.match(await desktop.locator("#chart-shell").getAttribute("class"), /phase-visual/);
+  assert.equal(await desktop.locator("#signal-canvas").getAttribute("data-breath-direction"), null, "the release waveform must not infer the hidden phase classifier");
+  assert.equal(await desktop.locator('.output-card').filter({ hasText: "ACC breathing magnitude (0–1)" }).count(), 1);
+  assert.equal(await desktop.locator('.output-card').filter({ hasText: "ACC breathing signal confidence" }).count(), 1);
+  assert.equal(await desktop.locator('.output-card').filter({ hasText: "ACC breathing signal ready" }).count(), 1);
+  await desktop.locator("#visual-source").selectOption("breathing_signal_ready");
+  await desktop.waitForFunction(() => /^(?:0|1)(?:\.0+)?$/.test(document.querySelector("#visual-current")?.textContent || ""));
+  assert.equal(await desktop.locator('.output-card').filter({ hasText: "ACC breathing signal ready" }).count(), 1);
   await desktop.waitForFunction(() => !document.querySelector(".toast"));
   await assertNoHorizontalOverflow(desktop, "desktop browser demo");
   const desktopScreenshot = join(output, "browser-demo-desktop.png");
@@ -862,6 +949,7 @@ try {
   assert.ok(vernierContract.writes.length >= 8, "Go Direct setup did not send the complete initialization sequence");
   assert.equal(vernierContract.writes[0][0], 0x58);
   assert.equal(vernierContract.writes[0][4], 0x1a);
+  await vernier.locator("#csv-destination-row").click();
   await vernier.evaluate(() => window.__vernierFake.emitNormal([1.25, -2.5, 3.75]));
   await vernier.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
   assert.equal(await vernier.locator('.device-row[data-input-kind="web-bluetooth-vernier"]').count(), 0, "connected GDX remained a discovery row");
@@ -891,6 +979,14 @@ try {
     ["raw_force", "vernier_breathing"],
   );
   assert.equal(await vernier.locator("#visual-source").inputValue(), "vernier_breathing");
+  await vernier.waitForFunction(() => window.PolarBrowserSession.status().rowCount >= 6);
+  const [vernierRecordingDownload] = await Promise.all([
+    vernier.waitForEvent("download"),
+    vernier.locator("#csv-destination-row").click(),
+  ]);
+  const vernierRecordingCsv = await readFile(await vernierRecordingDownload.path(), "utf8");
+  assert.match(vernierRecordingCsv, /,browser-source-1,ocean,browser-source-1_raw_force,/);
+  assert.match(vernierRecordingCsv, /,browser-source-1,ocean,browser-source-1_vernier_breathing,/);
   await vernier.locator("#open-output-dialog").click();
   await vernier.locator('.metric-option[data-metric-id="raw_force"]').waitFor();
   assert.equal(await vernier.locator("#output-dialog").getAttribute("data-family"), "vernier");
@@ -988,8 +1084,8 @@ try {
   await assertNoHorizontalOverflow(phone, "phone breathing trail");
   await phone.locator("#open-output-dialog").click();
   await phone.getByRole("button", { name: /ACC metrics/ }).click();
-  await phone.getByRole("button", { name: "Extra options" }).click();
-  await phone.locator('.metric-option[data-metric-id="breathing_phase"]').click();
+  assert.equal(await phone.locator("#acc-extra-toggle").isHidden(), true);
+  await phone.locator('.metric-option[data-metric-id="breathing_signal_confidence"]').click();
   assert.equal(await phone.locator("#output-dialog").getAttribute("data-mobile-view"), "detail");
   assert.equal(await phone.locator("#metric-options").isHidden(), true, "phone detail view must hide the browse list");
   assert.equal(await phone.locator("#metric-detail").isVisible(), true, "phone detail view did not open");
@@ -1001,8 +1097,8 @@ try {
   assert.equal(await phone.locator(".metric-preview-settings, .metric-formula-context, .metric-stream-preview, .breathing-selection-settings").count(), 0);
   await phone.getByRole("button", { name: "Back to all signals" }).click();
   assert.equal(await phone.locator("#output-dialog").getAttribute("data-mobile-view"), "browse");
-  assert.equal(await phone.locator('.metric-option[data-metric-id="breathing_phase"]').getAttribute("aria-pressed"), "true");
-  await phone.locator('.metric-option[data-metric-id="breathing_phase"]').click();
+  assert.equal(await phone.locator('.metric-option[data-metric-id="breathing_signal_confidence"]').getAttribute("aria-pressed"), "true");
+  await phone.locator('.metric-option[data-metric-id="breathing_signal_confidence"]').click();
   const dialogBox = await phone.locator("#output-dialog").boundingBox();
   assert.ok(dialogBox.width >= 389 && dialogBox.height >= 843, `phone dialog is not visual-viewport sized: ${JSON.stringify(dialogBox)}`);
   await assertNoHorizontalOverflow(phone, "phone output library");

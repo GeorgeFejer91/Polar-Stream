@@ -42,6 +42,19 @@
   const sourcePaletteOverrides = new Map();
   let activeInput = null;
 
+  function commitOutputConfig(config) {
+    demo.config = structuredClone(config);
+    demo.outputs = new Set(config.outputs || []);
+  }
+
+  function deliverNativeEvent(callback, event) {
+    if (event?.kind === "connection" && event.connected === false && event.source?.id) {
+      nativeSources.delete(event.source.id);
+      if (!nativeSources.size) activeInput = null;
+    }
+    callback(event);
+  }
+
   function deliverInputEvent(callback, event, paletteId = null, sourceDefaults = null) {
     const source = { ...(sourceDefaults || {}), ...(event?.source || {}) };
     const effectivePaletteId = sourcePaletteOverrides.get(source.id) || paletteId;
@@ -286,7 +299,7 @@
       }
       if (demo.config) await invoke("update_output_config", { config: demo.config });
       const events = new core.Channel();
-      events.onmessage = onEvent;
+      events.onmessage = (event) => deliverNativeEvent(onEvent, event);
       const result = await invoke("connect_device", { deviceId, paletteId, events });
       activeInput = "native";
       if (result?.id) nativeSources.add(result.id);
@@ -302,7 +315,7 @@
     async attachActiveSources(onEvent) {
       if (!isNative) return [];
       const events = new core.Channel();
-      events.onmessage = onEvent;
+      events.onmessage = (event) => deliverNativeEvent(onEvent, event);
       const sources = await invoke("attach_active_sources", { events });
       for (const source of sources || []) {
         if (source?.id) nativeSources.add(source.id);
@@ -316,12 +329,12 @@
         stopDemo({ notify: true });
         return { emitted: true };
       }
+      if (sourceId?.startsWith("browser-source-")) {
+        return vernierBluetooth.disconnect(sourceId);
+      }
       if (activeInput === "web-bluetooth") {
         activeInput = null;
         return webBluetooth.disconnect();
-      }
-      if (sourceId?.startsWith("browser-source-")) {
-        return vernierBluetooth.disconnect(sourceId);
       }
       if (isNative && sourceId) {
         nativeSources.delete(sourceId);
@@ -343,11 +356,13 @@
           false,
         );
       }
-      demo.config = structuredClone(config);
-      demo.outputs = new Set(config.outputs || []);
-      if (mode === "browser-demo") window.PolarBrowserSession?.configure(config);
-      if (activeInput === "web-bluetooth") webBluetooth.updateConfig(config);
+      if (mode === "browser-demo") {
+        window.PolarBrowserSession?.configure(config);
+        if (activeInput === "web-bluetooth") webBluetooth.updateConfig(config);
+        commitOutputConfig(config);
+      }
       if (!isNative) {
+        if (mode !== "browser-demo") commitOutputConfig(config);
         return {
           streamName: config.streamName,
           lsl: "Installed app required · unavailable in browser",
@@ -357,6 +372,7 @@
         };
       }
       if (activeInput === "mock") {
+        commitOutputConfig(config);
         return {
           streamName: config.streamName,
           lsl: config.lslEnabled ? "Recorded preview does not enter native LSL" : "Off",
@@ -365,7 +381,9 @@
           audio: config.audioEnabled ? "Experimental PCM data modem" : "Off",
         };
       }
-      return invoke("update_output_config", { config });
+      const health = await invoke("update_output_config", { config });
+      commitOutputConfig(config);
+      return health;
     },
     async openMetricCitation(metricId, url) {
       if (isNative) return invoke("open_metric_citation", { metricId, sourceUrl: url });

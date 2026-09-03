@@ -19,8 +19,8 @@ use polar_h10_core::AccSample;
 use polar_h10_input::{InputEvent as PolarInputEvent, InputSessionPool as PolarInputSessionPool};
 use polar_h10_metrics::{
     BreathingSettings, METRIC_CATALOG, MetricCitation, MetricDefinition, MetricEngine,
-    MetricSample, MetricSelection, TimedAccBatch, VernierBreathingProcessor, metric_citations,
-    metric_formula_definition,
+    MetricSample, MetricSelection, MetricSelectionTier, TimedAccBatch, VernierBreathingProcessor,
+    metric_citations, metric_formula_definition, metric_selection_tier,
 };
 use polar_h10_output::{
     CustomFormulaConfig, FormulaError, FormulaPublishBatch, FormulaValidation, SourcePalette,
@@ -90,6 +90,7 @@ struct AppState {
     recording_directory: PathBuf,
     preferences: Arc<PreferencesStore>,
     output_configuration: tokio::sync::Mutex<()>,
+    processing_barrier: Arc<tokio::sync::RwLock<()>>,
     processing_settings: tokio::sync::watch::Sender<ProcessingSettings>,
     shutdown_started: AtomicBool,
 }
@@ -119,6 +120,7 @@ impl AppState {
             recording_directory,
             preferences,
             output_configuration: tokio::sync::Mutex::new(()),
+            processing_barrier: Arc::new(tokio::sync::RwLock::new(())),
             processing_settings,
             shutdown_started: AtomicBool::new(false),
         }
@@ -221,26 +223,8 @@ struct ProcessingSettings {
 
 impl ProcessingSettings {
     fn from_config(config: &OutputConfig) -> Self {
-        let breathing = [
-            "breathing_volume",
-            "breathing_signal_confidence",
-            "breathing_signal_ready",
-            "breathing_phase",
-            "acc_breathing_magnitude",
-            "breathing_calibration",
-            "breathing_axis_range",
-        ]
-        .iter()
-        .find_map(|id| {
-            config
-                .metric_options
-                .get(*id)
-                .and_then(|options| options.processing.breathing)
-        })
-        .unwrap_or_default()
-        .clamped();
         Self {
-            breathing,
+            breathing: config.breathing_settings(),
             metrics: MetricSelection::from_ids(config.outputs.iter().map(String::as_str)),
         }
     }
@@ -653,6 +637,7 @@ struct MetricDescriptor {
     formula: &'static str,
     formula_template: Option<&'static str>,
     formula_source: &'static str,
+    selection_tier: MetricSelectionTier,
     sources: Vec<MetricCitation>,
 }
 
@@ -674,6 +659,7 @@ fn get_bootstrap(state: State<'_, AppState>) -> Bootstrap {
                     formula: formula.formula,
                     formula_template: formula.formula_template,
                     formula_source: formula.formula_source,
+                    selection_tier: metric_selection_tier(metric.id),
                     sources: metric_citations(metric),
                 }
             })
@@ -961,6 +947,7 @@ async fn connect_device(
     let source_outputs = state.source_outputs.clone();
     let display_endpoints = state.display_endpoints.clone();
     let source_tasks = state.source_tasks.clone();
+    let processing_barrier = state.processing_barrier.clone();
     let mut processing_settings = state.processing_settings.subscribe();
     let task_source = source.clone();
     let source_task_id = source.id.clone();
@@ -1002,6 +989,10 @@ async fn connect_device(
         let mut vernier_breathing = VernierBreathingProcessor::default();
         let mut source_clock = SourceClockMapper::default();
         while let Some(event) = input_events.recv().await {
+            // A configuration writer waits for every in-flight event to finish
+            // before rebuilding descriptors/recording headers. Once it commits,
+            // this guard observes the new watch value before any output resumes.
+            let _processing_boundary = processing_barrier.read().await;
             if processing_settings.has_changed().unwrap_or(false) {
                 let settings = *processing_settings.borrow_and_update();
                 metrics_engine.apply_selection(settings.metrics);
@@ -1265,12 +1256,17 @@ async fn connect_device(
                             ),
                         );
                         let waveform = vernier_breathing.push(&force.values, sample_period_us);
-                        output.publish_vernier_breathing(
-                            host_receive_timestamp_ns,
-                            &waveform,
-                            sample_period_us,
+                        let breathing_output_open = forward_output_warning(
+                            &ui_tx,
+                            &task_source,
+                            output.publish_vernier_breathing(
+                                host_receive_timestamp_ns,
+                                &waveform,
+                                sample_period_us,
+                            ),
                         );
                         output_open
+                            && breathing_output_open
                             && forward_display_event(
                                 &ui_tx,
                                 AppEvent::Force {
@@ -1725,6 +1721,9 @@ async fn update_output_config(
     let _configuration = state.output_configuration.lock().await;
     let applied = OutputRouter::validate_config(config)
         .map_err(|message| CommandError::new("OUTPUT_CONFIGURATION_FAILED", message, false))?;
+    // Stop event processing at a notification boundary while every source
+    // router and the shared processor selection move to the same provenance.
+    let processing_boundary = state.processing_barrier.write().await;
     let sources = state.active_sources.lock().await.clone();
     let outputs = state.source_outputs.lock().await.clone();
     let mut configured: Vec<(Arc<OutputRouter>, OutputConfig)> = Vec::new();
@@ -1743,7 +1742,8 @@ async fn update_output_config(
             }
         };
         if let Err(message) = output.configure(next).await {
-            let mut rollback_failures = 0;
+            let mut rollback_failures =
+                usize::from(output.configure(previous.clone()).await.is_err());
             for (configured_output, previous_config) in configured.into_iter().rev() {
                 if configured_output.configure(previous_config).await.is_err() {
                     rollback_failures += 1;
@@ -1800,6 +1800,7 @@ async fn update_output_config(
     state
         .processing_settings
         .send_replace(ProcessingSettings::from_config(&applied));
+    drop(processing_boundary);
     state
         .preferences
         .save_output_config(applied)

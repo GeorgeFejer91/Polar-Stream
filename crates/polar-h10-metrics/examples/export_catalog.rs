@@ -1,7 +1,8 @@
 use std::{env, fs, path::PathBuf};
 
 use polar_h10_metrics::{
-    METRIC_CATALOG, MetricCitation, MetricDefinition, metric_citations, metric_formula_definition,
+    METRIC_CATALOG, MetricCitation, MetricDefinition, MetricSelectionTier, metric_citations,
+    metric_formula_definition, metric_selection_tier,
 };
 use serde::Serialize;
 
@@ -13,6 +14,7 @@ struct BrowserMetric {
     formula: &'static str,
     formula_template: Option<&'static str>,
     formula_source: &'static str,
+    selection_tier: MetricSelectionTier,
     sources: Vec<MetricCitation>,
 }
 
@@ -31,6 +33,7 @@ fn main() {
                 formula: formula.formula,
                 formula_template: formula.formula_template,
                 formula_source: formula.formula_source,
+                selection_tier: metric_selection_tier(metric.id),
                 sources: metric_citations(metric),
             }
         })

@@ -179,8 +179,9 @@ try {
   assert.equal(await page.getByLabel("X axis · recommended").isChecked(), true);
   assert.equal(await page.getByLabel("Y axis · rotational").isChecked(), false);
   assert.equal(await page.getByLabel("Z axis · recommended").isChecked(), true);
-  assert.equal(await page.getByLabel("Volume algorithm").inputValue(), "timed-pca-v1");
-  assert.equal(await page.getByLabel("Phase algorithm").inputValue(), "hysteresis-v1");
+  assert.equal(await page.getByLabel("Volume algorithm").count(), 0, "new settings must not offer the legacy volume algorithm");
+  assert.equal(await page.getByLabel("Phase algorithm").count(), 0, "new settings must not offer the legacy phase algorithm");
+  assert.match(await page.locator("#module-settings").textContent(), /Release processor: Timed PCA v1/);
   assert.equal(await page.getByLabel("Timed volume filter tau").inputValue(), "0.18");
   assert.equal(await page.getByLabel("Phase enter threshold").inputValue(), "0.03");
   assert.equal(await page.getByLabel("Breathing display mode").inputValue(), "fresh-smooth");
@@ -298,14 +299,214 @@ try {
   assert.ok((await stat(comparisonScreenshot)).size > 20_000, "comparison screenshot was unexpectedly empty");
 
   const accLibrary = await page.evaluate(() => window.PolarInterfaceRenderer.render("acc-primary-library"));
-  assert.deepEqual(accLibrary.primaryIds, ["raw_acc", "acc_magnitude", "breathing_volume"]);
-  for (const retainedId of [
-    "acc_breathing_magnitude", "breathing_phase", "breathing_signal_ready",
-    "breathing_signal_confidence", "breathing_calibration", "breathing_axis_range",
-    "breathing_rate", "breathing_dynamics_confidence",
+  assert.deepEqual(accLibrary.primaryIds, [
+    "raw_acc", "acc_magnitude", "breathing_volume",
+    "breathing_signal_confidence", "breathing_signal_ready",
+  ]);
+  for (const compatibilityId of [
+    "acc_breathing_magnitude", "breathing_phase", "breathing_calibration",
+    "breathing_axis_range", "breathing_rate", "breathing_dynamics_confidence",
+    "breath_interval_sampen", "breath_amplitude_mse",
   ]) {
-    assert.ok(accLibrary.extraIds.includes(retainedId), `${retainedId} is missing from Extra options`);
+    assert.ok(accLibrary.compatibilityIds.includes(compatibilityId), `${compatibilityId} lost compatibility coverage`);
+    assert.ok(!accLibrary.primaryIds.includes(compatibilityId), `${compatibilityId} leaked into new selection`);
   }
+
+  const restoredCompatibility = await page.evaluate(() => window.PolarInterfaceRenderer.render("compatibility-output-restore"));
+  assert.equal(restoredCompatibility.before.restored, true);
+  assert.match(restoredCompatibility.before.className, /compatibility-output-card/);
+  assert.match(restoredCompatibility.before.note, /Compatibility only · restored legacy output/);
+  assert.match(restoredCompatibility.before.settings, /Restored compatibility processor: Legacy v0/);
+  assert.equal(restoredCompatibility.before.upgradeButton, true);
+  assert.equal(restoredCompatibility.before.visibleInNewSelection, false);
+  assert.equal(restoredCompatibility.presentAfterRemove, false);
+
+  const restoredRelease = await page.evaluate(() => window.PolarInterfaceRenderer.render("release-breathing-compatibility"));
+  const releaseBreathingIds = ["breathing_volume", "breathing_signal_confidence", "breathing_signal_ready"];
+  const sortedReleaseBreathingIds = [...releaseBreathingIds].sort();
+  const currentProcessorModes = Object.fromEntries(releaseBreathingIds.map((id) => [id, {
+    volumeMode: "timed-pca-v1",
+    stateMode: "hysteresis-v1",
+  }]));
+  assert.equal(restoredRelease.legacy.storedOptionsPreserved, true, "rendering rewrote restored legacy options");
+  assert.deepEqual(restoredRelease.legacy.before.selectedIds, releaseBreathingIds);
+  assert.deepEqual(restoredRelease.legacy.before.savedIds, releaseBreathingIds);
+  assert.deepEqual(restoredRelease.legacy.before.allSavedIds, [...releaseBreathingIds, "breathing_phase"], "restore changed the saved release/legacy IDs");
+  assert.deepEqual(restoredRelease.legacy.before.selectedCompatibilityIds, ["breathing_phase"]);
+  assert.deepEqual(restoredRelease.legacy.before.phaseModes, {
+    volumeMode: "legacy-v0",
+    stateMode: "legacy-v0",
+  });
+  assert.deepEqual(restoredRelease.legacy.before.compatibilityIds, releaseBreathingIds);
+  assert.ok(restoredRelease.legacy.before.notes.every((note) => /Compatibility only · restored Legacy v0 processor/.test(note)));
+  assert.equal(restoredRelease.legacy.before.upgradeButtonCount, 1);
+  assert.match(restoredRelease.legacy.module.text, /Restored compatibility processor: Legacy v0/);
+  assert.equal(restoredRelease.legacy.module.upgradeButtonCount, 1);
+  assert.equal(restoredRelease.legacy.before.storedVolumeNormalization, "slidingWindow");
+  assert.equal(restoredRelease.legacy.before.effectiveVolumeNormalization, "none");
+  assert.match(restoredRelease.legacy.before.volumeSummary, /canonical 0–1/);
+  assert.deepEqual(restoredRelease.legacy.after.selectedIds, releaseBreathingIds);
+  assert.deepEqual(restoredRelease.legacy.after.savedIds, releaseBreathingIds);
+  assert.deepEqual(restoredRelease.legacy.after.compatibilityIds, []);
+  assert.equal(restoredRelease.legacy.after.upgradeButtonCount, 0);
+  assert.equal(restoredRelease.legacy.after.volumeMode, "timed-pca-v1");
+  assert.equal(restoredRelease.legacy.after.stateMode, "hysteresis-v1");
+  assert.equal(restoredRelease.legacy.after.storedVolumeNormalization, "none");
+  assert.deepEqual(restoredRelease.legacy.after.selectedRespirationIds, sortedReleaseBreathingIds);
+  assert.deepEqual(restoredRelease.legacy.after.selectedCompatibilityIds, [], "explicit upgrade retained legacy breathing_phase");
+  assert.equal(restoredRelease.legacy.after.phaseModes, null, "explicit upgrade retained legacy breathing_phase options");
+  assert.deepEqual(restoredRelease.legacy.after.configuredRespirationIds, sortedReleaseBreathingIds);
+  assert.deepEqual(restoredRelease.legacy.after.configuredModes, currentProcessorModes);
+
+  assert.equal(restoredRelease.partial.storedOptionsPreserved, true, "rendering rewrote restored partial options");
+  assert.deepEqual(restoredRelease.partial.before.selectedIds, ["breathing_volume", "breathing_signal_ready"]);
+  assert.deepEqual(restoredRelease.partial.before.savedIds, ["breathing_volume", "breathing_signal_ready"]);
+  assert.deepEqual(restoredRelease.partial.before.allSavedIds, ["breathing_volume", "breathing_signal_ready"], "restore completed a partial set without consent");
+  assert.deepEqual(restoredRelease.partial.before.compatibilityIds, ["breathing_volume", "breathing_signal_ready"]);
+  assert.ok(restoredRelease.partial.before.notes.every((note) => /Compatibility only · incomplete waveform \+ quality set/.test(note)));
+  assert.equal(restoredRelease.partial.before.upgradeButtonCount, 1);
+  assert.deepEqual(restoredRelease.partial.after.selectedIds, releaseBreathingIds);
+  assert.deepEqual(restoredRelease.partial.after.savedIds, releaseBreathingIds);
+  assert.deepEqual(restoredRelease.partial.after.compatibilityIds, []);
+  assert.equal(restoredRelease.partial.after.upgradeButtonCount, 0);
+  assert.equal(restoredRelease.partial.after.volumeMode, "timed-pca-v1");
+  assert.equal(restoredRelease.partial.after.stateMode, "hysteresis-v1");
+  assert.deepEqual(restoredRelease.partial.after.selectedRespirationIds, sortedReleaseBreathingIds);
+  assert.deepEqual(restoredRelease.partial.after.configuredRespirationIds, sortedReleaseBreathingIds);
+  assert.deepEqual(restoredRelease.partial.after.configuredModes, currentProcessorModes);
+
+  const transactionBaseline = await page.evaluate(() => window.PolarInterfaceRenderer.render("output-config-transaction-baseline"));
+  const transactionSourceIds = [...transactionBaseline.activeSourceIds].sort();
+  assert.deepEqual(transactionBaseline.outputs.sort(), ["raw_acc", "raw_ecg"]);
+  assert.deepEqual(transactionBaseline.savedOutputIds.sort(), ["raw_acc", "raw_ecg"]);
+  assert.ok(transactionSourceIds.length >= 2, "transaction test lost the simultaneous Polar/Vernier source setup");
+
+  await page.evaluate(() => {
+    window.AudioContext = class FakeAudioContext {
+      constructor() {
+        this.sampleRate = 44_100;
+        this.currentTime = 0;
+        this.destination = {};
+        this.state = "suspended";
+      }
+
+      async resume() { this.state = "running"; }
+      async suspend() { this.state = "suspended"; }
+      createGain() {
+        return { gain: { value: 0 }, connect() {}, disconnect() {} };
+      }
+    };
+  });
+  await page.evaluate(() => window.PolarInterfaceRenderer.rejectNextOutputConfig("Injected audio enable rejection"));
+  await page.locator("#audio-toggle").evaluate((input) => {
+    input.checked = true;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const rejectedAudioEnable = await page.evaluate(() => window.PolarInterfaceRenderer.waitForOutputConfig());
+  assert.equal(await page.locator("#audio-toggle").isChecked(), false, "failed audio enable left its toggle on");
+  assert.equal(await page.evaluate(() => window.PolarAudioDataLink.status().enabled), false, "failed audio enable left the modem running");
+  assert.equal(rejectedAudioEnable.config.audioEnabled, false, "failed audio enable changed the saved configuration");
+  assert.ok(rejectedAudioEnable.toastMessages.some((toast) => toast.error && /Injected audio enable rejection/.test(toast.message)));
+  assert.ok(!rejectedAudioEnable.toastMessages.some((toast) => /modem active/.test(toast.message)), "failed audio enable announced success");
+
+  await page.evaluate(() => document.querySelector("#toast-region").replaceChildren());
+  await page.locator("#audio-toggle").evaluate((input) => {
+    input.checked = true;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const acceptedAudioEnable = await page.evaluate(() => window.PolarInterfaceRenderer.waitForOutputConfig());
+  assert.equal(await page.evaluate(() => window.PolarAudioDataLink.status().enabled), true, "accepted audio enable did not start the modem");
+  assert.equal(acceptedAudioEnable.config.audioEnabled, true);
+  await page.evaluate(() => document.querySelector("#toast-region").replaceChildren());
+  await page.evaluate(() => window.PolarInterfaceRenderer.rejectNextOutputConfig("Injected audio disable rejection"));
+  await page.locator("#audio-toggle").evaluate((input) => {
+    input.checked = false;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const rejectedAudioDisable = await page.evaluate(() => window.PolarInterfaceRenderer.waitForOutputConfig());
+  assert.equal(await page.locator("#audio-toggle").isChecked(), true, "failed audio disable did not restore its toggle");
+  assert.equal(await page.evaluate(() => window.PolarAudioDataLink.status().enabled), true, "failed audio disable stopped the committed modem");
+  assert.equal(rejectedAudioDisable.config.audioEnabled, true, "failed audio disable changed the saved configuration");
+  assert.ok(rejectedAudioDisable.toastMessages.some((toast) => toast.error && /Injected audio disable rejection/.test(toast.message)));
+  await page.locator("#audio-toggle").evaluate((input) => {
+    input.checked = false;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.evaluate(() => window.PolarInterfaceRenderer.waitForOutputConfig());
+  assert.equal(await page.evaluate(() => window.PolarAudioDataLink.status().enabled), false, "audio cleanup did not stop the modem");
+
+  await page.locator("#open-output-dialog").click();
+  await page.getByRole("button", { name: /ACC metrics/ }).click();
+  await page.locator('.metric-option[data-metric-id="breathing_volume"]').click();
+  await page.evaluate(() => window.PolarInterfaceRenderer.rejectNextOutputConfig("Injected add rejection"));
+  await page.locator("#save-metric-output").click();
+  const rejectedAdd = await page.evaluate(() => window.PolarInterfaceRenderer.waitForOutputConfig());
+  assert.equal(rejectedAdd.outputDialogOpen, true, "failed add closed the metric library");
+  assert.deepEqual(rejectedAdd.outputs.sort(), ["raw_acc", "raw_ecg"], "failed add remained visible");
+  assert.deepEqual(rejectedAdd.savedOutputIds.sort(), ["raw_acc", "raw_ecg"], "failed add remained saved");
+  assert.deepEqual([...rejectedAdd.config.outputs].sort(), ["raw_acc", "raw_ecg"], "failed add changed the saved configuration");
+  assert.deepEqual([...rejectedAdd.activeSourceIds].sort(), transactionSourceIds, "failed add disturbed connected sources");
+  assert.ok(rejectedAdd.toastMessages.some((toast) => toast.error && /Injected add rejection/.test(toast.message)));
+  assert.ok(!rejectedAdd.toastMessages.some((toast) => /added together/.test(toast.message)), "failed add announced success");
+
+  await page.locator("#save-metric-output").click();
+  const acceptedAdd = await page.evaluate(() => window.PolarInterfaceRenderer.waitForOutputConfig());
+  assert.equal(acceptedAdd.outputDialogOpen, false);
+  assert.deepEqual(
+    releaseBreathingIds.filter((id) => acceptedAdd.outputs.includes(id)),
+    releaseBreathingIds,
+    "successful retry did not apply the complete release set",
+  );
+
+  await page.evaluate(() => document.querySelector("#toast-region").replaceChildren());
+  await page.evaluate(() => window.PolarInterfaceRenderer.rejectNextOutputConfig("Injected remove rejection"));
+  await page.locator('.output-card[data-metric-id="breathing_volume"] button[aria-label^="Remove "]').click();
+  const rejectedRemove = await page.evaluate(() => window.PolarInterfaceRenderer.waitForOutputConfig());
+  assert.deepEqual(
+    releaseBreathingIds.filter((id) => rejectedRemove.outputs.includes(id)),
+    releaseBreathingIds,
+    "failed grouped removal was not restored",
+  );
+  assert.deepEqual([...rejectedRemove.activeSourceIds].sort(), transactionSourceIds, "failed removal disturbed connected sources");
+  assert.ok(rejectedRemove.toastMessages.some((toast) => toast.error && /Injected remove rejection/.test(toast.message)));
+  assert.ok(!rejectedRemove.toastMessages.some((toast) => /removed together/.test(toast.message)), "failed removal announced success");
+
+  await page.locator('.output-card[data-metric-id="breathing_volume"] .module-tune-button').click();
+  const originalDisplayWindow = (await page.evaluate(() => window.PolarInterfaceRenderer.metricOptions("breathing_volume"))).displayWindowSeconds;
+  await page.locator('#module-settings input[type="number"]').first().fill(String(originalDisplayWindow + 2));
+  await page.evaluate(() => document.querySelector("#toast-region").replaceChildren());
+  await page.evaluate(() => window.PolarInterfaceRenderer.rejectNextOutputConfig("Injected settings rejection"));
+  await page.locator("#save-module-settings").click();
+  const rejectedSettings = await page.evaluate(() => window.PolarInterfaceRenderer.waitForOutputConfig());
+  assert.equal(rejectedSettings.moduleDialogOpen, true, "failed settings save closed the module dialog");
+  assert.equal(
+    (await page.evaluate(() => window.PolarInterfaceRenderer.metricOptions("breathing_volume"))).displayWindowSeconds,
+    originalDisplayWindow,
+    "failed settings save remained applied",
+  );
+  assert.equal(
+    rejectedSettings.config.metricOptions.breathing_volume.displayWindowSeconds,
+    originalDisplayWindow,
+    "failed settings save changed the saved configuration",
+  );
+  assert.ok(rejectedSettings.toastMessages.some((toast) => toast.error && /Injected settings rejection/.test(toast.message)));
+  assert.ok(!rejectedSettings.toastMessages.some((toast) => /settings saved/.test(toast.message)), "failed settings save announced success");
+
+  const transactionLegacy = await page.evaluate(() => window.PolarInterfaceRenderer.render("output-config-transaction-legacy"));
+  assert.equal(transactionLegacy.moduleDialogOpen, true);
+  assert.equal(transactionLegacy.breathingSettings.volumeMode, "legacy-v0");
+  await page.evaluate(() => window.PolarInterfaceRenderer.rejectNextOutputConfig("Injected upgrade rejection"));
+  await page.locator('#module-settings [data-action="upgrade-polar-respiration"]').click();
+  const rejectedUpgrade = await page.evaluate(() => window.PolarInterfaceRenderer.waitForOutputConfig());
+  assert.equal(rejectedUpgrade.moduleDialogOpen, true, "failed upgrade closed the module dialog");
+  assert.equal(rejectedUpgrade.breathingSettings.volumeMode, "legacy-v0", "failed upgrade changed the processor mode");
+  assert.equal(rejectedUpgrade.breathingSettings.stateMode, "legacy-v0", "failed upgrade changed the state mode");
+  assert.equal(rejectedUpgrade.config.metricOptions.breathing_volume.processing.breathing.volumeMode, "legacy-v0");
+  assert.equal(rejectedUpgrade.config.metricOptions.breathing_volume.processing.breathing.stateMode, "legacy-v0");
+  assert.deepEqual([...rejectedUpgrade.activeSourceIds].sort(), transactionSourceIds, "failed upgrade disturbed connected sources");
+  assert.ok(rejectedUpgrade.toastMessages.some((toast) => toast.error && /Injected upgrade rejection/.test(toast.message)));
+  assert.ok(!rejectedUpgrade.toastMessages.some((toast) => /upgraded to/.test(toast.message)), "failed upgrade announced success");
+  await page.locator("#module-dialog").evaluate((dialog) => dialog.close());
 
   const library = await page.evaluate(() => window.PolarInterfaceRenderer.render("metric-library-previews"));
   assert.equal(library.dialogOpen, true, "metric library did not open in the renderer");
@@ -341,14 +542,15 @@ try {
   await page.getByRole("button", { name: /ACC metrics/ }).click();
   assert.equal(await page.locator("#output-dialog").getAttribute("data-family"), "acc");
   const primaryAccIds = await page.locator(".metric-option").evaluateAll((options) => options.map((option) => option.dataset.metricId));
-  assert.deepEqual(primaryAccIds, ["raw_acc", "acc_magnitude", "breathing_volume"]);
-  await page.getByRole("button", { name: "Extra options" }).click();
-  const accIds = await page.locator(".metric-option").evaluateAll((options) => options.map((option) => option.dataset.metricId));
-  assert.ok(accIds.length > 20, `complete specialist ACC and breathing catalog was not exposed: ${JSON.stringify(accIds)}`);
-  assert.ok(!accIds.includes("raw_acc") && accIds.includes("breathing_phase") && accIds.includes("breath_interval_sampen"));
-  assert.match(await page.locator("#metric-library-summary").textContent(), new RegExp(`^${accIds.length} of ${accIds.length} ACC metrics$`));
+  assert.deepEqual(primaryAccIds, [
+    "raw_acc", "acc_magnitude", "breathing_volume",
+    "breathing_signal_confidence", "breathing_signal_ready",
+  ]);
+  assert.equal(await page.locator("#acc-extra-toggle").isHidden(), true);
+  assert.ok(!primaryAccIds.includes("breathing_phase") && !primaryAccIds.includes("breathing_rate"));
+  assert.match(await page.locator("#metric-library-summary").textContent(), /^5 of 5 ACC metrics$/);
 
-  for (const metricId of ["acc_breathing_magnitude", "breathing_phase", "breath_interval_sampen"]) {
+  for (const metricId of ["breathing_volume", "breathing_signal_confidence", "breathing_signal_ready"]) {
     await page.locator(`.metric-option[data-metric-id="${metricId}"]`).click();
     assert.equal(await page.locator(`.metric-preview-large[data-metric-id="${metricId}"] animateTransform`).count(), 1);
     assert.equal(await page.locator(".metric-scientific-summary").count(), 1);
