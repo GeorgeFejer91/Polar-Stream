@@ -386,8 +386,10 @@ async fn capture(
                     max_decode_latency_ns,
                 });
             }
-            InputEvent::Error(_) => {
-                return Err("Go Direct input reported a protocol or transport error".into());
+            InputEvent::Error(message) => {
+                return Err(format!(
+                    "Go Direct input reported a protocol or transport error: {message}"
+                ));
             }
             InputEvent::Disconnected { .. } => {
                 return Err("Go Direct disconnected before physical qualification".into());
@@ -650,7 +652,7 @@ async fn main() {
                 "POLAR_GDX_VERIFY_FAILED {}",
                 json!({"schema": "polar.stream.gdx_rb_native_physical.v2", "result": "fail", "code": code})
             );
-            eprintln!("GDX-RB physical verification failed ({code}).");
+            eprintln!("GDX-RB physical verification failed ({code}): {error}");
             std::process::exit(1);
         }
     }

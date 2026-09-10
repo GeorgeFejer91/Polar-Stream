@@ -19,6 +19,7 @@
     <script src="metric-previews.js" defer></script>
     <script src="preview-fixture.js" defer></script>
     <script src="formula-preview.js" defer></script>
+    <script src="breathing-comparison.js" defer></script>
     <script src="runtime-api.js" defer></script>
     <script src="preferences.js" defer></script>
     <script src="app.js" defer></script>
@@ -45,7 +46,7 @@
       </div>
     </header>
 
-    <main class="workspace">
+    <main class="workspace" id="workspace">
       <section class="workspace-panel input-panel" id="input-section" aria-labelledby="input-heading">
         <header class="section-heading">
           <span class="section-number">01</span>
@@ -75,6 +76,12 @@
               <small>Supported devices are identified from their advertised protocol and model attributes.</small>
             </div>
           </div>
+          <div class="device-selection-actions">
+            <span id="selected-device-count" aria-live="polite">0 selected</span>
+            <button class="primary-button compact" id="connect-selected-button" type="button" disabled>
+              Connect selected
+            </button>
+          </div>
         </div>
 
         <div class="connected-devices-block">
@@ -85,7 +92,7 @@
           <div class="connected-device-list" id="connected-device-list" aria-live="polite">
             <div class="connected-empty-state">
               <strong>No connected devices</strong>
-              <small>A device becomes a configurable widget only after its connection succeeds.</small>
+              <small>Select devices above and connect them as one session set.</small>
             </div>
           </div>
           <div class="source-palette-status" id="source-palette-status" role="status" hidden></div>
@@ -118,6 +125,20 @@
           </ol>
         </div>
       </section>
+
+      <div
+        class="workspace-divider"
+        id="input-output-divider"
+        role="separator"
+        aria-orientation="vertical"
+        aria-controls="input-section output-section"
+        aria-label="Resize Input and Output panels"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="46"
+        tabindex="0"
+        title="Drag to resize Input and Output. Double-click to reset all panels."
+      ></div>
 
       <section class="workspace-panel output-panel" id="output-section" aria-labelledby="output-heading">
         <header class="section-heading">
@@ -264,6 +285,20 @@
         </div>
       </section>
 
+      <div
+        class="workspace-divider"
+        id="output-visual-divider"
+        role="separator"
+        aria-orientation="vertical"
+        aria-controls="output-section visual-section"
+        aria-label="Resize Output and Visualization panels"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="43"
+        tabindex="0"
+        title="Drag to resize Output and Visualization. Double-click to reset all panels."
+      ></div>
+
       <section class="workspace-panel visual-panel" id="visual-section" aria-labelledby="visual-heading">
         <header class="section-heading">
           <span class="section-number">03</span>
@@ -287,10 +322,27 @@
           <select id="visual-device"><option value="">Preview / no source</option></select>
           <label for="visual-source">Display</label>
           <select id="visual-source"></select>
-          <label class="comparison-source-label" for="visual-compare-source">Compare</label>
-          <select class="comparison-source-select" id="visual-compare-source" aria-label="Add comparison source" hidden>
-            <option value="">Add comparison source</option>
-          </select>
+          <div class="comparison-source-control" id="visual-compare-control" hidden>
+            <details id="visual-compare-details">
+              <summary id="visual-compare-summary" aria-label="Choose comparison sources">
+                <span>Compare</span>
+                <strong id="visual-compare-count">None</strong>
+              </summary>
+              <fieldset class="comparison-source-menu" aria-labelledby="visual-compare-menu-title">
+                <legend id="visual-compare-menu-title">Visible sources</legend>
+                <label class="comparison-select-all">
+                  <input id="visual-compare-all" type="checkbox" />
+                  <span>Select all compatible</span>
+                </label>
+                <div class="comparison-source-options" id="visual-compare-options"></div>
+                <fieldset class="comparison-layout-options">
+                  <legend>Layout</legend>
+                  <label><input id="visual-layout-overlay" type="radio" name="visual-comparison-layout" value="overlay" checked /> Overlay</label>
+                  <label><input id="visual-layout-separate" type="radio" name="visual-comparison-layout" value="separate" /> Separate lanes</label>
+                </fieldset>
+              </fieldset>
+            </details>
+          </div>
           <button class="secondary-button visual-adjust-button" id="adjust-visual" type="button">Adjust</button>
           <div class="visual-value">
             <strong id="visual-current">—</strong>

@@ -536,6 +536,10 @@ mod tests {
         assert!(contents.contains(",3000000000,breathing_volume,0,,,,0.75,0–1"));
         assert!(contents.contains("# schema_version,3"));
         assert!(contents.contains("# source_palette_id,ocean"));
+        assert!(contents.contains("# source_palette_light_primary,#1368AA"));
+        assert!(contents.contains("# source_palette_light_secondary,#1368AA"));
+        assert!(contents.contains("# source_palette_dark_primary,#67B7F7"));
+        assert!(contents.contains("# source_palette_dark_secondary,#67B7F7"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

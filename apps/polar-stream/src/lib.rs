@@ -319,7 +319,9 @@ impl TimingEnvelope {
 #[serde(rename_all = "camelCase")]
 struct BreathingPresentationPoint {
     source_timestamp_ns: String,
+    mapped_host_timestamp_ns: String,
     volume_01: f32,
+    projection_g: f32,
 }
 
 fn timed_acc_batch(sensor_timestamp_ns: u64, mapping: ClockMapping) -> TimedAccBatch {
@@ -337,12 +339,19 @@ fn timed_acc_batch(sensor_timestamp_ns: u64, mapping: ClockMapping) -> TimedAccB
 
 fn breathing_presentation_points(
     points: Vec<polar_h10_metrics::BreathingWaveformPoint>,
+    mapper: &SourceClockMapper,
 ) -> Vec<BreathingPresentationPoint> {
     points
         .into_iter()
         .map(|point| BreathingPresentationPoint {
             source_timestamp_ns: point.source_timestamp_ns.to_string(),
+            mapped_host_timestamp_ns: mapper.map(point.source_timestamp_ns).to_string(),
             volume_01: point.volume_01,
+            projection_g: if point.projection_g.is_finite() {
+                point.projection_g
+            } else {
+                0.0
+            },
         })
         .collect()
 }
@@ -757,6 +766,11 @@ async fn scan_devices(
     preferred_device_id: Option<String>,
 ) -> CommandResult<Vec<DeviceSummary>> {
     let _configuration = state.input_configuration.lock().await;
+    // Both protocol scanners share the Windows radio even though their
+    // session owners are independent. Keep the H10 PMD silence watchdog in an
+    // explicit discovery state until the complete cross-provider scan ends.
+    #[cfg(target_os = "windows")]
+    let _discovery_activity = state.polar_input.begin_discovery();
     let active_kinds = state
         .active_sources
         .lock()
@@ -881,6 +895,12 @@ async fn connect_device(
     events: Channel<AppEvent>,
 ) -> CommandResult<SourceDescriptor> {
     let _configuration = state.input_configuration.lock().await;
+    // Intentional BLE setup can briefly contend with notifications from an
+    // already-qualified H10. Reuse the refcounted radio-activity lease so
+    // those sessions receive a fresh watchdog grace period after setup rather
+    // than being mistaken for stalled streams.
+    #[cfg(target_os = "windows")]
+    let _radio_activity = state.polar_input.begin_radio_activity();
     let (input_kind, raw_device_id) = parse_device_id(&device_id)?;
     let source = allocate_source(&state.active_sources, input_kind, palette_id.as_deref()).await?;
     let mut input_events = match input_kind {
@@ -1173,6 +1193,7 @@ async fn connect_device(
                     );
                     let breathing_presentation_points = breathing_presentation_points(
                         metrics_engine.take_breathing_presentation_points(),
+                        &source_clock,
                     );
                     if !output_open
                         || !forward_display_event(
@@ -1530,7 +1551,7 @@ async fn update_source_palette(
     {
         return Err(CommandError::new(
             "SOURCE_PALETTE_IN_USE",
-            "That color pair is already assigned to another connected source.",
+            "That source color is already assigned to another connected source.",
             true,
         ));
     }
@@ -2174,15 +2195,26 @@ mod tests {
 
     #[test]
     fn presentation_points_keep_source_time_as_decimal_strings() {
-        let points =
-            breathing_presentation_points(vec![polar_h10_metrics::BreathingWaveformPoint {
+        let mut mapper = SourceClockMapper::default();
+        mapper.observe_and_map(9_876_543_210_000, 12_000_000_000_000);
+        let mapped_host_timestamp_ns = mapper.map(9_876_543_210_123);
+        let points = breathing_presentation_points(
+            vec![polar_h10_metrics::BreathingWaveformPoint {
                 source_timestamp_ns: 9_876_543_210_123,
                 volume_01: 0.75,
-            }]);
+                projection_g: -0.03125,
+            }],
+            &mapper,
+        );
 
         let value = serde_json::to_value(&points).expect("presentation points must serialize");
         assert_eq!(value[0]["sourceTimestampNs"], "9876543210123");
+        assert_eq!(
+            value[0]["mappedHostTimestampNs"],
+            mapped_host_timestamp_ns.to_string()
+        );
         assert_eq!(value[0]["volume01"], 0.75);
+        assert_eq!(value[0]["projectionG"], -0.03125);
     }
 
     #[cfg(feature = "rusty-lsl-backend")]

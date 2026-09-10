@@ -10,6 +10,7 @@
   const staticSourcePalettes = window.PolarSourcePalettes || [];
   const previewFixtureApi = window.PolarPreviewFixture;
   const formulaPreview = window.PolarFormulaPreview;
+  const breathingComparison = window.PolarBreathingComparison;
   let metricPreviews = window.PolarMetricPreviews || null;
   let metricPreviewsPromise = null;
   let previewRecording = null;
@@ -23,6 +24,15 @@
   let formulaPreviewAnimationResult = null;
   let formulaPreviewAnimationStartedAt = 0;
   let formulaPreviewLastDrawAt = 0;
+  const WORKSPACE_LAYOUT_STORAGE_KEY = "polar-stream.workspace-layout.v1";
+  const DEFAULT_WORKSPACE_PROPORTIONS = Object.freeze([0.84 / 3.16, 1 / 3.16, 1.32 / 3.16]);
+  const WORKSPACE_MINIMUM_WIDTHS = Object.freeze([220, 245, 300]);
+  const WORKSPACE_DESKTOP_MEDIA = window.matchMedia("(min-width: 901px)");
+  const CONNECTION_READY_TIMEOUT_MS = 15_000;
+  const CONNECTION_RETRY_DELAYS_MS = Object.freeze([1_500, 3_000, 6_000, 12_000, 24_000]);
+  let workspaceProportions = loadWorkspaceProportions();
+  let workspaceDrag = null;
+  let workspaceResizeFrame = 0;
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
@@ -127,26 +137,26 @@
     : [...staticCatalog.slice(0, 2), rawForceMetric, ...staticCatalog.slice(2)];
 
   const visualDefinitions = {
-    raw_ecg: { label: "Raw ECG", unit: "µV", rate: 130, color: "#d85151", symmetric: true, deviceProfile: "polar", comparisonFamily: "ecg", comparisonKey: "raw_ecg" },
+    raw_ecg: { label: "Raw ECG", unit: "µV", rate: 130, color: "#d85151", colorRole: "cardiac", symmetric: true, deviceProfile: "polar", comparisonFamily: "ecg", comparisonKey: "raw_ecg" },
     raw_acc: {
-      label: "Raw accelerometer · X/Y/Z", unit: "mg", rate: 200, deviceProfile: "polar", comparisonFamily: "accelerometer", comparisonKey: "raw_acc_xyz",
+      label: "Raw accelerometer · X/Y/Z", unit: "mg", rate: 200, colorRole: "breathing", deviceProfile: "polar", comparisonFamily: "accelerometer", comparisonKey: "raw_acc_xyz",
       channels: [
         { buffer: "acc_x", label: "X", color: "#3b78aa", symmetric: true },
         { buffer: "acc_y", label: "Y", color: "#168259", symmetric: true },
         { buffer: "acc_z", label: "Z", color: "#a66d19", symmetric: true },
       ],
     },
-    raw_force: { label: "Raw Go Direct force", unit: "N", rate: 10, color: "#00c2ff", deviceProfile: "vernier", automatic: true, adjustable: true, comparisonFamily: "breathing", comparisonKey: "raw_force" },
+    raw_force: { label: "Raw Go Direct force", unit: "N", rate: 10, color: "#00c2ff", colorRole: "breathing", deviceProfile: "vernier", automatic: true, adjustable: true, comparisonFamily: "breathing", comparisonKey: "raw_force" },
     vernier_breathing: {
-      label: "Vernier breathing waveform", unit: "0–1", rate: 10, color: "#168259",
+      label: "Vernier breathing waveform", unit: "0–1", rate: 10, color: "#168259", colorRole: "breathing",
       deviceProfile: "vernier", automatic: true, breathingTrail: true,
       comparisonFamily: "breathing", comparisonKey: "breathing_waveform_01",
     },
-    heart_rate: { label: "Heart rate", unit: "bpm", rate: 1, color: "#d85151" },
-    rr_interval: { label: "RR interval", unit: "ms", rate: 2, color: "#6c62a8" },
-    acc_magnitude: { label: "3D acceleration magnitude", unit: "g", rate: 200, color: "#3b78aa", comparisonFamily: "accelerometer", comparisonKey: "acc_magnitude" },
-    acc_breathing_magnitude: { label: "ACC breathing projection (g)", unit: "g", rate: 20, color: "#3b78aa", comparisonFamily: "breathing", comparisonKey: "acc_breathing_projection" },
-    rmssd: { label: "RMSSD", unit: "ms", rate: 1, color: "#168259" },
+    heart_rate: { label: "Heart rate", unit: "bpm", rate: 1, color: "#d85151", colorRole: "cardiac" },
+    rr_interval: { label: "RR interval", unit: "ms", rate: 2, color: "#6c62a8", colorRole: "cardiac" },
+    acc_magnitude: { label: "3D acceleration magnitude", unit: "g", rate: 200, color: "#3b78aa", colorRole: "breathing", comparisonFamily: "accelerometer", comparisonKey: "acc_magnitude" },
+    acc_breathing_magnitude: { label: "ACC breathing projection (g)", unit: "g", rate: 20, color: "#3b78aa", colorRole: "breathing", comparisonFamily: "breathing", comparisonKey: "acc_breathing_projection" },
+    rmssd: { label: "RMSSD", unit: "ms", rate: 1, color: "#168259", colorRole: "cardiac" },
   };
 
   const deviceProfiles = Object.freeze({
@@ -254,6 +264,8 @@
 
   const MAX_TEMPORAL_BUFFER_SAMPLES = 131_072;
   const MAX_TEMPORAL_WINDOW_SECONDS = 600;
+  const MAX_ACTIVE_SOURCES = 8;
+  const MAX_COMPARISON_SOURCES = MAX_ACTIVE_SOURCES - 1;
 
   class RingBuffer {
     constructor(capacity = 4096, nominalRate = 1) {
@@ -265,6 +277,7 @@
       this.length = 0;
       this.cursor = 0;
       this.lastTimestamp = null;
+      this.lastArrivalSeconds = null;
     }
 
     push(value, timestampSeconds = null, gapBefore = false) {
@@ -282,6 +295,7 @@
       this.timestamps[this.cursor] = timestamp;
       this.flags[this.cursor] = gapBefore ? 1 : 0;
       this.lastTimestamp = timestamp;
+      this.lastArrivalSeconds = performance.now() / 1000;
       this.cursor = (this.cursor + 1) % this.capacity;
       this.length = Math.min(this.length + 1, this.capacity);
     }
@@ -344,6 +358,7 @@
       this.length = 0;
       this.cursor = 0;
       this.lastTimestamp = null;
+      this.lastArrivalSeconds = null;
     }
   }
 
@@ -443,12 +458,13 @@
   let buffers = createBufferBank();
   const elements = {};
   const ids = [
+    "workspace", "input-section", "output-section", "visual-section", "input-output-divider", "output-visual-divider",
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value", "connection-metric-1-label", "connection-metric-1-value", "connection-metric-2-label", "connection-metric-2-value", "active-source-strip",
-    "scan-button", "scan-caption", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "device-result-count", "connected-device-list", "connected-device-count", "source-palette-status", "activity-list", "output-state", "raw-ecg-value",
+    "scan-button", "scan-caption", "connect-selected-button", "selected-device-count", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "device-result-count", "connected-device-list", "connected-device-count", "source-palette-status", "activity-list", "output-state", "raw-ecg-value",
     "output-empty-state", "output-workspace", "visual-empty-state", "visual-workspace", "device-profile-card", "device-profile-mark", "device-profile-title", "device-profile-description", "raw-ecg-card", "raw-acc-card", "raw-force-card", "vernier-breathing-card",
     "raw-acc-x", "raw-acc-y", "raw-acc-z", "raw-force-value", "vernier-breathing-value", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
-    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "destination-mode-label", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "lab-recorder-launch", "lab-recorder-detail", "open-lab-recorder", "device-protocol-block", "device-protocol-cards", "included-output-heading", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source", "visual-compare-source",
+    "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "destination-mode-label", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "lab-recorder-launch", "lab-recorder-detail", "open-lab-recorder", "device-protocol-block", "device-protocol-cards", "included-output-heading", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source", "visual-compare-control", "visual-compare-details", "visual-compare-summary", "visual-compare-count", "visual-compare-all", "visual-compare-options", "visual-layout-overlay", "visual-layout-separate",
     "visual-current", "visual-unit", "render-rate", "chart-shell", "signal-canvas", "visual-legend",
     "chart-empty", "chart-empty-title", "chart-empty-detail", "y-max", "y-min", "footer-status", "footer-device-role", "sample-counter", "output-dialog",
     "metric-options", "metric-detail", "metric-back-button", "dialog-output-status", "save-metric-output", "toast-region",
@@ -503,15 +519,23 @@
     activeSources: new Map(),
     activatedProfiles: new Set(),
     selectedSourceId: null,
-    comparisonSourceId: null,
+    comparisonSourceIds: new Set(),
+    comparisonLayout: "overlay",
     sourcePalettes: [...staticSourcePalettes],
     pendingDevicePalettes: new Map(),
     pendingDevice: null,
     devices: [],
     hasSearched: false,
+    discoveryPromise: null,
+    selectedDeviceIds: new Set(),
+    deviceContracts: new Map(),
+    connectionQueue: Promise.resolve(),
+    connectionQueueDepth: 0,
+    connectionSettlers: new Map(),
+    connectingDeviceId: null,
+    nextContractGeneration: 0,
+    shuttingDown: false,
     keepVernierAwake: rendererPreferences.keepVernierAwake !== false,
-    vernierReconnectTimer: null,
-    vernierReconnectAttempt: 0,
     manualDisconnects: new Set(),
     breathingSettings: defaultBreathingSettings(),
     breathingPresentationSettings: defaultBreathingPresentationSettings(),
@@ -543,10 +567,34 @@
   function sourceColors(source) {
     const palette = sourcePalette(source);
     const colors = palette?.[currentTheme()];
+    const identity = colors?.primary || colors?.secondary || source?.color || "#1368AA";
     return {
-      primary: colors?.primary || source?.color || "#3B78AA",
-      secondary: colors?.secondary || source?.color || "#168259",
+      identity,
+      cardiac: identity,
+      breathing: identity,
+      primary: identity,
+      secondary: identity,
     };
+  }
+
+  function colorRoleForDefinition(definition) {
+    if (definition?.colorRole === "breathing" || definition?.colorRole === "cardiac") {
+      return definition.colorRole;
+    }
+    return definition?.deviceProfile === "vernier"
+      || definition?.comparisonFamily === "breathing"
+      || definition?.comparisonFamily === "accelerometer"
+      ? "breathing"
+      : "cardiac";
+  }
+
+  function sourceSignalColor(source, definition = visualDefinitions[app.selectedVisual]) {
+    void definition;
+    return sourceIdentityColor(source);
+  }
+
+  function sourceIdentityColor(source) {
+    return sourceColors(source).identity;
   }
 
   function sourceWithPalette(source, palette) {
@@ -554,34 +602,42 @@
     return { ...source, palette, color: palette.light.primary };
   }
 
-  function usedPaletteIds(exceptSourceId = null) {
-    return new Set([...app.activeSources.values()]
-      .filter((source) => source.id !== exceptSourceId)
+  function usedPaletteIds({ exceptSourceId = null, exceptDeviceId = null } = {}) {
+    const used = new Set([...app.activeSources.values()]
+      .filter((source) => source.id !== exceptSourceId && source.deviceId !== exceptDeviceId)
       .map((source) => sourcePalette(source)?.id)
       .filter(Boolean));
+    for (const [deviceId, paletteId] of app.pendingDevicePalettes) {
+      if (deviceId !== exceptDeviceId && paletteId) used.add(paletteId);
+    }
+    return used;
   }
 
   function paletteForDevice(deviceId, exceptSourceId = null) {
-    const used = usedPaletteIds(exceptSourceId);
-    const remembered = paletteById(app.preferences.devicePalettes?.[deviceId]);
-    if (remembered && !used.has(remembered.id)) return remembered;
+    const used = usedPaletteIds({ exceptSourceId, exceptDeviceId: deviceId });
+    const preferred = paletteById(app.pendingDevicePalettes.get(deviceId))
+      || paletteById(app.preferences.devicePalettes?.[deviceId]);
+    if (preferred && !used.has(preferred.id)) return preferred;
     return app.sourcePalettes.find((palette) => !used.has(palette.id)) || null;
   }
 
   async function rememberDevicePalette(deviceId, paletteId) {
     const stored = preferences.saveDevicePalette(deviceId, paletteId);
     app.preferences = { ...app.preferences, devicePalettes: stored.devicePalettes };
+    app.pendingDevicePalettes.set(deviceId, paletteId);
     try {
       await runtime.saveDevicePalette(deviceId, paletteId);
     } catch (error) {
-      toast(`The color pair is active but could not be remembered. ${runtime.formatError(error)}`, true);
+      toast(`The source color is active but could not be remembered. ${runtime.formatError(error)}`, true);
     }
   }
 
   function applyPaletteVariables(element, source) {
     const colors = sourceColors(source);
-    element.style.setProperty("--source-color", colors.primary);
-    element.style.setProperty("--source-secondary", colors.secondary);
+    element.style.setProperty("--source-cardiac", colors.identity);
+    element.style.setProperty("--source-breathing", colors.identity);
+    element.style.setProperty("--source-color", colors.identity);
+    element.style.setProperty("--source-secondary", colors.identity);
   }
 
   function updateThemeUi() {
@@ -608,6 +664,221 @@
     updateThemeUi();
   }
 
+  function normalizeWorkspaceProportions(value) {
+    if (!Array.isArray(value) || value.length !== 3) return [...DEFAULT_WORKSPACE_PROPORTIONS];
+    const panes = value.map(Number);
+    if (panes.some((pane) => !Number.isFinite(pane) || pane <= 0)) return [...DEFAULT_WORKSPACE_PROPORTIONS];
+    const total = panes.reduce((sum, pane) => sum + pane, 0);
+    if (!(total > 0)) return [...DEFAULT_WORKSPACE_PROPORTIONS];
+    return panes.map((pane) => pane / total);
+  }
+
+  function loadWorkspaceProportions() {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(WORKSPACE_LAYOUT_STORAGE_KEY) || "null");
+      return normalizeWorkspaceProportions(stored?.panes);
+    } catch (_error) {
+      return [...DEFAULT_WORKSPACE_PROPORTIONS];
+    }
+  }
+
+  function saveWorkspaceProportions() {
+    try {
+      window.localStorage.setItem(WORKSPACE_LAYOUT_STORAGE_KEY, JSON.stringify({
+        panes: workspaceProportions.map((pane) => Number(pane.toFixed(6))),
+      }));
+    } catch (_error) {
+      // The resized layout remains active for this session if storage is unavailable.
+    }
+  }
+
+  function workspaceDividers() {
+    return [elements["input-output-divider"], elements["output-visual-divider"]];
+  }
+
+  function workspaceAvailableWidth() {
+    const dividerWidth = workspaceDividers().reduce((total, divider) => (
+      total + (divider?.getBoundingClientRect().width || 0)
+    ), 0);
+    return Math.max(1, elements.workspace.clientWidth - dividerWidth);
+  }
+
+  function minimumWorkspaceProportions(availableWidth) {
+    const minimumTotal = WORKSPACE_MINIMUM_WIDTHS.reduce((sum, width) => sum + width, 0);
+    const scale = Math.min(1, availableWidth / minimumTotal);
+    return WORKSPACE_MINIMUM_WIDTHS.map((width) => width * scale / availableWidth);
+  }
+
+  function constrainedWorkspaceProportions(proportions, availableWidth) {
+    const minimums = minimumWorkspaceProportions(availableWidth);
+    const result = normalizeWorkspaceProportions(proportions);
+    for (let iteration = 0; iteration < result.length; iteration += 1) {
+      let deficit = 0;
+      for (let index = 0; index < result.length; index += 1) {
+        if (result[index] >= minimums[index]) continue;
+        deficit += minimums[index] - result[index];
+        result[index] = minimums[index];
+      }
+      if (deficit < 1e-9) break;
+      const donors = result
+        .map((value, index) => ({ index, surplus: Math.max(0, value - minimums[index]) }))
+        .filter((entry) => entry.surplus > 0);
+      const availableSurplus = donors.reduce((sum, entry) => sum + entry.surplus, 0);
+      if (!(availableSurplus > 0)) break;
+      for (const donor of donors) {
+        result[donor.index] -= deficit * donor.surplus / availableSurplus;
+      }
+    }
+    return normalizeWorkspaceProportions(result);
+  }
+
+  function visibleWorkspaceProportions() {
+    const widths = [elements["input-section"], elements["output-section"], elements["visual-section"]]
+      .map((panel) => panel.getBoundingClientRect().width);
+    const total = widths.reduce((sum, width) => sum + width, 0);
+    return total > 0
+      ? widths.map((width) => width / total)
+      : constrainedWorkspaceProportions(workspaceProportions, workspaceAvailableWidth());
+  }
+
+  function updateWorkspaceSeparatorAria(proportions, availableWidth) {
+    const minimums = minimumWorkspaceProportions(availableWidth);
+    const labels = ["Input", "Output", "Visualization"];
+    const valueText = proportions.map((pane, index) => `${labels[index]} ${Math.round(pane * 100)}%`).join(", ");
+    workspaceDividers().forEach((divider, index) => {
+      const pairTotal = proportions[index] + proportions[index + 1];
+      const minimum = Number((minimums[index] / pairTotal * 100).toFixed(1));
+      const maximum = Number(((pairTotal - minimums[index + 1]) / pairTotal * 100).toFixed(1));
+      const current = Number((proportions[index] / pairTotal * 100).toFixed(1));
+      divider.setAttribute("aria-valuemin", String(minimum));
+      divider.setAttribute("aria-valuemax", String(Math.max(minimum, maximum)));
+      divider.setAttribute("aria-valuenow", String(Math.max(minimum, Math.min(maximum, current))));
+      divider.setAttribute("aria-valuetext", valueText);
+    });
+  }
+
+  function syncWorkspaceDividerAvailability() {
+    const desktop = WORKSPACE_DESKTOP_MEDIA.matches;
+    for (const divider of workspaceDividers()) {
+      divider.tabIndex = desktop ? 0 : -1;
+      if (desktop) {
+        divider.removeAttribute("aria-hidden");
+        divider.removeAttribute("aria-disabled");
+      } else {
+        divider.setAttribute("aria-hidden", "true");
+        divider.setAttribute("aria-disabled", "true");
+      }
+    }
+  }
+
+  function refreshCanvasForWorkspaceResize() {
+    resizeCanvas();
+    if (isInterfaceRenderer) drawSignal();
+    else requestRender();
+  }
+
+  function applyWorkspaceProportions() {
+    syncWorkspaceDividerAvailability();
+    if (!WORKSPACE_DESKTOP_MEDIA.matches) return;
+    const availableWidth = workspaceAvailableWidth();
+    const visible = constrainedWorkspaceProportions(workspaceProportions, availableWidth);
+    elements.workspace.style.setProperty("--pane-input", `${visible[0]}fr`);
+    elements.workspace.style.setProperty("--pane-output", `${visible[1]}fr`);
+    elements.workspace.style.setProperty("--pane-visual", `${visible[2]}fr`);
+    updateWorkspaceSeparatorAria(visible, availableWidth);
+    refreshCanvasForWorkspaceResize();
+  }
+
+  function setWorkspaceProportions(proportions, { persist = false } = {}) {
+    workspaceProportions = normalizeWorkspaceProportions(proportions);
+    applyWorkspaceProportions();
+    if (persist) saveWorkspaceProportions();
+  }
+
+  function resizeAdjacentWorkspacePanes(dividerIndex, deltaPixels, baseline, { persist = false } = {}) {
+    const availableWidth = workspaceAvailableWidth();
+    const minimums = minimumWorkspaceProportions(availableWidth);
+    const next = [...baseline];
+    const pairTotal = baseline[dividerIndex] + baseline[dividerIndex + 1];
+    const desiredLeft = baseline[dividerIndex] + deltaPixels / availableWidth;
+    next[dividerIndex] = Math.max(
+      minimums[dividerIndex],
+      Math.min(pairTotal - minimums[dividerIndex + 1], desiredLeft),
+    );
+    next[dividerIndex + 1] = pairTotal - next[dividerIndex];
+    setWorkspaceProportions(next, { persist });
+  }
+
+  function resetWorkspaceProportions() {
+    setWorkspaceProportions(DEFAULT_WORKSPACE_PROPORTIONS, { persist: true });
+  }
+
+  function finishWorkspaceDrag(divider, pointerId) {
+    if (!workspaceDrag || workspaceDrag.pointerId !== pointerId) return;
+    workspaceDrag = null;
+    divider.classList.remove("dragging");
+    document.body.classList.remove("workspace-resizing");
+    if (divider.hasPointerCapture(pointerId)) divider.releasePointerCapture(pointerId);
+    saveWorkspaceProportions();
+  }
+
+  function installWorkspaceSplitters() {
+    workspaceDividers().forEach((divider, dividerIndex) => {
+      divider.addEventListener("pointerdown", (event) => {
+        if (!WORKSPACE_DESKTOP_MEDIA.matches || !event.isPrimary || (event.button !== 0 && event.pointerType !== "touch")) return;
+        event.preventDefault();
+        workspaceDrag = {
+          dividerIndex,
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          proportions: visibleWorkspaceProportions(),
+        };
+        divider.setPointerCapture(event.pointerId);
+        divider.classList.add("dragging");
+        document.body.classList.add("workspace-resizing");
+      });
+      divider.addEventListener("pointermove", (event) => {
+        if (!workspaceDrag || workspaceDrag.pointerId !== event.pointerId || workspaceDrag.dividerIndex !== dividerIndex) return;
+        resizeAdjacentWorkspacePanes(dividerIndex, event.clientX - workspaceDrag.startX, workspaceDrag.proportions);
+      });
+      divider.addEventListener("pointerup", (event) => finishWorkspaceDrag(divider, event.pointerId));
+      divider.addEventListener("pointercancel", (event) => finishWorkspaceDrag(divider, event.pointerId));
+      divider.addEventListener("lostpointercapture", (event) => finishWorkspaceDrag(divider, event.pointerId));
+      divider.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        resetWorkspaceProportions();
+      });
+      divider.addEventListener("keydown", (event) => {
+        if (event.key === "Home") {
+          event.preventDefault();
+          resizeAdjacentWorkspacePanes(dividerIndex, -Number.MAX_SAFE_INTEGER, visibleWorkspaceProportions(), { persist: true });
+          return;
+        }
+        if (event.key === "End") {
+          event.preventDefault();
+          resizeAdjacentWorkspacePanes(dividerIndex, Number.MAX_SAFE_INTEGER, visibleWorkspaceProportions(), { persist: true });
+          return;
+        }
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        const direction = event.key === "ArrowRight" ? 1 : -1;
+        const distance = event.shiftKey ? 48 : 16;
+        resizeAdjacentWorkspacePanes(dividerIndex, direction * distance, visibleWorkspaceProportions(), { persist: true });
+      });
+    });
+    const scheduleWorkspaceResize = () => {
+      window.cancelAnimationFrame(workspaceResizeFrame);
+      workspaceResizeFrame = window.requestAnimationFrame(applyWorkspaceProportions);
+    };
+    window.addEventListener("resize", scheduleWorkspaceResize);
+    if (typeof WORKSPACE_DESKTOP_MEDIA.addEventListener === "function") {
+      WORKSPACE_DESKTOP_MEDIA.addEventListener("change", scheduleWorkspaceResize);
+    } else {
+      WORKSPACE_DESKTOP_MEDIA.addListener(scheduleWorkspaceResize);
+    }
+    applyWorkspaceProportions();
+  }
+
   function deviceProfileForSource(source) {
     if (!source) return deviceProfiles.none;
     return Object.values(deviceProfiles).find((profile) => profile.sourceInputKinds.includes(source.inputKind))
@@ -627,7 +898,10 @@
   }
 
   function syncScanAction() {
-    if (app.scanning || app.connecting) return;
+    if (app.scanning || app.connecting || app.connectionQueueDepth) {
+      elements["scan-button"].disabled = true;
+      return;
+    }
     if (runtime.isBrowser) {
       elements["scan-button"].disabled = false;
       elements["scan-button"].querySelector("span").textContent = "Search devices";
@@ -650,6 +924,20 @@
       : polarActive || vernierActive
         ? "The connected source keeps streaming during discovery"
         : "Supported Polar + Vernier Bluetooth protocols";
+  }
+
+  function syncConnectSelectedAction() {
+    const selectedCount = [...app.selectedDeviceIds]
+      .filter((deviceId) => app.devices.some((device) => (
+        device.id === deviceId && device.available !== false
+      )) || app.deviceContracts.has(deviceId))
+      .length;
+    const busy = app.connectionQueueDepth > 0 || app.connecting;
+    elements["selected-device-count"].textContent = busy
+      ? `${app.connectionQueueDepth} queued`
+      : `${selectedCount} selected`;
+    elements["connect-selected-button"].disabled = app.scanning || busy || selectedCount === 0;
+    elements["connect-selected-button"].textContent = busy ? "Connecting…" : "Connect selected";
   }
 
   function runtimeInputKindForSource(source) {
@@ -1031,7 +1319,7 @@
     renderDevices(app.devices);
     if (app.devices.length) {
       elements["input-state"].textContent = runtime.isBrowser ? "Browser ready" : "Mock ready";
-      elements["connection-detail"].textContent = "Choose Connect beside a supported input.";
+      elements["connection-detail"].textContent = "Select one or more inputs, then choose Connect selected.";
     }
 
     syncDeviceProfileUi();
@@ -1039,6 +1327,7 @@
     renderMetricFilters();
     renderOutputs();
     installInteractions();
+    installWorkspaceSplitters();
     updateThemeUi();
     if (isNative) {
       try {
@@ -1060,10 +1349,10 @@
     elements["scan-button"].addEventListener("click", () => {
       void scanDevices();
     });
-    elements["disconnect-button"].addEventListener("click", disconnectDevice);
-    elements["keep-vernier-awake"].addEventListener("change", () => {
-      setVernierKeepConnected(elements["keep-vernier-awake"].checked);
+    elements["connect-selected-button"].addEventListener("click", () => {
+      void connectSelectedDevices();
     });
+    elements["disconnect-button"].addEventListener("click", disconnectDevice);
     elements["lsl-toggle"].addEventListener("change", () => handleNativeDestinationToggle("LSL"));
     elements["osc-toggle"].addEventListener("change", () => handleNativeDestinationToggle("OSC"));
     elements["open-lab-recorder"].addEventListener("click", async () => {
@@ -1159,6 +1448,7 @@
       toast(event.detail || "Audio data output stopped.", true);
       void configureOutputs({ quiet: true });
     });
+    window.addEventListener("pagehide", stopConnectionContracts, { once: true });
 
     let nameTimer;
     elements["stream-name"].addEventListener("input", () => {
@@ -1277,10 +1567,61 @@
       updateVisualLabels();
       requestRender();
     });
-    elements["visual-compare-source"].addEventListener("change", () => {
-      app.comparisonSourceId = elements["visual-compare-source"].value || null;
-      updateVisualLabels();
+    elements["visual-compare-options"].addEventListener("change", (event) => {
+      const direction = event.target.closest("select[data-breathing-alignment-source-id]");
+      if (direction) {
+        setBreathingAlignmentMode(direction.dataset.breathingAlignmentSourceId, direction.value);
+        return;
+      }
+      const input = event.target.closest('input[type="checkbox"][data-source-id]');
+      if (!input) return;
+      setComparisonSourceSelected(input.dataset.sourceId, input.checked);
+    });
+    elements["visual-compare-options"].addEventListener("click", (event) => {
+      const relearn = event.target.closest("button[data-breathing-relearn-source-id]");
+      if (!relearn) return;
+      const sourceId = relearn.dataset.breathingRelearnSourceId;
+      const select = elements["visual-compare-options"].querySelector(
+        `select[data-breathing-alignment-source-id="${CSS.escape(sourceId)}"]`,
+      );
+      if (select) select.value = "auto";
+      breathingAlignmentForSource(sourceId).mode = "auto";
+      resetAutomaticBreathingAlignment(sourceId, "relearning from Vernier");
+      updateBreathingAlignmentStatus(sourceId);
       requestRender();
+    });
+    elements["visual-compare-all"].addEventListener("change", () => {
+      const checked = elements["visual-compare-all"].checked;
+      const candidates = comparisonCandidates();
+      app.comparisonSourceIds.clear();
+      if (checked) {
+        for (const candidate of candidates.slice(0, MAX_COMPARISON_SOURCES)) {
+          app.comparisonSourceIds.add(candidate.source.id);
+        }
+      }
+      rebuildComparisonOptions();
+      updateVisualLabels();
+      resizeCanvas();
+      requestRender();
+    });
+    for (const input of [elements["visual-layout-overlay"], elements["visual-layout-separate"]]) {
+      input.addEventListener("change", () => {
+        if (!input.checked) return;
+        app.comparisonLayout = input.value === "separate" ? "separate" : "overlay";
+        updateVisualLabels();
+        resizeCanvas();
+        requestRender();
+      });
+    }
+    document.addEventListener("click", (event) => {
+      const details = elements["visual-compare-details"];
+      if (details.open && !details.contains(event.target)) details.open = false;
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && elements["visual-compare-details"].open) {
+        elements["visual-compare-details"].open = false;
+        elements["visual-compare-summary"].focus();
+      }
     });
     elements["visual-device"].addEventListener("change", () => {
       selectSource(elements["visual-device"].value);
@@ -1317,14 +1658,9 @@
     });
 
     const observer = new ResizeObserver(() => {
-      resizeCanvas();
-      requestRender();
+      refreshCanvasForWorkspaceResize();
     });
     observer.observe(elements["chart-shell"]);
-  }
-
-  function hasActiveVernierSource() {
-    return [...app.activeSources.values()].some((source) => source.inputKind === "vernierGoDirect");
   }
 
   function selectedSourceName() {
@@ -1332,63 +1668,338 @@
     return source?.deviceName || source?.label || "Polar Stream source";
   }
 
-  function setVernierKeepConnected(enabled) {
-    app.keepVernierAwake = enabled === true;
-    elements["keep-vernier-awake"].checked = app.keepVernierAwake;
-    app.preferences = { ...app.preferences, keepVernierAwake: app.keepVernierAwake };
-    preferences.saveKeepVernierAwake(app.keepVernierAwake);
-    if (!app.keepVernierAwake) {
-      cancelVernierReconnect();
-      elements["keep-awake-status"].textContent = "Live measurement continues while connected; automatic reconnect is off.";
-      addActivity("Vernier keep-connected retry disabled");
-    } else {
-      elements["keep-awake-status"].textContent = hasActiveVernierSource()
-        ? "Live 10 Hz measurement active · automatic reconnect armed."
-        : "Maintains the live 10 Hz measurement and reconnects after an unexpected drop.";
-      addActivity("Vernier keep-connected retry enabled");
-      if (!hasActiveVernierSource()) scheduleVernierReconnect(app.preferences.lastDevice);
+  function activeSourceForDevice(deviceId) {
+    return [...app.activeSources.values()].find((source) => source.deviceId === deviceId) || null;
+  }
+
+  function connectionContract(deviceId) {
+    return app.deviceContracts.get(deviceId) || null;
+  }
+
+  function clearContractTimer(contract) {
+    if (contract?.timer) window.clearTimeout(contract.timer);
+    if (contract) contract.timer = null;
+  }
+
+  function finishConnectionWaiter(deviceId, attemptToken, result) {
+    const waiter = app.connectionSettlers.get(deviceId);
+    if (!waiter || waiter.attemptToken !== attemptToken) return;
+    waiter.finish(result);
+  }
+
+  function waitForStreamingConnection(deviceId, attemptToken) {
+    const previous = app.connectionSettlers.get(deviceId);
+    if (previous) previous.finish({ connected: false, cancelled: true });
+    return new Promise((resolve) => {
+      let finished = false;
+      const finish = (result) => {
+        if (finished) return;
+        finished = true;
+        window.clearTimeout(timer);
+        const current = app.connectionSettlers.get(deviceId);
+        if (current?.attemptToken === attemptToken) app.connectionSettlers.delete(deviceId);
+        resolve(result);
+      };
+      const timer = window.setTimeout(() => finish({ connected: false, timedOut: true }), CONNECTION_READY_TIMEOUT_MS);
+      app.connectionSettlers.set(deviceId, { attemptToken, finish });
+    });
+  }
+
+  function stopConnectionContracts() {
+    app.shuttingDown = true;
+    for (const contract of app.deviceContracts.values()) {
+      contract.generation += 1;
+      clearContractTimer(contract);
     }
-    renderConnectedDevices();
+    for (const waiter of app.connectionSettlers.values()) {
+      waiter.finish({ connected: false, cancelled: true });
+    }
+    app.connectionSettlers.clear();
+    app.deviceContracts.clear();
+    app.selectedDeviceIds.clear();
   }
 
-  function cancelVernierReconnect({ resetAttempts = true } = {}) {
-    if (app.vernierReconnectTimer) window.clearTimeout(app.vernierReconnectTimer);
-    app.vernierReconnectTimer = null;
-    if (resetAttempts) app.vernierReconnectAttempt = 0;
+  function removeDeviceContract(deviceId) {
+    const contract = connectionContract(deviceId);
+    if (contract) {
+      contract.generation += 1;
+      clearContractTimer(contract);
+      contract.desired = false;
+      app.deviceContracts.delete(deviceId);
+    }
+    app.selectedDeviceIds.delete(deviceId);
+    const waiter = app.connectionSettlers.get(deviceId);
+    if (waiter) waiter.finish({ connected: false, cancelled: true });
+    renderDevices(app.devices);
+    syncConnectSelectedAction();
   }
 
-  function scheduleVernierReconnect(preferredDevice = null) {
-    if (!isNative || !app.keepVernierAwake || hasActiveVernierSource()) return;
-    const device = preferredDevice?.id?.startsWith("vernier:")
-      ? preferredDevice
-      : app.preferences.lastDevice?.id?.startsWith("vernier:")
-        ? app.preferences.lastDevice
-        : null;
-    if (!device) return;
-
-    cancelVernierReconnect({ resetAttempts: false });
-    const attempt = app.vernierReconnectAttempt;
-    const delayMilliseconds = Math.min(30_000, 1_500 * (2 ** Math.min(attempt, 5)));
-    app.vernierReconnectAttempt += 1;
-    const delaySeconds = Math.ceil(delayMilliseconds / 1000);
-    elements["keep-awake-status"].textContent = `Vernier link dropped · retrying in ${delaySeconds} s while the sensor advertises.`;
-    app.vernierReconnectTimer = window.setTimeout(() => {
-      app.vernierReconnectTimer = null;
-      if (!app.keepVernierAwake || hasActiveVernierSource()) return;
-      if (app.scanning || app.connecting) {
-        scheduleVernierReconnect(device);
-        return;
-      }
-      addActivity(`Vernier keep-connected retry ${app.vernierReconnectAttempt}`);
-      void scanDevices({ automatic: true, keepAwakeRetry: true });
-    }, delayMilliseconds);
+  function upsertDeviceContract(device) {
+    const previous = connectionContract(device.id);
+    if (previous) {
+      previous.generation += 1;
+      clearContractTimer(previous);
+    }
+    const contract = {
+      device: { ...(previous?.device || {}), ...device },
+      desired: true,
+      state: "connecting",
+      attempt: 0,
+      attemptToken: previous?.attemptToken || 0,
+      generation: ++app.nextContractGeneration,
+      timer: null,
+      queued: false,
+      sourceId: null,
+      restoreFocus: false,
+      restoreVisualId: null,
+      restoreVisibleSourceIds: [],
+      message: "Waiting in the connection queue",
+    };
+    app.deviceContracts.set(device.id, contract);
+    return contract;
   }
 
-  async function scanDevices({ automatic = false, keepAwakeRetry = false } = {}) {
-    if (app.scanning) {
-      if (keepAwakeRetry) scheduleVernierReconnect(app.preferences.lastDevice);
+  function contractSummaryStatus() {
+    const contracts = [...app.deviceContracts.values()];
+    const attention = contracts.filter((contract) => contract.state === "attention");
+    const retrying = contracts.filter((contract) => contract.state === "retrying");
+    const connecting = contracts.filter((contract) => contract.state === "connecting");
+    const live = app.activeSources.size;
+    if (attention.length) {
+      elements["input-state"].textContent = live ? `${live} live · attention` : "Attention";
+      setTopStatus(
+        `${live ? `${live} live · ` : ""}${attention.length} sensor${attention.length === 1 ? " needs" : "s need"} attention`,
+        "error",
+      );
       return;
     }
+    if (retrying.length || connecting.length) {
+      const pending = retrying.length + connecting.length;
+      elements["input-state"].textContent = live ? `${live} live · ${pending} retrying` : "Connecting";
+      setTopStatus(
+        `${live ? `${live} live · ` : ""}${pending} sensor${pending === 1 ? "" : "s"} connecting`,
+        "working",
+      );
+    }
+  }
+
+  function markContractLive(deviceId, source) {
+    const contract = connectionContract(deviceId);
+    if (!contract) return;
+    clearContractTimer(contract);
+    contract.state = "live";
+    contract.attempt = 0;
+    contract.sourceId = source?.id || contract.sourceId;
+    contract.message = "Streaming";
+  }
+
+  function markContractAttention(contract, message) {
+    if (!contract?.desired) return;
+    clearContractTimer(contract);
+    contract.state = "attention";
+    contract.queued = false;
+    contract.message = message;
+    renderDevices(app.devices);
+    renderConnectedDevices();
+    syncConnectSelectedAction();
+    contractSummaryStatus();
+  }
+
+  function scheduleContractReconnect(deviceId, reason = "Connection lost") {
+    const contract = connectionContract(deviceId);
+    if (!contract?.desired || app.shuttingDown || activeSourceForDevice(deviceId) || contract.timer) return;
+    if (runtime.isBrowser && !runtime.isMockDevice(deviceId)) {
+      markContractAttention(contract, "Browser Bluetooth needs another user-approved Connect selected action.");
+      return;
+    }
+    if (contract.attempt >= CONNECTION_RETRY_DELAYS_MS.length) {
+      markContractAttention(
+        contract,
+        `${reason}. Automatic recovery stopped after ${CONNECTION_RETRY_DELAYS_MS.length} attempts; select it and connect again.`,
+      );
+      addActivity(`${contract.device.name} needs attention after ${CONNECTION_RETRY_DELAYS_MS.length} reconnect attempts`);
+      return;
+    }
+    const delayMilliseconds = CONNECTION_RETRY_DELAYS_MS[contract.attempt];
+    contract.attempt += 1;
+    contract.state = "retrying";
+    contract.sourceId = null;
+    contract.message = `${reason} · retry ${contract.attempt}/${CONNECTION_RETRY_DELAYS_MS.length} in ${Math.ceil(delayMilliseconds / 1000)} s`;
+    const generation = contract.generation;
+    clearContractTimer(contract);
+    const retryWhenQueueReady = () => {
+      contract.timer = null;
+      if (app.shuttingDown || !contract.desired || contract.generation !== generation) return;
+      if (contract.queued) {
+        contract.timer = window.setTimeout(retryWhenQueueReady, 250);
+        return;
+      }
+      void queueContractConnection(deviceId, { retry: true, generation });
+    };
+    contract.timer = window.setTimeout(retryWhenQueueReady, delayMilliseconds);
+    addActivity(`${contract.device.name} reconnect ${contract.attempt}/${CONNECTION_RETRY_DELAYS_MS.length} scheduled`);
+    renderDevices(app.devices);
+    renderConnectedDevices();
+    syncConnectSelectedAction();
+    contractSummaryStatus();
+  }
+
+  function mergeDevices(discovered) {
+    app.devices = [...runtime.getInputModules(), ...discovered, ...app.devices]
+      .filter((device, index, all) => all.findIndex((candidate) => candidate.id === device.id) === index);
+    return app.devices;
+  }
+
+  async function rediscoverContractDevice(contract, generation) {
+    if (!isNative || runtime.isMockDevice(contract.device.id)) return contract.device;
+    if (app.shuttingDown || !contract.desired || contract.generation !== generation) return null;
+    if (app.discoveryPromise) {
+      try {
+        await app.discoveryPromise;
+      } catch (_error) {
+        // A targeted retry gets its own scan even when a preceding manual scan
+        // failed, but it never overlaps the adapter operation.
+      }
+    }
+    if (app.shuttingDown || !contract.desired || contract.generation !== generation) return null;
+    app.scanning = true;
+    elements["scan-button"].disabled = true;
+    elements["scan-button"].classList.add("scanning");
+    elements["scan-button"].querySelector("span").textContent = "Finding sensor…";
+    contract.state = "retrying";
+    contract.message = `Retry ${contract.attempt}/${CONNECTION_RETRY_DELAYS_MS.length} · finding this sensor`;
+    renderDevices(app.devices);
+    contractSummaryStatus();
+    let discoveryTask = null;
+    try {
+      // The native command uses the preferred id to scan only the matching
+      // provider and holds a discovery lease around the complete scan.
+      discoveryTask = runtime.scanDevices(contract.device.id);
+      app.discoveryPromise = discoveryTask;
+      const discovered = await discoveryTask;
+      mergeDevices(discovered);
+      return discovered.find((device) => device.id === contract.device.id) || null;
+    } finally {
+      if (app.discoveryPromise === discoveryTask) app.discoveryPromise = null;
+      app.scanning = false;
+      elements["scan-button"].classList.remove("scanning");
+      syncScanAction();
+      syncConnectSelectedAction();
+      renderDevices(app.devices);
+    }
+  }
+
+  async function attemptContractConnection(deviceId, { retry = false, generation } = {}) {
+    const contract = connectionContract(deviceId);
+    if (!contract?.desired || app.shuttingDown || contract.generation !== generation) return false;
+    if (activeSourceForDevice(deviceId)) {
+      markContractLive(deviceId, activeSourceForDevice(deviceId));
+      return true;
+    }
+    let device = contract.device;
+    try {
+      if (retry) {
+        device = await rediscoverContractDevice(contract, generation);
+        if (!contract.desired || app.shuttingDown || connectionContract(deviceId) !== contract
+          || contract.generation !== generation) return false;
+        if (!device) throw new Error(`${contract.device.name} was not found during the targeted retry scan.`);
+        contract.device = { ...contract.device, ...device };
+      }
+      contract.state = "connecting";
+      contract.message = retry
+        ? `Retry ${contract.attempt}/${CONNECTION_RETRY_DELAYS_MS.length} · opening connection`
+        : "Opening connection";
+      renderDevices(app.devices);
+      contractSummaryStatus();
+      const result = await connectDevice(device, { automatic: retry, contract });
+      if (result.connected) return true;
+      if (result.cancelled && runtime.isBrowser) {
+        markContractAttention(contract, "No browser Bluetooth device was selected. Select it and connect again when ready.");
+        return false;
+      }
+      scheduleContractReconnect(deviceId, result.message || "Connection attempt failed");
+      return false;
+    } catch (error) {
+      if (contract.generation !== generation || !contract.desired) return false;
+      scheduleContractReconnect(deviceId, runtime.formatError(error));
+      return false;
+    }
+  }
+
+  function appendConnectionOperation(run, { direct = false } = {}) {
+    const operation = direct ? run() : app.connectionQueue.then(run);
+    app.connectionQueue = Promise.resolve(operation).catch(() => false);
+    return Promise.resolve(operation);
+  }
+
+  async function probeSerializedConnectionQueue() {
+    const order = [];
+    let active = 0;
+    let maximumActive = 0;
+    const operations = ["polar-a", "vernier", "polar-b"].map((label) => (
+      appendConnectionOperation(async () => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        order.push(`start:${label}`);
+        await Promise.resolve();
+        order.push(`end:${label}`);
+        active -= 1;
+      })
+    ));
+    await Promise.all(operations);
+    return { order, maximumActive };
+  }
+
+  function queueContractConnection(deviceId, { retry = false, generation = null, direct = false } = {}) {
+    const contract = connectionContract(deviceId);
+    const expectedGeneration = generation ?? contract?.generation;
+    if (!contract?.desired || contract.queued || app.shuttingDown) return Promise.resolve(false);
+    contract.queued = true;
+    app.connectionQueueDepth += 1;
+    syncConnectSelectedAction();
+    const run = () => attemptContractConnection(deviceId, { retry, generation: expectedGeneration });
+    return appendConnectionOperation(run, { direct }).finally(() => {
+      const current = connectionContract(deviceId);
+      if (current && current.generation === expectedGeneration) current.queued = false;
+      app.connectionQueueDepth = Math.max(0, app.connectionQueueDepth - 1);
+      syncScanAction();
+      syncConnectSelectedAction();
+      renderDevices(app.devices);
+      contractSummaryStatus();
+    });
+  }
+
+  async function connectSelectedDevices() {
+    const selected = [...app.selectedDeviceIds]
+      .map((deviceId) => app.devices.find((device) => device.id === deviceId)
+        || connectionContract(deviceId)?.device)
+      .filter((device) => device?.available !== false && !activeSourceForDevice(device.id));
+    if (!selected.length) return;
+    if (runtime.isBrowser && selected.length > 1) {
+      toast("Browser Bluetooth requires one user-approved device chooser at a time. Select one sensor, then connect it.", true);
+      return;
+    }
+    app.selectedDeviceIds.clear();
+    const contracts = selected.map((device) => upsertDeviceContract(device));
+    renderDevices(app.devices);
+    syncConnectSelectedAction();
+    if (runtime.isBrowser) {
+      // Start the first browser chooser directly from this click task so the
+      // browser's transient user activation is not lost to a queued microtask.
+      await queueContractConnection(contracts[0].device.id, {
+        generation: contracts[0].generation,
+        direct: true,
+      });
+      return;
+    }
+    await Promise.all(contracts.map((contract) => queueContractConnection(
+      contract.device.id,
+      { generation: contract.generation },
+    )));
+  }
+
+  async function scanDevices() {
+    if (app.scanning || app.connecting || app.connectionQueueDepth) return;
     app.scanning = true;
     app.hasSearched = true;
     elements["scan-button"].disabled = true;
@@ -1396,41 +2007,22 @@
     elements["scan-button"].querySelector("span").textContent = "Scanning…";
     elements["input-state"].textContent = "Scanning";
     setTopStatus(runtime.isBrowser ? "Refreshing the supported device list" : "Scanning for Polar and Vernier sensors", "working");
-    addActivity(automatic ? "Looking for last used sensor" : runtime.isBrowser ? "Supported device list refreshed" : "BLE search started");
+    addActivity(runtime.isBrowser ? "Supported device list refreshed" : "BLE search started");
 
     try {
-      const discovered = await runtime.scanDevices(
-        automatic ? app.preferences.lastDevice?.id || null : null,
-      );
-      const devices = [...runtime.getInputModules(), ...app.devices, ...discovered]
-        .filter((device, index, all) => all.findIndex((candidate) => candidate.id === device.id) === index);
-      app.devices = devices;
+      const discoveryTask = runtime.scanDevices(null);
+      app.discoveryPromise = discoveryTask;
+      const discovered = await discoveryTask;
+      const devices = mergeDevices(discovered);
       renderDevices(devices);
-      const count = devices.length;
       const polarCount = devices.filter((device) => device.kind !== "mock" && device.available !== false).length;
-
-      if (automatic && app.preferences.lastDevice) {
-        const exact = devices.find((device) => device.id === app.preferences.lastDevice.id);
-        const nameMatches = devices.filter((device) => device.name === app.preferences.lastDevice.name);
-        const preferredDevice = exact || (nameMatches.length === 1 ? nameMatches[0] : null);
-        if (preferredDevice) {
-          addActivity(`Last used sensor found · ${preferredDevice.name}`);
-          await connectDevice(preferredDevice, { automatic: true });
-          return;
-        }
-        elements["input-state"].textContent = polarCount ? `${polarCount} found` : "Mock ready";
-        setTopStatus("Last used sensor unavailable · choose below");
-        addActivity("Last used sensor was not found");
-        if (keepAwakeRetry) scheduleVernierReconnect(app.preferences.lastDevice);
-        return;
-      }
 
       elements["input-state"].textContent = polarCount ? `${polarCount} found` : "Mock ready";
       setTopStatus(
         app.connected
-          ? "Input connected · choose another sensor to add it"
+          ? "Input connected · select any additional sensors"
           : polarCount
-            ? "Choose a Polar H10, Vernier GDX-RB, or mock input"
+            ? "Select one or more sensors, then connect selected"
             : "Recorded Polar H10 preview is available",
         app.connected ? "connected" : "idle",
       );
@@ -1443,11 +2035,12 @@
       elements["input-state"].textContent = "Error";
       addActivity(message);
       toast(message, true);
-      if (keepAwakeRetry) scheduleVernierReconnect(app.preferences.lastDevice);
     } finally {
+      app.discoveryPromise = null;
       app.scanning = false;
       elements["scan-button"].classList.remove("scanning");
       syncScanAction();
+      syncConnectSelectedAction();
     }
   }
 
@@ -1455,7 +2048,12 @@
     const connectedDeviceIds = new Set(
       [...app.activeSources.values()].map((source) => source.deviceId).filter(Boolean),
     );
-    const availableDevices = devices.filter((device) => !connectedDeviceIds.has(device.id));
+    const retainedContractDevices = [...app.deviceContracts.values()]
+      .filter((contract) => contract.desired)
+      .map((contract) => contract.device);
+    const availableDevices = [...devices, ...retainedContractDevices]
+      .filter((device, index, all) => all.findIndex((candidate) => candidate.id === device.id) === index)
+      .filter((device) => !connectedDeviceIds.has(device.id));
     elements["device-result-count"].textContent = `${availableDevices.length} available`;
     if (!availableDevices.length) {
       const empty = document.createElement("div");
@@ -1472,6 +2070,7 @@
         : "Polar H10 is identified as ECG; GDX-RB is identified as a breathing belt.";
       empty.append(orbit, message, hint);
       elements["device-list"].replaceChildren(empty);
+      syncConnectSelectedAction();
       return;
     }
 
@@ -1479,15 +2078,31 @@
       const isMock = device.kind === "mock";
       const isWebBluetooth = device.kind === "web-bluetooth";
       const isWebVernier = device.kind === "web-bluetooth-vernier";
-      const isPending = app.pendingDevice?.id === device.id;
+      const contract = connectionContract(device.id);
+      const contractState = contract?.state || "available";
+      const isPending = app.pendingDevice?.id === device.id || contractState === "connecting";
       const isPreferred = app.preferences.lastDevice?.id === device.id;
       const profile = deviceProfileForDevice(device);
-      const button = document.createElement("button");
-      button.className = `device-row${isMock ? " mock" : ""}${isWebBluetooth || isWebVernier ? " browser-bluetooth" : ""}${device.available === false ? " unavailable" : ""}${isPreferred ? " preferred" : ""}`;
-      button.type = "button";
-      button.dataset.inputKind = isMock ? "mock" : isWebVernier ? "web-bluetooth-vernier" : isWebBluetooth ? "web-bluetooth" : device.inputKind || "polar";
-      button.disabled = app.connecting || device.available === false;
-      button.addEventListener("click", () => connectDevice(device));
+      const row = document.createElement("label");
+      row.className = `device-row${isMock ? " mock" : ""}${isWebBluetooth || isWebVernier ? " browser-bluetooth" : ""}${device.available === false ? " unavailable" : ""}${isPreferred ? " preferred" : ""}${contractState === "available" || contractState === "live" ? "" : ` contract-${contractState}`}`;
+      row.dataset.inputKind = isMock ? "mock" : isWebVernier ? "web-bluetooth-vernier" : isWebBluetooth ? "web-bluetooth" : device.inputKind || "polar";
+      row.dataset.deviceId = device.id;
+      row.dataset.contractState = contractState;
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "device-select-checkbox";
+      checkbox.checked = app.selectedDeviceIds.has(device.id);
+      checkbox.disabled = device.available === false || ["connecting", "retrying"].includes(contractState);
+      checkbox.setAttribute("aria-label", `Select ${device.name}`);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) app.selectedDeviceIds.add(device.id);
+        else app.selectedDeviceIds.delete(device.id);
+        if (contractState === "available") {
+          action.textContent = checkbox.checked ? "Selected" : isMock ? "Select demo" : "Select";
+        }
+        syncConnectSelectedAction();
+      });
 
       const icon = document.createElement("span");
       icon.className = "device-icon";
@@ -1516,66 +2131,97 @@
         nameLine.append(badge);
       }
       const id = document.createElement("small");
-      id.textContent = `${profile.deviceRole} · ${device.detail || profile.recognition}`;
+      id.textContent = contract && ["connecting", "retrying", "attention"].includes(contractState)
+        ? `${profile.deviceRole} · ${contract.message}`
+        : `${profile.deviceRole} · ${device.detail || profile.recognition}`;
       copy.append(nameLine, id);
       const action = document.createElement("span");
       action.className = "device-connect-action";
+      action.dataset.state = contractState;
       action.textContent = isPending
         ? "Connecting…"
+        : contractState === "retrying"
+          ? `Retry ${contract.attempt}/${CONNECTION_RETRY_DELAYS_MS.length}`
+          : contractState === "attention"
+            ? "Attention"
+        : checkbox.checked
+          ? "Selected"
         : isMock
-          ? "Start demo"
+          ? "Select demo"
           : device.available === false
             ? "Unavailable"
-            : "Connect";
-      if (!isPending && device.rssi != null) {
+            : "Select";
+      action.title = contract?.message || "";
+      if (!["connecting", "retrying", "attention"].includes(contractState) && device.rssi != null) {
         const signal = document.createElement("small");
         signal.textContent = `${device.rssi} dBm`;
         action.append(signal);
       }
-      button.append(icon, copy, action);
+      row.append(checkbox, icon, copy, action);
       const group = document.createElement("div");
       group.className = "device-row-group";
-      group.append(button);
+      group.append(row);
       if (device.available !== false && app.sourcePalettes.length) {
-        const palette = paletteById(app.pendingDevicePalettes.get(device.id)) || paletteForDevice(device.id);
+        const palette = paletteForDevice(device.id);
         if (palette) app.pendingDevicePalettes.set(device.id, palette.id);
         const paletteLabel = document.createElement("label");
         paletteLabel.className = "device-palette-choice";
         const caption = document.createElement("span");
-        caption.textContent = "Source colors";
+        caption.textContent = "Source color";
         const select = document.createElement("select");
-        select.setAttribute("aria-label", `Color pair for ${device.name}`);
-        const used = usedPaletteIds();
-        for (const candidate of app.sourcePalettes) {
-          const option = new Option(candidate.id, candidate.id);
+        select.setAttribute("aria-label", `Source color for ${device.name}`);
+        const used = usedPaletteIds({ exceptDeviceId: device.id });
+        app.sourcePalettes.forEach((candidate, index) => {
+          const option = new Option(`Color ${index + 1}`, candidate.id);
           option.disabled = used.has(candidate.id) && candidate.id !== palette?.id;
           select.add(option);
-        }
+        });
         select.value = palette?.id || "";
-        applyPaletteVariables(paletteLabel, sourceWithPalette({}, palette));
+        const previewSource = { inputKind: profile.id === "vernier" ? "vernierGoDirect" : "polarH10" };
+        applyPaletteVariables(paletteLabel, sourceWithPalette(previewSource, palette));
         select.addEventListener("change", () => {
           app.pendingDevicePalettes.set(device.id, select.value);
           const chosen = paletteById(select.value);
-          applyPaletteVariables(paletteLabel, sourceWithPalette({}, chosen));
+          applyPaletteVariables(paletteLabel, sourceWithPalette(previewSource, chosen));
           void rememberDevicePalette(device.id, select.value);
         });
         paletteLabel.append(caption, select);
         group.append(paletteLabel);
       }
+      if (contract?.desired && ["connecting", "retrying", "attention"].includes(contractState)) {
+        group.classList.add("has-contract-action");
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "device-contract-cancel";
+        cancel.textContent = contractState === "attention" ? "Remove" : "Stop retry";
+        cancel.setAttribute("aria-label", `Stop reconnecting ${device.name}`);
+        cancel.addEventListener("click", () => {
+          removeDeviceContract(device.id);
+          addActivity(`${device.name} removed from this session's desired set`);
+        });
+        group.append(cancel);
+      }
       return group;
     });
     elements["device-list"].replaceChildren(...rows);
+    syncConnectSelectedAction();
   }
 
-  async function connectDevice(device, { automatic = false } = {}) {
-    if (app.connecting) return;
+  async function connectDevice(device, { automatic = false, contract = null } = {}) {
+    if (app.connecting || app.shuttingDown) {
+      return { connected: false, message: "Another sensor connection is still in progress." };
+    }
     const generation = ++app.connectionGeneration;
+    const attemptToken = contract ? ++contract.attemptToken : generation;
+    const contractGeneration = contract?.generation ?? null;
+    const streaming = waitForStreamingConnection(device.id, attemptToken);
     const isMock = runtime.isMockDevice(device.id);
     const isWebBluetooth = runtime.isBrowserBluetoothDevice(device.id);
     const isWebVernier = runtime.isBrowserVernierDevice(device.id);
     const isNativeVernier = device.inputKind === "vernierGoDirect";
     const sensorLabel = isNativeVernier || isWebVernier ? "Vernier GDX-RB" : "Polar H10";
     app.connecting = true;
+    app.connectingDeviceId = device.id;
     app.pendingDevice = device;
     elements["scan-button"].disabled = true;
     elements["scan-button"].querySelector("span").textContent = isWebBluetooth || isWebVernier ? "Waiting for selection…" : "Connecting…";
@@ -1585,7 +2231,7 @@
         ? "Starting recorded Polar H10 preview"
         : isWebBluetooth || isWebVernier
           ? "Waiting for browser Bluetooth selection"
-          : automatic ? `Reconnecting to last used ${sensorLabel}` : `Connecting to ${sensorLabel}`,
+          : automatic ? `Reconnecting ${sensorLabel}` : `Connecting to ${sensorLabel}`,
       "working",
     );
     elements["input-state"].textContent = "Connecting";
@@ -1597,33 +2243,57 @@
       : "Opening the low-energy connection…";
     addActivity(`${isMock ? "Starting" : automatic ? "Reconnecting" : "Connecting"} ${device.name}`);
 
+    let returnedSource = null;
     try {
-      const requestedPalette = paletteById(app.pendingDevicePalettes.get(device.id)) || paletteForDevice(device.id);
-      const source = await runtime.connectDevice(
+      const requestedPalette = paletteForDevice(device.id);
+      returnedSource = await runtime.connectDevice(
         device.id,
-        (event) => handleNativeEvent(event, device),
+        (event) => handleNativeEvent(event, device, { contractGeneration, attemptToken }),
         requestedPalette?.id || null,
       );
-      if (source?.id) {
-        const connectedSource = app.activeSources.get(source.id);
+      const result = await streaming;
+      if (!result.connected) {
+        if ((result.timedOut || result.cancelled) && returnedSource?.id) {
+          app.manualDisconnects.add(returnedSource.id);
+          try {
+            await runtime.disconnectDevice(returnedSource.id);
+          } catch (_error) {
+            // The retry generation prevents late events from reviving this
+            // timed-out attempt even when cleanup also reports an error.
+          }
+        }
+        return {
+          connected: false,
+          cancelled: result.cancelled === true,
+          message: result.timedOut
+            ? `${device.name} opened but did not report live streaming within ${CONNECTION_READY_TIMEOUT_MS / 1000} seconds.`
+            : `${device.name} disconnected before streaming started.`,
+        };
+      }
+      if (returnedSource?.id && app.activeSources.has(returnedSource.id)) {
+        const connectedSource = app.activeSources.get(returnedSource.id);
         const resolvedSource = sourceWithPalette({
-          ...source,
+          ...returnedSource,
           ...connectedSource,
           deviceId: device.id,
           deviceName: connectedSource?.deviceName || device.name,
-        }, source.palette || requestedPalette);
-        registerSource(resolvedSource);
+        }, returnedSource.palette || requestedPalette);
+        app.activeSources.set(returnedSource.id, resolvedSource);
         if (resolvedSource.palette?.id) {
           await rememberDevicePalette(device.id, resolvedSource.palette.id);
         }
-        if (app.selectedSourceId === source.id) updateSelectedSourceUi();
+        if (app.selectedSourceId === returnedSource.id) updateSelectedSourceUi();
       }
-      if (isNative && !isMock) await ensureAutomaticRawLsl();
+      if (isNative && !isMock) {
+        try {
+          await ensureAutomaticRawLsl();
+        } catch (error) {
+          toast(`Sensor is live, but automatic raw LSL setup needs attention. ${runtime.formatError(error)}`, true);
+        }
+      }
+      return { connected: true };
     } catch (error) {
-      if (generation !== app.connectionGeneration) return;
-      app.connecting = false;
-      app.pendingDevice = null;
-      syncScanAction();
+      finishConnectionWaiter(device.id, attemptToken, { connected: false, cancelled: true });
       if ((isWebBluetooth || isWebVernier) && error?.code === "BLUETOOTH_CHOOSER_CANCELLED") {
         setTopStatus("Browser inputs ready");
         elements["input-state"].textContent = "Browser ready";
@@ -1633,15 +2303,24 @@
           : "No sensor was selected. Wear the strap, close other Polar apps, then choose the H10 again.";
         addActivity("Bluetooth chooser closed without selecting a sensor");
         renderDevices(app.devices);
-        return;
+        return { connected: false, cancelled: true, message: "No Bluetooth device was selected." };
       }
       setTopStatus("Connection failed", "error");
       elements["input-state"].textContent = "Error";
       const message = runtime.formatError(error);
       elements["connection-detail"].textContent = message;
       addActivity(message);
-      toast(message, true);
+      if (!automatic) toast(message, true);
       renderDevices(app.devices);
+      return { connected: false, message };
+    } finally {
+      if (app.connectingDeviceId === device.id) {
+        app.connecting = false;
+        app.connectingDeviceId = null;
+        app.pendingDevice = null;
+      }
+      syncScanAction();
+      syncConnectSelectedAction();
     }
   }
 
@@ -1652,8 +2331,9 @@
   }
 
   async function disconnectSource(sourceId) {
+    const source = app.activeSources.get(sourceId);
+    if (source?.deviceId) removeDeviceContract(source.deviceId);
     app.manualDisconnects.add(sourceId);
-    cancelVernierReconnect();
     try {
       const result = await runtime.disconnectDevice(sourceId);
       if (!result?.emitted && app.activeSources.has(sourceId)) {
@@ -1669,7 +2349,21 @@
     }
   }
 
-  function handleNativeEvent(event, device = null) {
+  function handleNativeEvent(event, device = null, connectionContext = null) {
+    if (app.shuttingDown) return;
+    const contract = device?.id ? connectionContract(device.id) : null;
+    if (!contract && connectionContext?.contractGeneration != null) {
+      const activeSource = event?.source?.id ? app.activeSources.get(event.source.id) : null;
+      const deliberateTeardown = event.kind === "connection" && event.connected !== true && activeSource;
+      if (!deliberateTeardown) return;
+    }
+    if (contract && connectionContext?.contractGeneration != null && (
+      connectionContext.contractGeneration !== contract.generation
+      || connectionContext.attemptToken !== contract.attemptToken
+    )) return;
+    if (contract && contract.state !== "live" && !["status", "error", "connection"].includes(event.kind)) {
+      return;
+    }
     const source = eventSource(event, device);
     if (source && event.kind !== "status" && event.kind !== "error" && event.kind !== "connection") {
       registerSource(source);
@@ -1685,7 +2379,7 @@
         addActivity(event.message);
         break;
       case "connection":
-        updateConnection(event, device);
+        updateConnection(event, device, connectionContext);
         break;
       case "ecg":
         ingestEcg(event.microvolts || [], event.timing);
@@ -1739,18 +2433,18 @@
         break;
     }
     buffers = app.selectedSourceId ? buffersForSource(app.selectedSourceId) : previousBuffers;
+    if (event.kind === "status" || event.kind === "error") contractSummaryStatus();
     applySourceColor();
   }
 
   function eventSource(event, device = null) {
     if (event?.source?.id) {
       const existing = app.activeSources.get(event.source.id);
-      const palette = existing?.palette || event.source.palette
-        || paletteById(app.pendingDevicePalettes.get(device?.id)) || paletteForDevice(device?.id);
+      const palette = existing?.palette || event.source.palette || paletteForDevice(device?.id);
       return sourceWithPalette({
       ...event.source,
       ...existing,
-      deviceId: device?.id,
+      ...(device?.id ? { deviceId: device.id } : {}),
       ...(event.transport ? { transport: event.transport } : {}),
       ...(event.deviceName ? { deviceName: event.deviceName } : {}),
       }, palette);
@@ -1765,7 +2459,7 @@
       inputKind: browserPolar ? "web-bluetooth" : "mock",
       deviceId: device?.id,
       deviceName: event?.deviceName || device?.name,
-    }, paletteById(app.pendingDevicePalettes.get(device?.id)) || paletteForDevice(device?.id));
+    }, paletteForDevice(device?.id));
   }
 
   function buffersForSource(sourceId) {
@@ -1853,14 +2547,21 @@
 
   function renderConnectedDevices() {
     const sources = [...app.activeSources.values()];
-    elements["connected-device-count"].textContent = `${sources.length} live`;
+    const pendingContracts = [...app.deviceContracts.values()]
+      .filter((contract) => contract.desired && contract.state !== "live");
+    const pendingSummary = pendingContracts.length
+      ? ` · ${pendingContracts.length} ${pendingContracts.some((contract) => contract.state === "attention") ? "attention" : "retrying"}`
+      : "";
+    elements["connected-device-count"].textContent = `${sources.length} live${pendingSummary}`;
     if (!sources.length) {
       const empty = document.createElement("div");
       empty.className = "connected-empty-state";
       const title = document.createElement("strong");
       title.textContent = "No connected devices";
       const detail = document.createElement("small");
-      detail.textContent = "A device becomes a configurable widget only after its connection succeeds.";
+      detail.textContent = pendingContracts.length
+        ? "Selected sensors stay listed above while Polar Stream reconnects or waits for attention."
+        : "A device becomes a configurable widget only after its connection succeeds.";
       empty.append(title, detail);
       elements["connected-device-list"].replaceChildren(empty);
       return;
@@ -1895,7 +2596,10 @@
       const role = document.createElement("span");
       role.className = `preference-badge device-role-badge ${profile.id}`;
       role.textContent = profile.connectionBadge;
-      nameLine.append(name, role);
+      const live = document.createElement("span");
+      live.className = "preference-badge source-live-badge";
+      live.textContent = "LIVE";
+      nameLine.append(name, role, live);
       const purpose = document.createElement("small");
       purpose.textContent = isVernier
         ? `${source.label} · automatic rawVernier + 0–1 breathing`
@@ -1907,19 +2611,25 @@
       actions.className = "connected-device-actions";
       const colorLabel = document.createElement("label");
       colorLabel.className = "device-color-button";
-      colorLabel.title = `Choose the color pair for ${source.deviceName || source.label}`;
+      colorLabel.title = `Choose the source color for ${source.deviceName || source.label}`;
       applyPaletteVariables(colorLabel, source);
+      const swatches = document.createElement("span");
+      swatches.className = "device-color-swatches";
+      swatches.setAttribute("aria-hidden", "true");
+      const identitySwatch = document.createElement("i");
+      identitySwatch.className = "identity-swatch";
+      swatches.append(identitySwatch);
       const color = document.createElement("select");
-      color.setAttribute("aria-label", `Color pair for ${source.deviceName || source.label}`);
-      const occupied = usedPaletteIds(source.id);
-      for (const palette of app.sourcePalettes) {
-        const option = new Option(palette.id, palette.id);
+      color.setAttribute("aria-label", `Source color for ${source.deviceName || source.label}`);
+      const occupied = usedPaletteIds({ exceptSourceId: source.id, exceptDeviceId: source.deviceId });
+      app.sourcePalettes.forEach((palette, index) => {
+        const option = new Option(`Color ${index + 1}`, palette.id);
         option.disabled = occupied.has(palette.id);
         color.add(option);
-      }
+      });
       color.value = sourcePalette(source)?.id || "";
       color.addEventListener("change", () => void changeSourcePalette(source.id, color.value));
-      colorLabel.append(color);
+      colorLabel.append(swatches, color);
       const disconnect = document.createElement("button");
       disconnect.type = "button";
       disconnect.className = "connected-device-disconnect";
@@ -1952,30 +2662,6 @@
       }
       article.append(header, meta);
 
-      if (isVernier && !runtime.isBrowser) {
-        const keep = document.createElement("label");
-        keep.className = "keep-awake-control device-widget-toggle";
-        const keepCopy = document.createElement("span");
-        keepCopy.className = "keep-awake-copy";
-        const keepTitle = document.createElement("strong");
-        keepTitle.textContent = "Keep connected / awake";
-        const keepDetail = document.createElement("small");
-        keepDetail.textContent = app.keepVernierAwake
-          ? "Live measurement stays active; reconnect is armed after an unexpected drop."
-          : "Live measurement stays active only until the link drops.";
-        keepCopy.append(keepTitle, keepDetail);
-        const toggle = document.createElement("input");
-        toggle.className = "switch-input";
-        toggle.type = "checkbox";
-        toggle.checked = app.keepVernierAwake;
-        toggle.setAttribute("aria-label", `Keep ${source.deviceName || source.label} connected`);
-        toggle.addEventListener("change", () => setVernierKeepConnected(toggle.checked));
-        const switchMark = document.createElement("span");
-        switchMark.className = "switch";
-        switchMark.setAttribute("aria-hidden", "true");
-        keep.append(keepCopy, toggle, switchMark);
-        article.append(keep);
-      }
       return article;
     });
     elements["connected-device-list"].replaceChildren(...widgets);
@@ -1992,7 +2678,7 @@
     const browserRecording = runtime.isBrowser && browserSession?.status().state === "recording";
     const affected = [...nativeDestinations, browserRecording ? "browser CSV recording" : null].filter(Boolean);
     if (affected.length && !window.confirm(
-      `Changing ${source.deviceName || source.label} to the ${palette.id} color pair will stop ${affected.join(" and ")} at a clean metadata boundary, then create new ${nativeDestinations.includes("LSL outlets") ? "LSL outlets" : ""}${nativeDestinations.includes("LSL outlets") && affected.length > 1 ? " and " : ""}${affected.some((name) => name.includes("CSV")) ? "file segments" : ""}. LabRecorder may need to refresh or reselect recreated outlets. Continue?`,
+      `Changing ${source.deviceName || source.label} to the ${palette.id} source color will stop ${affected.join(" and ")} at a clean metadata boundary, then create new ${nativeDestinations.includes("LSL outlets") ? "LSL outlets" : ""}${nativeDestinations.includes("LSL outlets") && affected.length > 1 ? " and " : ""}${affected.some((name) => name.includes("CSV")) ? "file segments" : ""}. LabRecorder may need to refresh or reselect recreated outlets. Continue?`,
     )) {
       renderConnectedDevices();
       return;
@@ -2029,9 +2715,9 @@
         });
       }
       elements["source-palette-status"].textContent = affected.length
-        ? `${source.deviceName || source.label} now uses the ${palette.id} pair. Affected outputs restarted with new metadata.`
-        : `${source.deviceName || source.label} now uses the ${palette.id} pair.`;
-      addActivity(`${source.label} color pair changed to ${palette.id}`);
+        ? `${source.deviceName || source.label} now uses the ${palette.id} source color. Affected outputs restarted with new metadata.`
+        : `${source.deviceName || source.label} now uses the ${palette.id} source color.`;
+      addActivity(`${source.label} source color changed to ${palette.id}`);
       renderActiveSources();
       renderOutputs();
       updateVisualLabels();
@@ -2048,23 +2734,47 @@
 
   function applySourceColor() {
     const source = app.activeSources.get(app.selectedSourceId);
-    const colors = sourceColors(source);
     applyPaletteVariables(elements["chart-shell"], source);
+    const chartColor = sourceSignalColor(source);
+    elements["chart-shell"].style.setProperty("--source-color", chartColor);
+    elements["chart-shell"].style.setProperty("--source-secondary", chartColor);
     elements["chart-shell"].classList.toggle("source-marked", Boolean(source));
     for (const panel of [elements["output-workspace"], elements["visual-workspace"]]) {
       applyPaletteVariables(panel, source);
       panel.classList.toggle("source-panel-marked", Boolean(source));
     }
-    document.querySelectorAll(".raw-card, .output-card, .device-profile-card, .device-protocol-card").forEach((card) => {
-      card.style.setProperty("--source-color", colors.primary);
-      card.style.setProperty("--source-secondary", colors.secondary);
+    const roleCards = [
+      [elements["raw-ecg-card"], "cardiac"],
+      [elements["raw-acc-card"], "breathing"],
+      [elements["raw-force-card"], "breathing"],
+      [elements["vernier-breathing-card"], "breathing"],
+    ];
+    for (const [card, role] of roleCards) {
+      applyPaletteVariables(card, source);
+      const color = role === "breathing" ? sourceColors(source).breathing : sourceColors(source).cardiac;
+      card.style.setProperty("--source-color", color);
+      card.style.setProperty("--source-secondary", color);
+      card.classList.toggle("source-marked", Boolean(source));
+    }
+    document.querySelectorAll(".output-card").forEach((card) => {
+      applyPaletteVariables(card, source);
+      const color = card.dataset.colorRole === "breathing" ? sourceColors(source).breathing : sourceColors(source).cardiac;
+      card.style.setProperty("--source-color", color);
+      card.style.setProperty("--source-secondary", color);
       card.classList.toggle("source-marked", Boolean(source));
     });
+    for (const card of [elements["device-profile-card"], ...document.querySelectorAll(".device-protocol-card")]) {
+      applyPaletteVariables(card, source);
+      if (card.classList.contains("device-protocol-card")) {
+        card.style.setProperty("--source-color", sourceColors(source).breathing);
+      }
+      card.classList.toggle("source-marked", Boolean(source));
+    }
   }
 
   function selectedSourceColor(fallback) {
     const source = app.activeSources.get(app.selectedSourceId);
-    return source ? sourceColors(source).primary : fallback;
+    return source ? sourceSignalColor(source) : fallback;
   }
 
   function updateSelectedSourceUi() {
@@ -2108,17 +2818,20 @@
     if ((batch.series || []).length) markTelemetryDirty();
   }
 
-  function updateConnection(event, device = null) {
+  function updateConnection(event, device = null, connectionContext = null) {
     const source = eventSource(event, device);
-    const disconnectedVernier = !event.connected && source?.inputKind === "vernierGoDirect";
-    const deliberateDisconnect = !event.connected && source
+    const deviceId = device?.id || source?.deviceId || null;
+    const reportsLive = event.connected === true && event.streaming === true;
+    const deliberateDisconnect = !reportsLive && source
       ? app.manualDisconnects.has(source.id)
       : false;
     if (deliberateDisconnect) {
       window.setTimeout(() => app.manualDisconnects.delete(source.id), 5_000);
     }
-    if (event.connected && source) {
+    if (reportsLive && source) {
       app.manualDisconnects.delete(source.id);
+      const sourceContract = deviceId ? connectionContract(deviceId) : null;
+      const focusSource = !sourceContract || sourceContract.attempt === 0 || sourceContract.restoreFocus;
       if (source.inputKind === "vernierGoDirect") {
         vernierDisplayProcessors.set(source.id, new VernierBreathingDisplayProcessor());
       }
@@ -2133,18 +2846,62 @@
         sensorUnit: event.sensorUnit,
         samplePeriodUs: event.samplePeriodUs,
         message: event.message,
-      }, { focus: true });
+      }, { focus: focusSource });
+      if (deviceId) {
+        markContractLive(deviceId, source);
+        if (sourceContract) {
+          if (sourceContract.restoreFocus
+            && sourceContract.restoreVisualId
+            && visualEnabledForSource(app.activeSources.get(source.id), sourceContract.restoreVisualId)) {
+            app.selectedVisual = sourceContract.restoreVisualId;
+            rebuildVisualOptions();
+            elements["visual-source"].value = app.selectedVisual;
+            updateVisualLabels();
+          }
+          const restoreVisibleSourceIds = sourceContract.restoreVisibleSourceIds || [];
+          if (restoreVisibleSourceIds.length) app.comparisonSourceIds.clear();
+          for (const visibleSourceId of restoreVisibleSourceIds) {
+            if (visibleSourceId !== app.selectedSourceId && app.activeSources.has(visibleSourceId)) {
+              app.comparisonSourceIds.add(visibleSourceId);
+            }
+          }
+          sourceContract.restoreVisibleSourceIds = [];
+          sourceContract.restoreFocus = false;
+          sourceContract.restoreVisualId = null;
+          rebuildComparisonOptions();
+        }
+      }
     }
-    if (!event.connected && source) {
+    if (!reportsLive && source) {
+      const sourceContract = deviceId ? connectionContract(deviceId) : null;
+      if (sourceContract?.desired && !deliberateDisconnect) {
+        const visibleSourceIds = new Set([
+          ...(sourceContract.restoreVisibleSourceIds || []),
+          app.selectedSourceId,
+          ...app.comparisonSourceIds,
+        ].filter(Boolean));
+        sourceContract.restoreVisibleSourceIds = [...visibleSourceIds];
+        if (app.selectedSourceId === source.id) {
+          sourceContract.restoreFocus = true;
+          sourceContract.restoreVisualId ||= app.selectedVisual;
+        }
+      }
       app.activeSources.delete(source.id);
       sourceBuffers.delete(source.id);
       breathingPresentation.delete(source.id);
+      breathingAlignments.delete(source.id);
       vernierDisplayProcessors.delete(source.id);
-      if (app.comparisonSourceId === source.id) app.comparisonSourceId = null;
+      app.comparisonSourceIds.delete(source.id);
       if (app.selectedSourceId === source.id) {
         app.selectedSourceId = app.activeSources.keys().next().value || null;
         buffers = app.selectedSourceId ? buffersForSource(app.selectedSourceId) : createBufferBank();
       }
+    }
+    if (deviceId && connectionContext?.attemptToken != null) {
+      finishConnectionWaiter(deviceId, connectionContext.attemptToken, {
+        connected: reportsLive,
+        disconnected: !reportsLive,
+      });
     }
     app.connected = app.activeSources.size > 0;
     const simulated = Boolean(event.simulated || device?.kind === "mock");
@@ -2153,9 +2910,8 @@
       simulated: app.connected && simulated,
       transport: app.connected && webBluetooth ? "web-bluetooth" : null,
     });
-    app.connecting = false;
-    app.pendingDevice = null;
     syncScanAction();
+    syncConnectSelectedAction();
     const selectedKind = app.activeSources.get(app.selectedSourceId)?.inputKind;
     if (app.connected) {
       const connectedDevice = device || app.devices.find((candidate) => candidate.name === event.deviceName);
@@ -2174,12 +2930,6 @@
     renderActiveSources();
     if (app.connected) updateSelectedSourceUi();
     syncDeviceProfileUi();
-    if (event.connected && source?.inputKind === "vernierGoDirect") {
-      cancelVernierReconnect();
-      elements["keep-awake-status"].textContent = app.keepVernierAwake
-        ? "Live 10 Hz measurement active · automatic reconnect armed."
-        : "Live 10 Hz measurement active · automatic reconnect is off.";
-    }
     elements["connection-card"].classList.toggle("connected", app.connected);
     elements["disconnect-button"].hidden = !app.connected;
     elements["connection-meta"].hidden = !app.connected;
@@ -2204,12 +2954,13 @@
         : runtime.isBrowser ? "Browser inputs ready" : "Ready to connect",
       app.connected ? "connected" : "idle",
     );
-    addActivity(event.connected
+    addActivity(reportsLive
       ? `${event.deviceName} ${simulated ? "started" : "connected"}`
       : simulated ? "Recorded preview stopped" : `${event.deviceName || "Sensor"} disconnected`);
-    if (disconnectedVernier && !deliberateDisconnect) {
-      scheduleVernierReconnect(device || source);
+    if (!reportsLive && deviceId && !deliberateDisconnect && connectionContract(deviceId)?.desired) {
+      scheduleContractReconnect(deviceId, event.message || "Connection lost");
     }
+    contractSummaryStatus();
     if (!app.connected) elements["render-rate"].textContent = "Idle";
     if (elements["output-dialog"].open) {
       updateMetricFamilyUi();
@@ -2217,7 +2968,7 @@
       renderMetricOptions();
     }
     renderOutputs();
-    if (event.connected && source) void configureOutputs({ quiet: true });
+    if (reportsLive && source) void configureOutputs({ quiet: true });
     if (runtime.isBrowser && browserSession) renderBrowserRecorder(browserSession.status());
     markTelemetryDirty();
   }
@@ -2294,10 +3045,97 @@
     markTelemetryDirty();
   }
 
+  const MAX_BREATHING_PRESENTATION_POINTS = 8_192;
+  const BREATHING_PRESENTATION_FRESH_SECONDS = 1.0;
+  const BREATHING_ALIGNMENT_WINDOW_SECONDS = 30;
+  const breathingAlignments = new Map();
+
+  function breathingAlignmentForSource(sourceId) {
+    if (!breathingAlignments.has(sourceId)) breathingAlignments.set(sourceId, {
+      mode: "auto",
+      referenceId: null,
+      sign: null,
+      provisionalSign: null,
+      candidateSign: null,
+      candidateKind: null,
+      stablePasses: 0,
+      conflictPasses: 0,
+      lastEvaluatedAt: 0,
+      status: "learning",
+      correlation: null,
+      reason: "waiting for Vernier reference",
+    });
+    return breathingAlignments.get(sourceId);
+  }
+
+  function resetAutomaticBreathingAlignment(sourceId, reason = "collecting fresh overlap") {
+    const alignment = breathingAlignmentForSource(sourceId);
+    alignment.referenceId = null;
+    alignment.sign = null;
+    alignment.provisionalSign = null;
+    alignment.candidateSign = null;
+    alignment.candidateKind = null;
+    alignment.stablePasses = 0;
+    alignment.conflictPasses = 0;
+    alignment.lastEvaluatedAt = 0;
+    alignment.correlation = null;
+    alignment.status = alignment.mode === "auto" ? "learning" : "manual";
+    alignment.reason = alignment.mode === "auto" ? reason : "manual display direction";
+    return alignment;
+  }
+
+  function setBreathingAlignmentMode(sourceId, mode) {
+    const alignment = breathingAlignmentForSource(sourceId);
+    alignment.mode = ["normal", "flip"].includes(mode) ? mode : "auto";
+    resetAutomaticBreathingAlignment(sourceId, "relearning from Vernier");
+    if (alignment.mode !== "auto") {
+      alignment.status = "manual";
+      alignment.reason = alignment.mode === "flip" ? "manual display flip" : "manual as measured";
+    }
+    updateBreathingAlignmentStatus(sourceId);
+    requestRender();
+  }
+
+  function effectiveBreathingSign(sourceId) {
+    const alignment = breathingAlignmentForSource(sourceId);
+    if (alignment.mode === "normal") return 1;
+    if (alignment.mode === "flip") return -1;
+    return alignment.sign ?? alignment.provisionalSign ?? 1;
+  }
+
+  function breathingAlignmentStatusText(sourceId) {
+    const alignment = breathingAlignmentForSource(sourceId);
+    if (alignment.mode === "normal") return "manual · as measured";
+    if (alignment.mode === "flip") return "manual · display flipped ↕";
+    if (alignment.status === "aligned") return alignment.sign < 0 ? "aligned · display flipped ↕" : "aligned · inhale up ↑";
+    if (alignment.status === "provisional") return alignment.provisionalSign < 0
+      ? "provisional Vernier match · flipped ↕"
+      : "provisional Vernier match · as measured";
+    if (alignment.status === "stale") return "stale · no fresh breathing data";
+    if (alignment.status === "flat") return "flat/saturated · cannot align";
+    if (alignment.status === "uncertain") return "uncertain · choose Normal or Flip";
+    if (!alignment.referenceId && alignment.reason?.includes("Vernier")) {
+      return "as measured · add Vernier or choose Normal/Flip";
+    }
+    return "learning · breathe normally";
+  }
+
+  function updateBreathingAlignmentStatus(sourceId) {
+    const text = breathingAlignmentStatusText(sourceId);
+    for (const node of document.querySelectorAll(`[data-breathing-alignment-status-source-id="${CSS.escape(sourceId)}"]`)) {
+      node.textContent = text;
+    }
+    const legend = elements["visual-legend"]?.querySelector(`[data-source-id="${CSS.escape(sourceId)}"]`);
+    const status = legend?.querySelector(".legend-alignment-status");
+    if (status) status.textContent = text;
+  }
+
   function presentationForSource(sourceId) {
     if (!sourceId) return null;
     if (!breathingPresentation.has(sourceId)) breathingPresentation.set(sourceId, {
-      points: [], value: null, lastTime: null, lastRenderClock: null, mode: "fresh-smooth", smoothingTauSeconds: 0.12, delaySeconds: 0.18,
+      points: [], value: null, lastTime: null, lastRenderClock: null,
+      lastArrivalSeconds: null, hostClockOffsetSeconds: null,
+      mode: "fresh-smooth", smoothingTauSeconds: 0.12, delaySeconds: 0.18,
     });
     return breathingPresentation.get(sourceId);
   }
@@ -2307,26 +3145,71 @@
       ? event.breathingPresentationPoints : [];
     if (!sourceId || !incoming.length) return;
     const state = presentationForSource(sourceId);
+    const arrivalSeconds = performance.now() / 1000;
+    const mappedNewest = timingNewestSeconds(event.timing);
+    const hostReceiveSeconds = Number(event.timing?.hostReceiveTimestampNs) / 1e9;
+    const eventSourceNewest = Number(event.timing?.sourceTimestampNs ?? event.sensorTimestampNs) / 1e9;
+    const incomingNewestSource = Number(incoming.at(-1)?.sourceTimestampNs) / 1e9;
+    if (Number.isFinite(hostReceiveSeconds)) {
+      state.hostClockOffsetSeconds = hostReceiveSeconds - arrivalSeconds;
+    } else if (Number.isFinite(mappedNewest)) {
+      state.hostClockOffsetSeconds = mappedNewest - arrivalSeconds;
+    }
     if (event.timing?.gapBefore || event.breathingGapBefore) {
-      state.points = [];
+      // Preserve the recent trail across a documented source gap. The first
+      // post-gap sample remains marked so rendering breaks the line instead of
+      // inventing data, but a brief H10 dropout must not blank the complete
+      // five-second history while the processor recalibrates.
       state.value = null;
       state.lastTime = null;
       state.lastRenderClock = null;
+      resetAutomaticBreathingAlignment(sourceId, "signal gap · collecting fresh overlap");
     }
-    for (const point of incoming) {
-      const timestamp = Number(point.sourceTimestampNs) / 1e9;
+    for (let index = 0; index < incoming.length; index += 1) {
+      const point = incoming[index];
+      const sourceTimestamp = Number(point.sourceTimestampNs) / 1e9;
+      let timestamp = Number(point.mappedHostTimestampNs) / 1e9;
+      if (!Number.isFinite(timestamp) && Number.isFinite(mappedNewest) && Number.isFinite(eventSourceNewest)) {
+        timestamp = mappedNewest + sourceTimestamp - eventSourceNewest;
+      }
+      if (!Number.isFinite(timestamp) && Number.isFinite(incomingNewestSource)) {
+        timestamp = arrivalSeconds + sourceTimestamp - incomingNewestSource;
+      }
       const value = Number(point.volume01);
-      if (!Number.isFinite(timestamp) || !Number.isFinite(value)) continue;
+      const projectionG = Number(point.projectionG);
+      if (!Number.isFinite(sourceTimestamp) || !Number.isFinite(timestamp) || !Number.isFinite(value)) continue;
       if (state.points.length && timestamp <= state.points.at(-1).timestamp) {
         state.points = [];
         state.value = null;
         state.lastTime = null;
         state.lastRenderClock = null;
+        resetAutomaticBreathingAlignment(sourceId, "source clock reset · collecting fresh overlap");
       }
-      state.points.push({ timestamp, value: Math.max(0, Math.min(1, value)) });
+      state.points.push({
+        sourceTimestamp,
+        timestamp,
+        value: Math.max(0, Math.min(1, value)),
+        projectionG: Number.isFinite(projectionG) ? projectionG : null,
+        gapBefore: Boolean((event.timing?.gapBefore || event.breathingGapBefore) && index === 0),
+      });
     }
-    if (state.points.length > 512) state.points.splice(0, state.points.length - 512);
+    if (state.points.length > MAX_BREATHING_PRESENTATION_POINTS) {
+      state.points.splice(0, state.points.length - MAX_BREATHING_PRESENTATION_POINTS);
+    }
+    state.lastArrivalSeconds = arrivalSeconds;
     markTelemetryDirty();
+  }
+
+  function estimatedPresentationHostNow(state, renderClock = performance.now() / 1000) {
+    if (Number.isFinite(state?.hostClockOffsetSeconds)) return renderClock + state.hostClockOffsetSeconds;
+    const newest = state?.points?.at(-1)?.timestamp;
+    if (!Number.isFinite(newest) || !Number.isFinite(state?.lastArrivalSeconds)) return newest;
+    return newest + Math.max(0, renderClock - state.lastArrivalSeconds);
+  }
+
+  function presentationFresh(state, renderClock = performance.now() / 1000) {
+    return Number.isFinite(state?.lastArrivalSeconds)
+      && renderClock - state.lastArrivalSeconds <= BREATHING_PRESENTATION_FRESH_SECONDS;
   }
 
   function displayedBreathing(state, options) {
@@ -2335,20 +3218,25 @@
     state.mode = display.mode === "timestamp-faithful" ? "timestamp-faithful" : "fresh-smooth";
     state.smoothingTauSeconds = numberOr(display.smoothingTauSeconds, 0.12);
     state.delaySeconds = numberOr(display.delaySeconds, 0.18);
-    const newest = state.points.at(-1);
-    let target = newest.value;
-    let targetTime = newest.timestamp;
-    if (state.mode === "timestamp-faithful") {
-      targetTime = Math.max(state.points[0].timestamp, targetTime - state.delaySeconds);
-      const right = state.points.find((point) => point.timestamp >= targetTime);
-      const leftIndex = Math.max(0, state.points.indexOf(right) - 1);
-      const left = state.points[leftIndex] || right;
-      if (right && left && right.timestamp > left.timestamp) {
-        const ratio = Math.max(0, Math.min(1, (targetTime - left.timestamp) / (right.timestamp - left.timestamp)));
-        target = left.value + (right.value - left.value) * ratio;
-      } else if (left) target = left.value;
-    }
     const renderClock = performance.now() / 1000;
+    const newest = state.points.at(-1);
+    const hostNow = estimatedPresentationHostNow(state, renderClock);
+    const targetTime = Math.max(
+      state.points[0].timestamp,
+      Math.min(newest.timestamp, hostNow - Math.max(0, state.delaySeconds)),
+    );
+    const targetPoint = breathingComparison?.resampleSeries(
+      state.points,
+      {
+        start: targetTime,
+        end: targetTime,
+        bounds: { ready: true, lower: 0, upper: 1, span: 1 },
+        rateHz: 60,
+        maxGapSeconds: 0.5,
+      },
+    )?.points.at(-1);
+    if (!targetPoint) return null;
+    const target = targetPoint.value;
     if (state.value == null || state.mode === "timestamp-faithful") state.value = target;
     else {
       const dt = state.lastRenderClock == null ? 0 : Math.max(0, renderClock - state.lastRenderClock);
@@ -2357,7 +3245,11 @@
     }
     state.lastRenderClock = renderClock;
     state.lastTime = newest.timestamp;
-    return { timestamp: targetTime, value: Math.max(0, Math.min(1, state.value)) };
+    return {
+      timestamp: targetTime,
+      value: Math.max(0, Math.min(1, state.value)),
+      fresh: presentationFresh(state, renderClock),
+    };
   }
 
   function ingestMetrics(event) {
@@ -2366,7 +3258,11 @@
         // ACC magnitude is already calculated while unpacking raw axes above;
         // avoid drawing every native value twice.
         if (metric.id !== "acc_magnitude") {
-          ensureBuffer(metric.id).push(visualValue(metric.id, Number(metric.value)), timingNewestSeconds(event.timing));
+          ensureBuffer(metric.id).push(
+            visualValue(metric.id, Number(metric.value)),
+            timingNewestSeconds(event.timing),
+            Boolean(event.timing?.gapBefore || event.breathingGapBefore),
+          );
         }
       }
       markTelemetryDirty();
@@ -2414,6 +3310,13 @@
         visualDefinitions[metric.id] = {
           label: metric.label, unit: metric.unit, rate: Number(metric.rateHz) || 1,
           color: palette[metric.category] || "#168259",
+          colorRole: metric.id === "raw_acc"
+            || metric.id === "raw_force"
+            || metric.category === "Breathing"
+            || metric.category === "Breathing dynamics"
+            || metric.formulaSource === "accelerometer"
+            ? "breathing"
+            : "cardiac",
           symmetric: metric.id === "breathing_phase" || /^ecg_(mean|sd)$/.test(metric.id),
           comparisonFamily: metric.category === "Breathing" || metric.category === "Breathing dynamics"
             ? "breathing"
@@ -3202,6 +4105,7 @@
         unit: formula.unit,
         rate: formula.source === "ecg" ? 130 : formula.source === "accelerometer" ? 200 : 1,
         color: formulaSources[formula.source].color,
+        colorRole: formula.source === "accelerometer" ? "breathing" : "cardiac",
         formulaId: formula.id,
         deviceProfile: "polar",
         comparisonFamily: `custom:${formula.source}`,
@@ -3220,6 +4124,7 @@
       const support = runtime.outputSupport(id, app.currentInputKind);
       const card = document.createElement("article");
       card.className = `output-card${metric.raw ? " raw-output-card" : ""}${support.supported ? "" : " unavailable"}`;
+      card.dataset.colorRole = colorRoleForDefinition(visualDefinitions[id]);
       const header = document.createElement("header");
       const identity = document.createElement("span");
       const label = document.createElement("strong");
@@ -3273,6 +4178,7 @@
     for (const formula of app.customFormulas.filter((candidate) => candidate.enabled && profile.id === "polar")) {
       const card = document.createElement("article");
       card.className = "output-card formula-output-card";
+      card.dataset.colorRole = formula.source === "accelerometer" ? "breathing" : "cardiac";
       const header = document.createElement("header");
       const identity = document.createElement("span");
       const label = document.createElement("strong");
@@ -3699,29 +4605,133 @@
     ))?.[0] || null;
   }
 
-  function rebuildComparisonOptions() {
+  function comparisonCandidates() {
     const primary = app.activeSources.get(app.selectedSourceId);
     const definition = visualDefinitions[app.selectedVisual];
-    const candidates = [...app.activeSources.values()]
+    return [...app.activeSources.values()]
       .filter((source) => source.id !== primary?.id)
       .map((source) => ({ source, visualId: comparisonVisualIdForSource(source, definition) }))
       .filter((candidate) => candidate.visualId);
-    if (!candidates.some((candidate) => candidate.source.id === app.comparisonSourceId)) {
-      app.comparisonSourceId = null;
+  }
+
+  function selectedComparisonEntries(definition = visualDefinitions[app.selectedVisual]) {
+    return [...app.comparisonSourceIds]
+      .slice(0, MAX_COMPARISON_SOURCES)
+      .map((sourceId) => {
+        const source = app.activeSources.get(sourceId);
+        return { source, visualId: comparisonVisualIdForSource(source, definition) };
+      })
+      .filter((entry) => entry.source && entry.visualId);
+  }
+
+  function setComparisonSourceSelected(sourceId, selected) {
+    const candidateIds = new Set(comparisonCandidates().map((candidate) => candidate.source.id));
+    if (selected && candidateIds.has(sourceId)) {
+      if (app.comparisonSourceIds.size >= MAX_COMPARISON_SOURCES) {
+        toast(`Up to ${MAX_ACTIVE_SOURCES} compatible traces can share one visualization.`, true);
+      } else {
+        app.comparisonSourceIds.add(sourceId);
+      }
+    } else {
+      app.comparisonSourceIds.delete(sourceId);
     }
-    const options = [new Option("Add comparison source", "")];
+    rebuildComparisonOptions();
+    updateVisualLabels();
+    resizeCanvas();
+    requestRender();
+  }
+
+  function rebuildComparisonOptions() {
+    const candidates = comparisonCandidates();
+    const candidateIds = new Set(candidates.map((candidate) => candidate.source.id));
+    for (const sourceId of [...app.comparisonSourceIds]) {
+      if (!candidateIds.has(sourceId)) app.comparisonSourceIds.delete(sourceId);
+    }
+    while (app.comparisonSourceIds.size > MAX_COMPARISON_SOURCES) {
+      app.comparisonSourceIds.delete([...app.comparisonSourceIds].at(-1));
+    }
+    const options = [];
     for (const candidate of candidates) {
-      const option = new Option(
-        `${candidate.source.label} · ${candidate.source.deviceName || candidate.source.inputKind}`,
-        candidate.source.id,
-      );
-      option.dataset.visualId = candidate.visualId;
-      options.push(option);
+      const label = document.createElement("label");
+      label.className = "comparison-source-option";
+      label.style.setProperty("--trace-color", sourceSignalColor(candidate.source, visualDefinitions[candidate.visualId]));
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.dataset.sourceId = candidate.source.id;
+      input.checked = app.comparisonSourceIds.has(candidate.source.id);
+      const swatch = document.createElement("i");
+      swatch.className = "comparison-source-swatch";
+      swatch.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("span");
+      const name = document.createElement("strong");
+      name.textContent = candidate.source.label;
+      const device = document.createElement("small");
+      device.textContent = candidate.source.deviceName || candidate.source.inputKind || "sensor";
+      copy.append(name, device);
+      label.append(input, swatch, copy);
+      options.push(label);
     }
-    elements["visual-compare-source"].replaceChildren(...options);
-    elements["visual-compare-source"].value = app.comparisonSourceId || "";
-    elements["visual-compare-source"].hidden = candidates.length === 0;
-    document.querySelector(".comparison-source-label")?.toggleAttribute("hidden", candidates.length === 0);
+    const primarySource = app.activeSources.get(app.selectedSourceId);
+    const primaryDefinition = visualDefinitions[app.selectedVisual];
+    let hasBreathingDirectionControls = false;
+    if (primaryDefinition?.comparisonKey === "breathing_waveform_01") {
+      const polarSources = [primarySource, ...candidates.map((candidate) => candidate.source)]
+        .filter((source, index, all) => source
+          && deviceProfileForSource(source).id === "polar"
+          && all.findIndex((candidate) => candidate?.id === source.id) === index);
+      hasBreathingDirectionControls = polarSources.length > 0;
+      if (polarSources.length) {
+        const heading = document.createElement("p");
+        heading.className = "comparison-alignment-heading";
+        heading.textContent = "Polar inhale direction · display only";
+        options.push(heading);
+      }
+      for (const source of polarSources) {
+        const alignment = breathingAlignmentForSource(source.id);
+        const row = document.createElement("div");
+        row.className = "comparison-alignment-row";
+        const copy = document.createElement("span");
+        const name = document.createElement("strong");
+        name.textContent = source.label;
+        const status = document.createElement("small");
+        status.dataset.breathingAlignmentStatusSourceId = source.id;
+        status.textContent = breathingAlignmentStatusText(source.id);
+        copy.append(name, status);
+        const select = document.createElement("select");
+        select.dataset.breathingAlignmentSourceId = source.id;
+        select.setAttribute("aria-label", `${source.label} breathing direction`);
+        for (const [value, label] of [["auto", "Auto"], ["normal", "Normal"], ["flip", "Flip"]]) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          select.append(option);
+        }
+        select.value = alignment.mode;
+        const relearn = document.createElement("button");
+        relearn.type = "button";
+        relearn.dataset.breathingRelearnSourceId = source.id;
+        relearn.textContent = "Relearn";
+        relearn.title = "Clear this session's automatic Vernier match";
+        row.append(copy, select, relearn);
+        options.push(row);
+      }
+    }
+    elements["visual-compare-options"].replaceChildren(...options);
+    const selectedCount = app.comparisonSourceIds.size;
+    const allSelected = candidates.length > 0 && candidates.every((candidate) => app.comparisonSourceIds.has(candidate.source.id));
+    elements["visual-compare-all"].checked = allSelected;
+    elements["visual-compare-all"].indeterminate = selectedCount > 0 && !allSelected;
+    elements["visual-compare-all"].disabled = candidates.length === 0;
+    elements["visual-compare-count"].textContent = selectedCount ? `${selectedCount} selected` : "None";
+    elements["visual-compare-summary"].setAttribute(
+      "aria-label",
+      `Choose comparison sources, ${selectedCount} selected`,
+    );
+    elements["visual-compare-control"].hidden = candidates.length === 0 && !hasBreathingDirectionControls;
+    elements["visual-compare-control"].classList.toggle("has-selection", selectedCount > 0);
+    if (!candidates.length && !hasBreathingDirectionControls) elements["visual-compare-details"].open = false;
+    elements["visual-layout-overlay"].checked = app.comparisonLayout === "overlay";
+    elements["visual-layout-separate"].checked = app.comparisonLayout === "separate";
   }
 
   function rebuildVisualOptions() {
@@ -3757,7 +4767,9 @@
 
   function updateVisualLabels() {
     const definition = visualDefinitions[app.selectedVisual];
-    const composite = Boolean(app.comparisonSourceId);
+    const comparisonEntries = selectedComparisonEntries(definition);
+    const composite = comparisonEntries.length > 0;
+    const visibleSourceCount = composite ? comparisonEntries.length + 1 : 1;
     elements["visual-source"].closest(".visual-toolbar")?.classList.toggle("comparing", composite);
     const breathingTrail = !composite && Boolean(definition?.breathingTrail || app.selectedVisual === "breathing_volume");
     const custom = Boolean(definition?.formulaId);
@@ -3768,7 +4780,7 @@
     elements["visual-unit"].textContent = app.selectedVisual === "breathing_phase" ? "" : normalized ? "0–1" : definition?.unit || "";
     elements["visual-window-label"].textContent = app.selectedVisual === "breathing_phase" ? "Live phase" : `${options.displayWindowSeconds} second window`;
     elements["visual-scale-label"].textContent = composite && definition?.comparisonKey === "breathing_waveform_01"
-      ? "Shared fixed 0–1 scale"
+      ? `${app.comparisonLayout === "separate" ? "Separate lanes" : "Overlay"} · comparative per-source relative 0–1`
       : breathingTrail
       ? "Relative 0–1 waveform"
       : normalized
@@ -3779,11 +4791,18 @@
     elements["chart-shell"].classList.toggle("phase-visual", app.selectedVisual === "breathing_phase");
     elements["chart-shell"].classList.toggle("breathing-trail-visual", breathingTrail);
     elements["chart-shell"].classList.toggle("stacked-axes", Boolean(definition?.channels || composite));
+    elements["chart-shell"].classList.toggle("comparison-separate", composite && app.comparisonLayout === "separate");
+    elements["chart-shell"].style.setProperty(
+      "--comparison-height",
+      `${Math.min(640, Math.max(330, visibleSourceCount * 68 + 95))}px`,
+    );
     elements["visual-current"].classList.toggle("stacked-value", Boolean(definition?.channels || composite));
     elements["signal-canvas"].setAttribute(
       "aria-label",
       composite
-        ? "Time-aligned comparison of independent Bluetooth sources on a shared host-monotonic time axis"
+        ? definition?.comparisonKey === "breathing_waveform_01"
+          ? `Comparative ${app.comparisonLayout === "separate" ? "separate-lane" : "overlay"} view of ${visibleSourceCount} independent breathing sources. Each trace uses its own relative zero-to-one display scale; Polar direction can be matched to Vernier automatically or manually, with status shown.`
+          : `Time-aligned ${app.comparisonLayout === "separate" ? "separate-lane" : "overlay"} comparison of ${visibleSourceCount} independent sources on a shared host-monotonic time axis`
         : breathingTrail
         ? app.selectedVisual === "vernier_breathing"
           ? "Live Vernier respiration-belt waveform from 0 to 1. The newest sample is a moving dot and recent samples form a leftward trail; increasing belt force and inhalation move upward."
@@ -3798,26 +4817,51 @@
       delete elements["signal-canvas"].dataset.latestY01;
       delete elements["signal-canvas"].dataset.trailPoints;
     }
+    if (!composite) {
+      delete elements["signal-canvas"].dataset.composite;
+      delete elements["signal-canvas"].dataset.comparisonLayout;
+      delete elements["signal-canvas"].dataset.comparisonSources;
+      delete elements["signal-canvas"].dataset.traceColors;
+      delete elements["signal-canvas"].dataset.laneCount;
+    }
     const primarySource = app.activeSources.get(app.selectedSourceId);
-    const comparisonSource = app.activeSources.get(app.comparisonSourceId);
-    const legendItems = composite ? [primarySource, comparisonSource].filter(Boolean).map((source) => ({
+    const legendSources = composite
+      ? [{ source: primarySource, visualId: app.selectedVisual }, ...comparisonEntries]
+      : [];
+    const legendItems = composite ? legendSources.filter((entry) => entry.source).map(({ source, visualId }) => ({
       label: `${source.label} · ${source.deviceName || source.inputKind}`,
-      color: sourceColors(source).primary,
-      secondary: sourceColors(source).secondary,
+      color: sourceSignalColor(source, visualDefinitions[visualId] || definition),
+      sourceId: source.id,
+      alignmentStatus: definition?.comparisonKey === "breathing_waveform_01"
+        && deviceProfileForSource(source).id === "polar"
+        ? breathingAlignmentStatusText(source.id)
+        : null,
     })) : definition?.legend || definition?.channels || (definition ? [{
       label: breathingTrail ? `${definition.label} · dot = latest` : definition.label,
       color: selectedSourceColor(definition.color),
+      sourceId: breathingTrail && deviceProfileForSource(primarySource).id === "polar"
+        ? primarySource?.id
+        : null,
+      alignmentStatus: breathingTrail && deviceProfileForSource(primarySource).id === "polar"
+        ? breathingAlignmentStatusText(primarySource.id)
+        : null,
     }] : []);
     elements["visual-legend"].replaceChildren(...legendItems.map((item) => {
       const legend = document.createElement("span");
       legend.className = "legend-item";
+      if (item.sourceId) legend.dataset.sourceId = item.sourceId;
       const line = document.createElement("i");
       line.className = "legend-line";
       line.style.background = item.color || "#87958d";
-      if (item.secondary) line.style.background = `linear-gradient(90deg, ${item.color}, ${item.secondary})`;
       const label = document.createElement("strong");
       label.textContent = item.label;
       legend.append(line, label);
+      if (item.alignmentStatus) {
+        const status = document.createElement("small");
+        status.className = "legend-alignment-status";
+        status.textContent = item.alignmentStatus;
+        legend.append(status);
+      }
       return legend;
     }));
     requestRender();
@@ -3959,6 +5003,17 @@
     renderPending = false;
   }
 
+  function shouldAnimateBreathingPresentation(nowSeconds = performance.now() / 1000) {
+    const definition = visualDefinitions[app.selectedVisual];
+    if (definition?.comparisonKey !== "breathing_waveform_01"
+      && app.selectedVisual !== "breathing_volume") return false;
+    const sourceIds = new Set([app.selectedSourceId, ...app.comparisonSourceIds]);
+    return [...sourceIds].some((sourceId) => {
+      const state = breathingPresentation.get(sourceId);
+      return state?.points.length > 1 && presentationFresh(state, nowSeconds);
+    });
+  }
+
   function drawFrame(now) {
     renderPending = false;
     renderFrameId = 0;
@@ -3984,8 +5039,11 @@
       lastTelemetryAt = now;
     }
     drawSignal();
-    if (telemetryDirty) {
-      scheduleRender(Math.max(renderIntervalMs, telemetryIntervalMs - (now - lastTelemetryAt)));
+    if (telemetryDirty || shouldAnimateBreathingPresentation(now / 1000)) {
+      const telemetryDelay = telemetryDirty
+        ? Math.max(renderIntervalMs, telemetryIntervalMs - (now - lastTelemetryAt))
+        : renderIntervalMs;
+      scheduleRender(telemetryDelay);
     }
   }
 
@@ -4001,7 +5059,7 @@
     }
 
     const options = metricOptionFor(optionIdForVisual(app.selectedVisual));
-    if (app.comparisonSourceId) {
+    if (app.comparisonSourceIds.size) {
       drawCompositeSignal(context, canvas, definition, options);
       return;
     }
@@ -4011,7 +5069,18 @@
     }
 
     const buffer = buffers[app.selectedVisual];
-    if (!buffer) return;
+    if (!buffer) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      elements["chart-empty"].hidden = false;
+      elements["visual-current"].textContent = "—";
+      elements["y-max"].textContent = "";
+      elements["y-min"].textContent = "";
+      if (definition.breathingTrail || app.selectedVisual === "breathing_volume") {
+        elements["chart-empty-title"].textContent = "Calibrating breathing signal";
+        elements["chart-empty-detail"].textContent = "Breathe normally while the selected accelerometer axes establish a usable movement range.";
+      }
+      return;
+    }
     if (app.selectedVisual === "breathing_phase") {
       drawBreathingPhase(context, canvas, buffer);
       return;
@@ -4139,35 +5208,62 @@
     return `rgba(${Number.parseInt(match[1], 16)}, ${Number.parseInt(match[2], 16)}, ${Number.parseInt(match[3], 16)}, ${alpha})`;
   }
 
-  function mixHexColors(first, second) {
-    const parse = (color) => /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(color || "");
-    const a = parse(first);
-    const b = parse(second);
-    if (!a || !b) return first || second || "#87958d";
-    const channels = [1, 2, 3].map((index) => Math.round((parseInt(a[index], 16) + parseInt(b[index], 16)) / 2));
-    return `#${channels.map((value) => value.toString(16).padStart(2, "0")).join("")}`;
-  }
-
   function drawBreathingTrail(context, canvas, buffer, definition, options) {
     const temporal = temporalWindow(buffer, options.displayWindowSeconds);
     const presentationState = breathingPresentation.get(app.selectedSourceId);
     const presented = displayedBreathing(presentationState, options);
     const hasPresentation = Boolean(presentationState?.points.length);
+    const selectedSource = app.activeSources.get(app.selectedSourceId);
+    const polarPresentation = deviceProfileForSource(selectedSource).id === "polar";
     const presentationEnd = presented?.timestamp ?? presentationState?.points.at(-1)?.timestamp;
     const presentationDuration = Math.max(0.1, Number(options.displayWindowSeconds) || 5);
     const plotTemporal = hasPresentation && Number.isFinite(presentationEnd)
       ? { start: presentationEnd - presentationDuration, end: presentationEnd, duration: presentationDuration }
       : temporal;
-    const presentedPoints = hasPresentation
-      ? presentationState.points.filter((point) => point.timestamp >= plotTemporal.start && point.timestamp <= plotTemporal.end)
+    const projectionPoints = polarPresentation
+      ? (presentationState?.points || [])
+          .filter((point) => Number.isFinite(point.projectionG))
+          .map((point) => ({ timestamp: point.timestamp, value: point.projectionG, gapBefore: point.gapBefore }))
+      : [];
+    const presentationInput = projectionPoints.length > 1 ? projectionPoints : presentationState?.points;
+    const presentationBounds = projectionPoints.length > 1
+      ? breathingComparison?.robustBounds(
+          projectionPoints.filter((point) => point.timestamp >= plotTemporal.end - BREATHING_ALIGNMENT_WINDOW_SECONDS),
+          0.0025,
+        )
+      : { ready: true, lower: 0, upper: 1, span: 1 };
+    const presentedPoints = hasPresentation && breathingComparison
+      ? breathingComparison.resampleSeries(
+          presentationInput,
+          {
+            start: plotTemporal.start,
+            end: plotTemporal.end,
+            bounds: presentationBounds,
+            rateHz: 60,
+            maxGapSeconds: 0.5,
+            smoothingTauSeconds: presentationState.smoothingTauSeconds,
+            invert: polarPresentation && effectiveBreathingSign(app.selectedSourceId) < 0,
+          },
+        ).points
       : null;
-    const dataPoints = presentedPoints?.length
-      ? presentedPoints.map((point) => ({ timestamp: point.timestamp, value: point.value, gapBefore: false }))
+    // Once source-time presentation samples exist, never conceal a flat, stale,
+    // or gapped projection by silently switching back to the clipped metric.
+    const dataPoints = hasPresentation && breathingComparison
+      ? presentedPoints || []
       : temporalEnvelopePoints(buffer, temporal, canvas.width);
     const valueCount = hasPresentation ? dataPoints.length : temporal.count;
-    const latest = presented?.value ?? Number(buffer.latest());
+    // Envelope downsampling may end on the last extrema in a pixel bucket rather
+    // than the chronological endpoint. The dot, value label, and inhale/exhale
+    // direction must still follow the newest real sample.
+    const latest = hasPresentation
+      ? dataPoints.at(-1)?.value ?? presented?.value ?? Number(buffer.latest())
+      : Number(buffer.latest());
     const hasData = dataPoints.length > 1 && Number.isFinite(latest);
     elements["chart-empty"].hidden = hasData;
+    if (!hasData) {
+      elements["chart-empty-title"].textContent = "Calibrating breathing signal";
+      elements["chart-empty-detail"].textContent = "Breathe normally; source gaps stay visible and the recent valid trail is retained.";
+    }
     elements["visual-current"].textContent = Number.isFinite(latest) ? formatValue(latest, 3) : "—";
     elements["y-max"].textContent = "";
     elements["y-min"].textContent = "";
@@ -4180,6 +5276,15 @@
     canvas.dataset.presentationMode = presentationState?.mode || "canonical-fallback";
     canvas.dataset.presentationValue = Number.isFinite(latest) ? latest.toFixed(4) : "";
     canvas.dataset.presentationDelay = String(presentationState?.delaySeconds ?? 0);
+    if (polarPresentation) {
+      canvas.dataset.alignmentStatus = breathingAlignmentForSource(app.selectedSourceId).status;
+      canvas.dataset.alignmentSign = String(effectiveBreathingSign(app.selectedSourceId));
+      canvas.dataset.breathingRawKind = projectionPoints.length > 1 ? "polar-projection" : "polar-volume-fallback";
+    } else {
+      delete canvas.dataset.alignmentStatus;
+      delete canvas.dataset.alignmentSign;
+      delete canvas.dataset.breathingRawKind;
+    }
     if (!hasData) {
       delete canvas.dataset.breathDirection;
       delete canvas.dataset.latestY01;
@@ -4192,21 +5297,24 @@
     const padY = Math.max(Math.round(height * 0.10), Math.round(24 * pixelRatio));
     const drawWidth = width - padLeft - padRight;
     const drawHeight = height - padY * 2;
+    const boundaryInset = Math.max(2, Math.round(2 * pixelRatio));
     const activeSourceColors = sourceColors(app.activeSources.get(app.selectedSourceId));
-    const sourceColor = activeSourceColors.primary || selectedSourceColor(definition.color);
-    const sourceSecondary = activeSourceColors.secondary || sourceColor;
+    const sourceColor = activeSourceColors.breathing || selectedSourceColor(definition.color);
     const point = (sample) => {
       const value = Math.max(0, Math.min(1, Number(sample.value) || 0));
       return {
         x: padLeft + ((sample.timestamp - plotTemporal.start) / plotTemporal.duration) * drawWidth,
-        y: padY + (1 - value) * drawHeight,
+        y: Math.max(
+          padY + boundaryInset,
+          Math.min(padY + drawHeight - boundaryInset, padY + (1 - value) * drawHeight),
+        ),
         value,
         gapBefore: sample.gapBefore,
       };
     };
     const latestPoint = point({
       value: latest,
-      timestamp: presented?.timestamp ?? buffer.latestTimestamp(),
+      timestamp: dataPoints.at(-1)?.timestamp ?? presented?.timestamp ?? buffer.latestTimestamp(),
       gapBefore: false,
     });
     const trendSampleCount = Math.min(6, hasPresentation ? dataPoints.length : buffer.length);
@@ -4247,7 +5355,7 @@
     const trailGradient = context.createLinearGradient(padLeft, 0, width - padRight, 0);
     trailGradient.addColorStop(0, colorWithAlpha(sourceColor, 0.10));
     trailGradient.addColorStop(0.32, colorWithAlpha(sourceColor, 0.40));
-    trailGradient.addColorStop(1, sourceSecondary);
+    trailGradient.addColorStop(1, sourceColor);
     context.strokeStyle = trailGradient;
     context.lineWidth = Math.max(2, pixelRatio * 1.5);
     context.stroke();
@@ -4256,8 +5364,8 @@
       latestPoint.x, latestPoint.y, 0,
       latestPoint.x, latestPoint.y, 13 * pixelRatio,
     );
-    glow.addColorStop(0, colorWithAlpha(sourceSecondary, 0.55));
-    glow.addColorStop(1, colorWithAlpha(sourceSecondary, 0));
+    glow.addColorStop(0, colorWithAlpha(sourceColor, 0.55));
+    glow.addColorStop(1, colorWithAlpha(sourceColor, 0));
     context.beginPath();
     context.arc(latestPoint.x, latestPoint.y, 13 * pixelRatio, 0, Math.PI * 2);
     context.fillStyle = glow;
@@ -4266,7 +5374,7 @@
     context.arc(latestPoint.x, latestPoint.y, 5.5 * pixelRatio, 0, Math.PI * 2);
     context.fillStyle = currentTheme() === "dark" ? "#121613" : "#fbfcfa";
     context.fill();
-    context.strokeStyle = sourceSecondary;
+    context.strokeStyle = sourceColor;
     context.lineWidth = Math.max(2, pixelRatio * 1.7);
     context.stroke();
 
@@ -4280,7 +5388,11 @@
 
   function drawStackedSignal(context, canvas, definition, options) {
     const activeColors = sourceColors(app.activeSources.get(app.selectedSourceId));
-    const axisColors = [activeColors.primary, activeColors.secondary, mixHexColors(activeColors.primary, activeColors.secondary)];
+    const axisColors = [
+      activeColors.breathing,
+      colorWithAlpha(activeColors.breathing, 0.76),
+      colorWithAlpha(activeColors.breathing, 0.54),
+    ];
     const commonEnd = Math.max(...definition.channels.map((channel) => (
       Number(buffers[channel.buffer]?.latestTimestamp()) || 0
     )));
@@ -4382,54 +5494,343 @@
     return [...app.activeSources.values()].find((source) => deviceProfileForSource(source).id === profileId) || null;
   }
 
+  function pointsFromBuffer(buffer, start = Number.NEGATIVE_INFINITY, end = Number.POSITIVE_INFINITY) {
+    if (!buffer?.length) return [];
+    const points = [];
+    for (let index = 0; index < buffer.length; index += 1) {
+      const timestamp = buffer.tailTimestamp(index, buffer.length);
+      if (timestamp < start || timestamp > end) continue;
+      points.push({
+        timestamp,
+        value: buffer.tailValue(index, buffer.length),
+        gapBefore: buffer.tailGapBefore(index, buffer.length),
+      });
+    }
+    return points;
+  }
+
+  function breathingRawSeries(entry, end = Number.POSITIVE_INFINITY) {
+    const profileId = deviceProfileForSource(entry.source).id;
+    if (profileId === "polar") {
+      const presentation = breathingPresentation.get(entry.source.id);
+      const projection = (presentation?.points || [])
+        .filter((point) => point.timestamp <= end && Number.isFinite(point.projectionG))
+        .map((point) => ({
+          timestamp: point.timestamp,
+          value: point.projectionG,
+          gapBefore: point.gapBefore,
+        }));
+      if (projection.length > 1) {
+        return {
+          points: projection,
+          kind: "polar-projection",
+          minimumSpan: 0.0025,
+          fresh: presentationFresh(presentation),
+          latestTimestamp: projection.at(-1).timestamp,
+          lastArrivalSeconds: presentation.lastArrivalSeconds,
+        };
+      }
+      const fallback = entry.buffers[entry.visualId];
+      const points = pointsFromBuffer(fallback, Number.NEGATIVE_INFINITY, end);
+      return {
+        points,
+        kind: "polar-volume-fallback",
+        minimumSpan: 0.08,
+        fresh: Number.isFinite(fallback?.lastArrivalSeconds)
+          && performance.now() / 1000 - fallback.lastArrivalSeconds <= BREATHING_PRESENTATION_FRESH_SECONDS,
+        latestTimestamp: points.at(-1)?.timestamp,
+        lastArrivalSeconds: fallback?.lastArrivalSeconds,
+      };
+    }
+    const force = entry.buffers.raw_force;
+    const forcePoints = pointsFromBuffer(force, Number.NEGATIVE_INFINITY, end);
+    if (forcePoints.length > 1) {
+      return {
+        points: forcePoints,
+        kind: "vernier-force",
+        minimumSpan: 0.02,
+        fresh: Number.isFinite(force.lastArrivalSeconds)
+          && performance.now() / 1000 - force.lastArrivalSeconds <= BREATHING_PRESENTATION_FRESH_SECONDS,
+        latestTimestamp: forcePoints.at(-1).timestamp,
+        lastArrivalSeconds: force.lastArrivalSeconds,
+      };
+    }
+    const fallback = entry.buffers[entry.visualId];
+    const points = pointsFromBuffer(fallback, Number.NEGATIVE_INFINITY, end);
+    return {
+      points,
+      kind: "vernier-volume-fallback",
+      minimumSpan: 0.08,
+      fresh: Number.isFinite(fallback?.lastArrivalSeconds)
+        && performance.now() / 1000 - fallback.lastArrivalSeconds <= BREATHING_PRESENTATION_FRESH_SECONDS,
+      latestTimestamp: points.at(-1)?.timestamp,
+      lastArrivalSeconds: fallback?.lastArrivalSeconds,
+    };
+  }
+
+  function estimatedRawHostNow(raw, renderClock) {
+    if (!Number.isFinite(raw?.latestTimestamp)) return null;
+    if (!Number.isFinite(raw?.lastArrivalSeconds)) return raw.latestTimestamp;
+    return raw.latestTimestamp + Math.max(0, renderClock - raw.lastArrivalSeconds);
+  }
+
+  function updateAutomaticBreathingAlignment(entry, referenceEntry, candidateRaw, referenceRaw) {
+    const sourceId = entry.source.id;
+    const alignment = breathingAlignmentForSource(sourceId);
+    if (alignment.mode !== "auto") {
+      alignment.status = "manual";
+      updateBreathingAlignmentStatus(sourceId);
+      return;
+    }
+    if (!referenceEntry || !referenceRaw?.points.length) {
+      alignment.status = "learning";
+      alignment.reason = "waiting for Vernier reference";
+      updateBreathingAlignmentStatus(sourceId);
+      return;
+    }
+    if (!candidateRaw.fresh || !referenceRaw.fresh) {
+      alignment.status = "stale";
+      alignment.reason = "one or more inputs stopped updating";
+      updateBreathingAlignmentStatus(sourceId);
+      return;
+    }
+    if (alignment.referenceId !== referenceEntry.source.id) {
+      resetAutomaticBreathingAlignment(sourceId, "new Vernier reference · collecting overlap");
+      alignment.referenceId = referenceEntry.source.id;
+    }
+    const now = performance.now() / 1000;
+    if (now - alignment.lastEvaluatedAt < 1) return;
+    alignment.lastEvaluatedAt = now;
+    const evidence = breathingComparison.alignmentEvidence(
+      referenceRaw.points.slice(-MAX_BREATHING_PRESENTATION_POINTS),
+      candidateRaw.points.slice(-MAX_BREATHING_PRESENTATION_POINTS),
+      {
+        minOverlapSeconds: 15,
+        minimumPairs: 100,
+        minimumReversals: 4,
+        rateHz: 10,
+        maxGapSeconds: 0.5,
+        referenceMinimumSpan: referenceRaw.minimumSpan,
+        candidateMinimumSpan: candidateRaw.minimumSpan,
+        minimumCorrelation: 0.55,
+        minimumHalfCorrelation: 0.30,
+        provisionalCorrelation: 0.18,
+      },
+    );
+    alignment.correlation = Number.isFinite(evidence.correlation) ? evidence.correlation : null;
+    alignment.reason = evidence.reason;
+
+    if (evidence.status === "flat") {
+      alignment.status = "flat";
+      updateBreathingAlignmentStatus(sourceId);
+      return;
+    }
+    if (!evidence.sign) {
+      alignment.candidateSign = null;
+      alignment.candidateKind = null;
+      alignment.stablePasses = 0;
+      if (alignment.sign != null || alignment.provisionalSign != null) {
+        alignment.conflictPasses += 1;
+        alignment.status = alignment.conflictPasses >= 3 ? "uncertain" : alignment.status;
+      } else {
+        alignment.status = evidence.status;
+      }
+      updateBreathingAlignmentStatus(sourceId);
+      return;
+    }
+
+    const kind = evidence.ready ? "aligned" : "provisional";
+    if (alignment.candidateSign === evidence.sign && alignment.candidateKind === kind) {
+      alignment.stablePasses += 1;
+    } else {
+      alignment.candidateSign = evidence.sign;
+      alignment.candidateKind = kind;
+      alignment.stablePasses = 1;
+    }
+    const requiredPasses = kind === "aligned" ? 3 : 4;
+    if (alignment.stablePasses >= requiredPasses) {
+      if (kind === "aligned") {
+        if (alignment.sign == null || alignment.sign === evidence.sign) {
+          alignment.sign = evidence.sign;
+          alignment.provisionalSign = null;
+          alignment.status = "aligned";
+          alignment.conflictPasses = 0;
+        } else {
+          alignment.status = "uncertain";
+        }
+      } else if (alignment.sign == null
+        && (alignment.provisionalSign == null || alignment.provisionalSign === evidence.sign)) {
+        alignment.provisionalSign = evidence.sign;
+        alignment.status = "provisional";
+        alignment.conflictPasses = 0;
+      } else if (alignment.sign == null && alignment.provisionalSign !== evidence.sign) {
+        alignment.status = "uncertain";
+      }
+    } else if (alignment.sign == null && alignment.provisionalSign == null) {
+      alignment.status = "learning";
+      alignment.reason = `${kind === "aligned" ? "strong" : "weak"} direction candidate ${alignment.stablePasses}/${requiredPasses}`;
+    }
+    updateBreathingAlignmentStatus(sourceId);
+  }
+
+  function prepareBreathingComparisonSeries(entries, seconds, canvasWidth) {
+    const rawBySource = new Map(entries.map((entry) => [entry.source.id, breathingRawSeries(entry)]));
+    const referenceEntry = entries.find((entry) => deviceProfileForSource(entry.source).id === "vernier") || null;
+    const referenceRaw = referenceEntry ? rawBySource.get(referenceEntry.source.id) : null;
+    for (const entry of entries) {
+      if (deviceProfileForSource(entry.source).id === "polar") {
+        updateAutomaticBreathingAlignment(entry, referenceEntry, rawBySource.get(entry.source.id), referenceRaw);
+      }
+    }
+
+    const renderClock = performance.now() / 1000;
+    const estimatedHostNow = entries.map((entry) => {
+      const raw = rawBySource.get(entry.source.id);
+      const presentation = breathingPresentation.get(entry.source.id);
+      if (presentation?.points.length > 1) {
+        return estimatedPresentationHostNow(presentation, renderClock);
+      }
+      return estimatedRawHostNow(raw, renderClock);
+    }).filter(Number.isFinite);
+    // All series share mapped host time. Advance one delayed playhead at the
+    // renderer cadence—even between Vernier's 10 Hz packets—while each
+    // resampler still stops at its own newest observed point. This scrolls and
+    // interpolates continuously without holding or inventing future samples.
+    const delaySeconds = Math.max(0, Number(app.breathingPresentationSettings.delaySeconds) || 0.18);
+    const commonEnd = Math.max(0, ...estimatedHostNow) - delaySeconds;
+    const start = commonEnd - seconds;
+    const boundsStart = commonEnd - BREATHING_ALIGNMENT_WINDOW_SECONDS;
+    const targetRate = Math.max(30, Math.min(60, Math.ceil(canvasWidth / Math.max(1, seconds))));
+
+    const series = entries.map((entry) => {
+      const raw = rawBySource.get(entry.source.id);
+      const boundsPoints = raw.points.filter((point) => point.timestamp >= boundsStart && point.timestamp <= commonEnd);
+      const bounds = breathingComparison.robustBounds(boundsPoints, raw.minimumSpan);
+      const invert = deviceProfileForSource(entry.source).id === "polar"
+        && effectiveBreathingSign(entry.source.id) < 0;
+      const result = breathingComparison.resampleSeries(raw.points, {
+        start,
+        end: commonEnd,
+        bounds,
+        rateHz: targetRate,
+        maxGapSeconds: 0.5,
+        smoothingTauSeconds: 0.12,
+        invert,
+      });
+      if (!raw.fresh && deviceProfileForSource(entry.source).id === "polar") {
+        const alignment = breathingAlignmentForSource(entry.source.id);
+        alignment.status = "stale";
+        alignment.reason = "no fresh Polar breathing samples";
+        updateBreathingAlignmentStatus(entry.source.id);
+      } else if (!bounds.ready && deviceProfileForSource(entry.source).id === "polar") {
+        const alignment = breathingAlignmentForSource(entry.source.id);
+        alignment.status = "flat";
+        alignment.reason = "projection is flat or saturated";
+        updateBreathingAlignmentStatus(entry.source.id);
+      }
+      return {
+        label: entry.source.label,
+        color: entry.color,
+        buffer: entry.buffers[entry.visualId],
+        source: entry.source,
+        points: result.points,
+        temporal: { count: result.points.length, start, end: commonEnd, duration: seconds },
+        displayValue: result.points.at(-1)?.value,
+        rawKind: raw.kind,
+        fresh: raw.fresh,
+      };
+    });
+    return { series, commonEnd };
+  }
+
   function drawCompositeSignal(context, canvas, definition, options) {
     const primarySource = app.activeSources.get(app.selectedSourceId);
-    const comparisonSource = app.activeSources.get(app.comparisonSourceId);
-    const comparisonVisualId = comparisonVisualIdForSource(comparisonSource, definition);
-    const primaryBuffers = primarySource ? buffersForSource(primarySource.id) : null;
-    const comparisonBuffers = comparisonSource ? buffersForSource(comparisonSource.id) : null;
-    if (!primarySource || !comparisonSource || !comparisonVisualId) {
-      app.comparisonSourceId = null;
+    const comparisonEntries = selectedComparisonEntries(definition);
+    if (!primarySource || !comparisonEntries.length) {
+      app.comparisonSourceIds.clear();
       rebuildComparisonOptions();
       updateVisualLabels();
       return;
     }
-    const primaryColors = sourceColors(primarySource);
-    const comparisonColors = sourceColors(comparisonSource);
-    const axisColor = (colors, index) => index === 0
-      ? colors.primary : index === 1 ? colors.secondary : mixHexColors(colors.primary, colors.secondary);
-    const lanes = app.selectedVisual === "raw_acc"
-      ? ["X", "Y", "Z"].map((label, index) => ({
-          label: `${label} · mg`,
+    const entries = [
+      { source: primarySource, visualId: app.selectedVisual },
+      ...comparisonEntries,
+    ].map((entry) => ({
+      ...entry,
+      buffers: buffersForSource(entry.source.id),
+      color: sourceSignalColor(entry.source, visualDefinitions[entry.visualId] || definition),
+    }));
+    const breathingComparisonActive = definition.comparisonKey === "breathing_waveform_01";
+    const separate = app.comparisonLayout === "separate";
+    let lanes;
+    let breathingPrepared = null;
+    if (app.selectedVisual === "raw_acc") {
+      if (separate) {
+        lanes = entries.map((entry) => ({
+          label: `${entry.source.label} · RAW ACC · mg`,
           symmetric: true,
-          series: [
-            { label: primarySource.label, color: axisColor(primaryColors, index), buffer: primaryBuffers?.[`acc_${label.toLowerCase()}`] },
-            { label: comparisonSource.label, color: axisColor(comparisonColors, index), buffer: comparisonBuffers?.[`acc_${label.toLowerCase()}`] },
-          ],
-        }))
-      : [{
-          label: definition.comparisonKey === "breathing_waveform_01"
-            ? "RELATIVE BREATHING · 0–1"
-            : `${definition.label.toUpperCase()} · ${definition.unit}`,
-          ...(definition.comparisonKey === "breathing_waveform_01" ? { fixedRange: [0, 1] } : {}),
-          symmetric: definition.symmetric,
-          series: [
-            { label: primarySource.label, color: primaryColors.primary, secondary: primaryColors.secondary, buffer: primaryBuffers?.[app.selectedVisual] },
-            { label: comparisonSource.label, color: comparisonColors.primary, secondary: comparisonColors.secondary, buffer: comparisonBuffers?.[comparisonVisualId] },
-          ],
-        }];
+          series: ["X", "Y", "Z"].map((axis, index) => ({
+            label: axis,
+            color: colorWithAlpha(entry.color, 1 - index * 0.22),
+            dash: index === 1 ? [7, 4] : index === 2 ? [2, 4] : [],
+            buffer: entry.buffers[`acc_${axis.toLowerCase()}`],
+          })),
+        }));
+      } else {
+        lanes = ["X", "Y", "Z"].map((axis) => ({
+          label: `${axis} · mg`,
+          symmetric: true,
+          series: entries.map((entry) => ({
+            label: entry.source.label,
+            color: entry.color,
+            buffer: entry.buffers[`acc_${axis.toLowerCase()}`],
+          })),
+        }));
+      }
+    } else {
+      breathingPrepared = breathingComparisonActive
+        ? prepareBreathingComparisonSeries(entries, options.displayWindowSeconds, canvas.width)
+        : null;
+      const traces = breathingPrepared?.series || entries.map((entry) => ({
+          label: entry.source.label,
+          color: entry.color,
+          buffer: entry.buffers[entry.visualId],
+          source: entry.source,
+        }));
+      const laneLabel = breathingComparisonActive
+        ? "COMPARATIVE BREATHING · PER-SOURCE 0–1"
+        : `${definition.label.toUpperCase()} · ${definition.unit}`;
+      const range = breathingComparisonActive ? { fixedRange: [0, 1] } : {};
+      lanes = separate
+        ? traces.map((trace) => ({
+            label: `${trace.source.label} · ${laneLabel}`,
+            ...range,
+            symmetric: definition.symmetric,
+            series: [trace],
+          }))
+        : [{
+            label: laneLabel,
+            ...range,
+            symmetric: definition.symmetric,
+            series: traces,
+          }];
+    }
     const allSeries = lanes.flatMap((lane) => lane.series).filter((series) => series.buffer);
-    const commonEnd = Math.max(0, ...allSeries.map((series) => Number(series.buffer.latestTimestamp()) || 0));
+    const commonEnd = breathingPrepared?.commonEnd
+      ?? Math.max(0, ...allSeries.map((series) => Number(series.buffer.latestTimestamp()) || 0));
     const seconds = options.displayWindowSeconds;
     for (const series of allSeries) {
+      if (breathingPrepared && Array.isArray(series.points)) continue;
       series.temporal = temporalWindow(series.buffer, seconds, commonEnd);
       series.points = temporalEnvelopePoints(series.buffer, series.temporal, canvas.width);
     }
     const hasData = allSeries.some((series) => series.temporal.count > 1);
     elements["chart-empty"].hidden = hasData;
     elements["visual-current"].textContent = app.selectedVisual === "raw_acc"
-      ? `${primarySource.label} ${formatValue(primaryBuffers?.acc_x?.latest(), 0)} / ${formatValue(primaryBuffers?.acc_y?.latest(), 0)} / ${formatValue(primaryBuffers?.acc_z?.latest(), 0)} · ${comparisonSource.label} ${formatValue(comparisonBuffers?.acc_x?.latest(), 0)} / ${formatValue(comparisonBuffers?.acc_y?.latest(), 0)} / ${formatValue(comparisonBuffers?.acc_z?.latest(), 0)}`
-      : `${primarySource.label} ${formatValue(primaryBuffers?.[app.selectedVisual]?.latest(), 3)} · ${comparisonSource.label} ${formatValue(comparisonBuffers?.[comparisonVisualId]?.latest(), 3)}`;
+      ? entries.map((entry) => `${entry.source.label} ${formatValue(entry.buffers.acc_x?.latest(), 0)} / ${formatValue(entry.buffers.acc_y?.latest(), 0)} / ${formatValue(entry.buffers.acc_z?.latest(), 0)}`).join(" · ")
+      : breathingPrepared
+        ? breathingPrepared.series.map((series) => `${series.source.label} ${formatValue(series.displayValue, 3)}`).join(" · ")
+        : entries.map((entry) => `${entry.source.label} ${formatValue(entry.buffers[entry.visualId]?.latest(), 3)}`).join(" · ");
     elements["y-max"].textContent = "";
     elements["y-min"].textContent = "";
 
@@ -4438,6 +5839,34 @@
     context.clearRect(0, 0, width, height);
     canvas.dataset.visualMode = "time-aligned-comparison";
     canvas.dataset.composite = definition.comparisonKey || app.selectedVisual;
+    canvas.dataset.comparisonLayout = app.comparisonLayout;
+    canvas.dataset.comparisonSources = entries.map((entry) => entry.source.id).join("|");
+    canvas.dataset.traceColors = entries.map((entry) => entry.color).join("|");
+    canvas.dataset.laneCount = String(lanes.length);
+    if (breathingPrepared) {
+      canvas.dataset.comparisonEnd = String(commonEnd);
+      canvas.dataset.latestTracePoint = String(Math.max(
+        0,
+        ...breathingPrepared.series.map((series) => Number(series.points.at(-1)?.timestamp) || 0),
+      ));
+      canvas.dataset.alignmentStatuses = breathingPrepared.series.map((series) => (
+        deviceProfileForSource(series.source).id === "polar"
+          ? breathingAlignmentForSource(series.source.id).status
+          : "reference"
+      )).join("|");
+      canvas.dataset.alignmentSigns = breathingPrepared.series.map((series) => (
+        deviceProfileForSource(series.source).id === "polar"
+          ? effectiveBreathingSign(series.source.id)
+          : 1
+      )).join("|");
+      canvas.dataset.breathingRawKinds = breathingPrepared.series.map((series) => series.rawKind).join("|");
+    } else {
+      delete canvas.dataset.comparisonEnd;
+      delete canvas.dataset.latestTracePoint;
+      delete canvas.dataset.alignmentStatuses;
+      delete canvas.dataset.alignmentSigns;
+      delete canvas.dataset.breathingRawKinds;
+    }
     if (!hasData) return;
 
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
@@ -4470,6 +5899,7 @@
         max += padding;
       }
       const range = max - min || 1;
+      const boundaryInset = lane.fixedRange ? Math.max(2, Math.round(2 * pixelRatio)) : 0;
 
       if (laneIndex > 0) {
         const separatorY = laneTop - laneGap / 2;
@@ -4495,29 +5925,16 @@
         let pathStarted = false;
         for (const point of series.points) {
           const x = padLeft + ((point.timestamp - (commonEnd - seconds)) / seconds) * drawWidth;
-          const y = laneTop + (1 - (point.value - min) / range) * laneHeight;
+          const rawY = laneTop + (1 - (point.value - min) / range) * laneHeight;
+          const y = Math.max(laneTop + boundaryInset, Math.min(laneBottom - boundaryInset, rawY));
           if (!pathStarted || point.gapBefore) context.moveTo(x, y); else context.lineTo(x, y);
           pathStarted = true;
         }
-        if (series.secondary) {
-          const gradient = context.createLinearGradient(padLeft, 0, width - padRight, 0);
-          gradient.addColorStop(0, colorWithAlpha(series.color, 0.25));
-          gradient.addColorStop(1, series.secondary);
-          context.strokeStyle = gradient;
-        } else {
-          context.strokeStyle = series.color;
-        }
+        context.strokeStyle = series.color;
+        context.setLineDash((series.dash || []).map((value) => value * pixelRatio));
         context.lineWidth = Math.max(1.5, pixelRatio);
         context.stroke();
-        if (series.secondary) {
-          const latest = series.points[series.points.length - 1];
-          const x = padLeft + ((latest.timestamp - (commonEnd - seconds)) / seconds) * drawWidth;
-          const y = laneTop + (1 - (latest.value - min) / range) * laneHeight;
-          context.beginPath();
-          context.arc(x, y, Math.max(2.5, 2 * pixelRatio), 0, Math.PI * 2);
-          context.fillStyle = series.secondary;
-          context.fill();
-        }
+        context.setLineDash([]);
       }
     });
     context.fillStyle = canvasTextColor();
@@ -4525,7 +5942,11 @@
     context.textAlign = "left";
     context.fillText(`−${Number(seconds).toFixed(seconds < 10 ? 1 : 0)} s`, padLeft, height - Math.round(8 * pixelRatio));
     context.textAlign = "right";
-    context.fillText("NOW · HOST MONOTONIC", width - padRight, height - Math.round(8 * pixelRatio));
+    context.fillText(
+      breathingPrepared ? "DISPLAY NOW · BOUNDED 180 ms DELAY" : "NOW · HOST MONOTONIC",
+      width - padRight,
+      height - Math.round(8 * pixelRatio),
+    );
     context.restore();
   }
 
@@ -4663,8 +6084,16 @@
   async function renderInterfaceScenario(name) {
     ensureRendererPolarSource();
     if (name === "multiple-colored-sources") {
-      app.outputs = new Set(["raw_ecg", "raw_acc", "raw_force"]);
-      app.comparisonSourceId = null;
+      app.activeSources.clear();
+      sourceBuffers.clear();
+      breathingPresentation.clear();
+      breathingAlignments.clear();
+      vernierDisplayProcessors.clear();
+      app.selectedSourceId = null;
+      buffers = createBufferBank();
+      app.outputs = new Set(["raw_ecg", "raw_acc", "raw_force", "breathing_volume"]);
+      app.comparisonSourceIds.clear();
+      app.comparisonLayout = "overlay";
       const polarSource = sourceWithPalette(
         { id: "source-1", slot: "source-1", label: "Source 1", inputKind: "polarH10" },
         paletteById("ocean"),
@@ -4672,6 +6101,10 @@
       const vernierSource = sourceWithPalette(
         { id: "source-2", slot: "source-2", label: "Source 2", inputKind: "vernierGoDirect" },
         paletteById("sunset"),
+      );
+      const secondPolarSource = sourceWithPalette(
+        { id: "source-3", slot: "source-3", label: "Source 3", inputKind: "polarH10" },
+        paletteById("meadow"),
       );
       handleNativeEvent({
         kind: "connection", source: polarSource, connected: true, streaming: true,
@@ -4682,6 +6115,11 @@
         deviceName: "GDX-RB A", batteryPercent: null, deviceModel: "GDX-RB",
         sensorNumber: 1, sensorName: "Force", sensorUnit: "N", samplePeriodUs: 100000,
         message: "Verified Force (N) on channel 1 is streaming at 10.0 Hz",
+      });
+      handleNativeEvent({
+        kind: "connection", source: secondPolarSource, connected: true, streaming: true,
+        deviceName: "Polar H10 B", batteryPercent: 76,
+        message: "Raw ECG and accelerometer are streaming",
       });
       handleNativeEvent({
         kind: "force", source: vernierSource, sensorNumber: 1, samplePeriodUs: 100000,
@@ -4720,6 +6158,10 @@
           sourceId: widget.dataset.sourceId,
           profile: widget.dataset.deviceProfile,
           color: widget.style.getPropertyValue("--source-color"),
+          cardiacColor: widget.style.getPropertyValue("--source-cardiac"),
+          breathingColor: widget.style.getPropertyValue("--source-breathing"),
+          swatchCount: widget.querySelectorAll(".device-color-swatches i").length,
+          pickerLabel: widget.querySelector(".device-color-button select")?.getAttribute("aria-label") || "",
           hasKeepConnected: Boolean(widget.querySelector(".device-widget-toggle")),
           keepConnected: widget.querySelector(".device-widget-toggle input")?.checked ?? null,
         })),
@@ -4731,8 +6173,10 @@
         breathingValue: elements["vernier-breathing-value"].textContent,
         selectedVisual: app.selectedVisual,
         visualOptions: [...elements["visual-source"].options].map((option) => option.value),
-        comparisonOptions: [...elements["visual-compare-source"].options].map((option) => option.value),
-        comparisonHidden: elements["visual-compare-source"].hidden,
+        comparisonOptions: [...elements["visual-compare-options"].querySelectorAll("input[data-source-id]")]
+          .map((input) => input.dataset.sourceId),
+        comparisonSelected: [...app.comparisonSourceIds],
+        comparisonHidden: elements["visual-compare-control"].hidden,
         deviceProfile: document.body.dataset.deviceProfile,
         deviceProfileTitle: elements["device-profile-title"].textContent,
         rawCardVisibility: {
@@ -4753,11 +6197,25 @@
         polarSwitch,
       };
     }
-    if (name === "multi-source-comparison") {
+    if (["multi-source-comparison", "multi-source-comparison-overlay", "multi-source-comparison-separate"].includes(name)) {
       await renderInterfaceScenario("multiple-colored-sources");
       const polarSource = app.activeSources.get("source-1");
       const vernierSource = app.activeSources.get("source-2");
+      const secondPolarSource = app.activeSources.get("source-3");
       const commonNewestNs = 30_000_000_000;
+      const presentationCount = 6_000;
+      const makePolarPresentation = (phase = 0) => Array.from({ length: presentationCount }, (_, index) => {
+        const mappedHostTimestampNs = commonNewestNs - (presentationCount - index - 1) * 5_000_000;
+        const timestampSeconds = mappedHostTimestampNs / 1_000_000_000;
+        const physicalBreathing = Math.sin(timestampSeconds * Math.PI / 2 + phase);
+        const clippedVolume = Math.max(0, Math.min(1, 0.5 - physicalBreathing * 2.4));
+        return {
+          sourceTimestampNs: String(mappedHostTimestampNs),
+          mappedHostTimestampNs: String(mappedHostTimestampNs),
+          volume01: clippedVolume,
+          projectionG: -0.035 * physicalBreathing,
+        };
+      });
       handleNativeEvent({
         kind: "accelerometer",
         source: polarSource,
@@ -4769,13 +6227,35 @@
           clockUncertaintyNs: "1800000",
           gapBefore: false,
         },
+        breathingPresentationPoints: makePolarPresentation(),
         samples: Array.from({ length: 800 }, (_, index) => ({
           xMg: Math.round(Math.sin(index / 17) * 105),
           yMg: Math.round(Math.cos(index / 23) * 75 + 25),
           zMg: Math.round(Math.sin(index / 31) * 130 - 35),
         })),
       });
-      const forceValues = Array.from({ length: 40 }, (_, index) => 3.1 + Math.sin(index / 5) * 0.48);
+      handleNativeEvent({
+        kind: "accelerometer",
+        source: secondPolarSource,
+        timing: {
+          hostReceiveTimestampNs: String(commonNewestNs + 9_000_000),
+          mappedHostTimestampNs: String(commonNewestNs),
+          samplePeriodNs: "5000000",
+          clockQuality: "locked",
+          clockUncertaintyNs: "1900000",
+          gapBefore: false,
+        },
+        breathingPresentationPoints: makePolarPresentation(0.08),
+        samples: Array.from({ length: 800 }, (_, index) => ({
+          xMg: Math.round(Math.sin(index / 19 + 0.8) * 92),
+          yMg: Math.round(Math.cos(index / 27 + 0.35) * 82 + 18),
+          zMg: Math.round(Math.sin(index / 35 + 1.15) * 118 - 24),
+        })),
+      });
+      const forceValues = Array.from({ length: 300 }, (_, index) => {
+        const timestampSeconds = (commonNewestNs / 1_000_000_000) - (299 - index) * 0.1;
+        return 3.1 + Math.sin(timestampSeconds * Math.PI / 2) * 0.48;
+      });
       handleNativeEvent({
         kind: "force",
         source: vernierSource,
@@ -4797,43 +6277,80 @@
         Array.from({ length: 400 }, (_, index) => 0.5 + Math.sin(index / 28) * 0.32),
         { mappedHostTimestampNs: String(commonNewestNs), samplePeriodNs: "50000000", gapBefore: false },
       );
+      const secondPolarBreathing = buffersForSource("source-3").breathing_volume
+        || (buffersForSource("source-3").breathing_volume = createTemporalBuffer("breathing_volume"));
+      secondPolarBreathing.pushMany(
+        Array.from({ length: 400 }, (_, index) => 0.5 + Math.sin(index / 24 + 1.35) * 0.27),
+        { mappedHostTimestampNs: String(commonNewestNs), samplePeriodNs: "50000000", gapBefore: false },
+      );
       app.outputs.add("breathing_volume");
       selectSource("source-1");
       app.selectedVisual = "breathing_volume";
       rebuildVisualOptions();
       elements["visual-source"].value = app.selectedVisual;
-      app.comparisonSourceId = "source-2";
+      app.comparisonSourceIds.clear();
+      app.comparisonSourceIds.add("source-2");
+      app.comparisonSourceIds.add("source-3");
       rebuildComparisonOptions();
-      elements["visual-compare-source"].value = app.comparisonSourceId;
+      const breathingComparisonOptions = [...elements["visual-compare-options"].querySelectorAll("input[data-source-id]")]
+        .map((input) => input.dataset.sourceId);
+      const incompatibleComparisonOptions = {};
+      for (const visualId of ["raw_ecg", "raw_acc"]) {
+        app.selectedVisual = visualId;
+        rebuildComparisonOptions();
+        incompatibleComparisonOptions[visualId] = [...elements["visual-compare-options"].querySelectorAll("input[data-source-id]")]
+          .map((input) => input.dataset.sourceId);
+      }
+      app.selectedVisual = "breathing_volume";
+      app.comparisonSourceIds.clear();
+      app.comparisonSourceIds.add("source-2");
+      app.comparisonSourceIds.add("source-3");
+      app.comparisonLayout = name === "multi-source-comparison-separate" ? "separate" : "overlay";
+      setBreathingAlignmentMode("source-1", "flip");
+      setBreathingAlignmentMode("source-3", "flip");
+      rebuildComparisonOptions();
       updateVisualLabels();
       resizeCanvas();
       drawSignal();
       await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
       resizeCanvas();
       drawSignal();
-      const breathingComparisonOptions = [...elements["visual-compare-source"].options].map((option) => option.value);
-      const incompatibleComparisonOptions = {};
-      for (const visualId of ["raw_ecg", "raw_acc"]) {
-        app.selectedVisual = visualId;
-        rebuildComparisonOptions();
-        incompatibleComparisonOptions[visualId] = [...elements["visual-compare-source"].options].map((option) => option.value);
-      }
-      app.selectedVisual = "breathing_volume";
-      app.comparisonSourceId = "source-2";
-      rebuildComparisonOptions();
-      updateVisualLabels();
+      const firstComparisonEnd = Number(elements["signal-canvas"].dataset.comparisonEnd);
+      await new Promise((resolve) => window.setTimeout(resolve, 45));
+      drawSignal();
+      const secondComparisonEnd = Number(elements["signal-canvas"].dataset.comparisonEnd);
       return {
         scenario: name,
         selectedVisual: app.selectedVisual,
         visualOptions: [...elements["visual-source"].options].map((option) => option.value),
         comparisonOptions: breathingComparisonOptions,
+        comparisonSelected: [...app.comparisonSourceIds],
+        comparisonCount: elements["visual-compare-count"].textContent,
+        selectAllChecked: elements["visual-compare-all"].checked,
         incompatibleComparisonOptions,
         visualMode: elements["signal-canvas"].dataset.visualMode,
         composite: elements["signal-canvas"].dataset.composite,
+        comparisonLayout: elements["signal-canvas"].dataset.comparisonLayout,
+        comparisonSources: elements["signal-canvas"].dataset.comparisonSources?.split("|") || [],
+        traceColors: elements["signal-canvas"].dataset.traceColors?.split("|") || [],
+        alignmentStatuses: elements["signal-canvas"].dataset.alignmentStatuses?.split("|") || [],
+        alignmentSigns: (elements["signal-canvas"].dataset.alignmentSigns?.split("|") || []).map(Number),
+        breathingRawKinds: elements["signal-canvas"].dataset.breathingRawKinds?.split("|") || [],
+        alignmentControls: [...elements["visual-compare-options"].querySelectorAll("select[data-breathing-alignment-source-id]")]
+          .map((select) => ({ sourceId: select.dataset.breathingAlignmentSourceId, value: select.value })),
+        laneCount: Number(elements["signal-canvas"].dataset.laneCount || 0),
+        smoothPlayheadAdvance: secondComparisonEnd - firstComparisonEnd,
+        comparisonEnd: secondComparisonEnd,
+        latestTracePoint: Number(elements["signal-canvas"].dataset.latestTracePoint),
         currentLabel: elements["visual-current"].textContent,
         canvasLabel: elements["signal-canvas"].getAttribute("aria-label"),
         chartClass: elements["chart-shell"].className,
-        legendLabels: [...elements["visual-legend"].querySelectorAll(".legend-item")].map((item) => item.textContent.trim()),
+        legendLabels: [...elements["visual-legend"].querySelectorAll(".legend-item strong")].map((item) => item.textContent.trim()),
+        legendColors: [...elements["visual-legend"].querySelectorAll(".legend-line")].map((item) => item.style.background),
+        layoutInputs: {
+          overlay: elements["visual-layout-overlay"].checked,
+          separate: elements["visual-layout-separate"].checked,
+        },
       };
     }
     if (name === "acc-primary-library") {
@@ -4913,6 +6430,12 @@
       elements["visual-source"].value = app.selectedVisual;
       updateVisualLabels();
       resizeCanvas();
+      // Keep this deterministic fixture focused on the canonical waveform
+      // fallback. Earlier renderer scenarios can leave source-time presentation
+      // points attached to the selected source, which would correctly take
+      // precedence in the real visualizer but make this scenario order-dependent.
+      breathingPresentation.delete(app.selectedSourceId);
+      breathingAlignments.delete(app.selectedSourceId);
       const breathingBuffer = ensureBuffer("breathing_volume");
       breathingBuffer.clear();
       breathingBuffer.pushMany(Array.from({ length: 240 }, (_, index) => (
@@ -4973,6 +6496,46 @@
     };
   }
 
+  async function probeComparisonReconnect() {
+    await renderInterfaceScenario("multi-source-comparison-overlay");
+    const device = { id: "renderer-polar-a", name: "Polar H10 A", kind: "polar" };
+    const source = { ...app.activeSources.get("source-1"), deviceId: device.id };
+    app.activeSources.set(source.id, source);
+    const contract = upsertDeviceContract(device);
+    contract.state = "live";
+    contract.attempt = 1;
+    contract.sourceId = source.id;
+    handleNativeEvent({
+      kind: "connection",
+      source,
+      connected: false,
+      streaming: false,
+      deviceName: device.name,
+      message: "Renderer connection interruption",
+    }, device);
+    clearContractTimer(contract);
+    const duringReconnect = {
+      selectedSourceId: app.selectedSourceId,
+      visibleSourceIds: [app.selectedSourceId, ...app.comparisonSourceIds].filter(Boolean),
+      restoreVisibleSourceIds: [...(contract.restoreVisibleSourceIds || [])],
+    };
+    handleNativeEvent({
+      kind: "connection",
+      source,
+      connected: true,
+      streaming: true,
+      deviceName: device.name,
+      batteryPercent: 88,
+      message: "Renderer stream restored",
+    }, device);
+    const restored = {
+      selectedSourceId: app.selectedSourceId,
+      visibleSourceIds: [app.selectedSourceId, ...app.comparisonSourceIds].filter(Boolean),
+    };
+    removeDeviceContract(device.id);
+    return { duringReconnect, restored };
+  }
+
   const initialization = initialize();
   if (isInterfaceRenderer) {
     window.PolarInterfaceRenderer = Object.freeze({
@@ -4985,6 +6548,8 @@
         "raw-accelerometer-stacked",
         "multiple-colored-sources",
         "multi-source-comparison",
+        "multi-source-comparison-overlay",
+        "multi-source-comparison-separate",
         "acc-primary-library",
         "metric-library-previews",
       ]),
@@ -4994,6 +6559,13 @@
         return renderInterfaceScenario(scenario);
       },
       metricOptions: (id) => structuredClone(metricOptionFor(id)),
+      connectionContractPolicy: () => ({
+        streamingConfirmationRequired: true,
+        readyTimeoutMilliseconds: CONNECTION_READY_TIMEOUT_MS,
+        retryDelaysMilliseconds: [...CONNECTION_RETRY_DELAYS_MS],
+      }),
+      probeConnectionQueue: probeSerializedConnectionQueue,
+      probeComparisonReconnect,
     });
   }
 })();

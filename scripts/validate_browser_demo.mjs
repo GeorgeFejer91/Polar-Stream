@@ -89,12 +89,21 @@ function stereoPcmWav(left, right, sampleRate) {
 async function connectMock(page) {
   const source = page.locator('.device-row[data-input-kind="mock"], .device-row.mock').first();
   await source.waitFor({ state: "visible" });
-  await source.click();
+  assert.equal(await page.locator("#connect-selected-button").isDisabled(), true);
+  await source.locator('input[type="checkbox"]').check();
+  assert.equal(await page.locator("#selected-device-count").textContent(), "1 selected");
+  assert.equal(await page.locator("#connect-selected-button").isEnabled(), true);
+  await page.locator("#connect-selected-button").click();
   await page.locator("#input-state").filter({ hasText: "Recorded preview looping" }).waitFor();
   await page.waitForFunction(() => document.querySelector("#sample-counter")?.textContent !== "0 samples");
   assert.equal(await page.locator("#chart-empty").isHidden(), true, "mock input did not activate the live chart");
   assert.notEqual(await page.locator("#raw-ecg-value").textContent(), "—", "mock ECG did not update");
   assert.notEqual(await page.locator("#raw-acc-z").textContent(), "—", "mock ACC did not update");
+}
+
+async function selectAndConnect(page, row) {
+  await row.locator('input[type="checkbox"]').check();
+  await page.locator("#connect-selected-button").click();
 }
 
 async function installFakeWebBluetooth(page) {
@@ -231,6 +240,7 @@ async function installFakeWebBluetooth(page) {
       blockNextChooserWithPolicy() { blockNextChooserByPolicy = true; },
       failNextGattConnect() { failGattConnectAttempts = 1; },
       useLegacyControlWrites() { characteristics.control.writeValueWithResponse = undefined; },
+      dropConnection() { server.disconnect(); },
       emitPmd(bytes) { characteristics.pmd.emit(bytes); },
       emitHeartRate(bytes) { characteristics.heartRate.emit(bytes); },
     };
@@ -516,7 +526,7 @@ try {
   }));
   assert.equal(browserEventContract.direct.schemaVersion, 2);
   assert.equal(browserEventContract.direct.event.source.palette.id, "ocean");
-  assert.equal(browserEventContract.direct.event.source.color, "#176B9E");
+  assert.equal(browserEventContract.direct.event.source.color, "#1368AA");
   assert.equal(browserEventContract.channel.event.source.palette.id, "ocean");
   await desktop.locator("#csv-destination-row").click();
   await desktop.locator("#browser-recorder-status").filter({ hasText: "REC" }).waitFor();
@@ -528,7 +538,7 @@ try {
   ]);
   const paletteBoundaryCsv = await readFile(await paletteBoundaryDownload.path(), "utf8");
   assert.match(paletteBoundaryCsv, /# schema_version,3/);
-  assert.match(paletteBoundaryCsv, /# source_palette,[^,]+,ocean,#176B9E,#2AA8B8,#7CCBFF,#72E4EA/);
+  assert.match(paletteBoundaryCsv, /# source_palette,[^,]+,ocean,#1368AA,#1368AA,#67B7F7,#67B7F7/);
   await desktop.locator("#browser-recorder-status").filter({ hasText: "REC" }).waitFor();
   await desktop.waitForFunction(() => window.PolarBrowserSession.status().rowCount >= 20);
   const [recordingDownload] = await Promise.all([
@@ -540,7 +550,7 @@ try {
   const recordingCsv = await readFile(recordingPath, "utf8");
   assert.match(recordingCsv, /^# Polar Stream browser recording/m);
   assert.match(recordingCsv, /# schema_version,3/);
-  assert.match(recordingCsv, /# source_palette,[^,]+,sunset,#B83E35,#C96815,#FF8E84,#FFB366/);
+  assert.match(recordingCsv, /# source_palette,[^,]+,sunset,#B43C4C,#B43C4C,#FF9292,#FF9292/);
   assert.match(recordingCsv, /host_timestamp_ms,relative_time_s,sensor_timestamp_ns,source_id,source_palette_id,stream/);
   assert.match(recordingCsv, /,raw_ecg,/);
   assert.match(recordingCsv, /,raw_acc,/);
@@ -676,37 +686,42 @@ try {
   });
   await installFakeWebBluetooth(bluetooth);
   await bluetooth.goto(baseUrl, { waitUntil: "networkidle" });
+  const availablePaletteIds = await bluetooth.locator("#device-list .device-palette-choice select")
+    .evaluateAll((selects) => selects.map((select) => select.value));
+  assert.equal(availablePaletteIds.length, 3, "expected three selectable input candidates");
+  assert.equal(new Set(availablePaletteIds).size, 3, "available devices did not receive unique default source colors");
   const webBluetoothRow = bluetooth.locator('.device-row[data-input-kind="web-bluetooth"]');
   assert.match(await webBluetoothRow.textContent(), /EXPERIMENTAL/);
-  assert.match(await webBluetoothRow.textContent(), /Connect/);
+  assert.match(await webBluetoothRow.textContent(), /Select/);
+  assert.equal(await webBluetoothRow.locator('input[type="checkbox"]').count(), 1);
   assert.equal(await bluetooth.locator("#scan-button span").textContent(), "Search devices");
   await bluetooth.locator("#scan-button").click();
   await bluetooth.waitForFunction(() => document.querySelector("#scan-button span")?.textContent === "Search devices");
   assert.equal(await bluetooth.evaluate(() => window.__polarFake.lastRequest ?? null), null, "Search opened a Bluetooth chooser before Connect");
   await bluetooth.evaluate(() => window.__polarFake.cancelNextChooser());
-  await webBluetoothRow.click();
-  await bluetooth.locator("#input-state").filter({ hasText: "Browser ready" }).waitFor();
-  assert.equal(await bluetooth.locator("#app-state-text").textContent(), "Browser inputs ready");
+  await selectAndConnect(bluetooth, webBluetoothRow);
+  await bluetooth.locator("#input-state").filter({ hasText: "Attention" }).waitFor();
+  assert.match(await bluetooth.locator("#app-state-text").textContent(), /needs attention/);
   assert.match(await bluetooth.locator("#connection-detail").textContent(), /No sensor was selected/);
   assert.equal(await bluetooth.locator(".toast.error").count(), 0, "chooser cancellation must not create an error toast");
   assert.equal(await bluetooth.locator("#scan-button span").textContent(), "Search devices");
   await bluetooth.evaluate(() => window.__polarFake.disableNextChooser());
-  await webBluetoothRow.click();
-  await bluetooth.locator("#input-state").filter({ hasText: "Error" }).waitFor();
-  assert.equal(await bluetooth.locator("#app-state-text").textContent(), "Connection failed");
+  await selectAndConnect(bluetooth, webBluetoothRow);
+  await bluetooth.locator("#input-state").filter({ hasText: "Attention" }).waitFor();
+  assert.match(await bluetooth.locator("#app-state-text").textContent(), /needs attention/);
   assert.match(await bluetooth.locator("#connection-detail").textContent(), /browser blocks Web Bluetooth/i);
   assert.equal(await bluetooth.locator(".toast.error").count(), 1, "a browser-level Bluetooth block must be visible as an error");
   await bluetooth.waitForFunction(() => !document.querySelector(".toast"));
   await bluetooth.evaluate(() => window.__polarFake.blockNextChooserWithPolicy());
-  await webBluetoothRow.click();
-  await bluetooth.locator("#input-state").filter({ hasText: "Error" }).waitFor();
+  await selectAndConnect(bluetooth, webBluetoothRow);
+  await bluetooth.locator("#input-state").filter({ hasText: "Attention" }).waitFor();
   assert.match(await bluetooth.locator("#connection-detail").textContent(), /embedding policy blocks Web Bluetooth/i);
   await bluetooth.waitForFunction(() => !document.querySelector(".toast"));
   await bluetooth.evaluate(() => {
     window.__polarFake.failNextGattConnect();
     window.__polarFake.useLegacyControlWrites();
   });
-  await webBluetoothRow.click();
+  await selectAndConnect(bluetooth, webBluetoothRow);
   try {
     await bluetooth.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
   } catch (error) {
@@ -722,7 +737,10 @@ try {
   }
   assert.equal(await bluetooth.locator('.device-row[data-input-kind="web-bluetooth"]').count(), 0, "connected H10 remained a discovery row");
   assert.equal(await bluetooth.locator('.connected-device-widget[data-device-profile="polar"]').count(), 1, "connected H10 did not become a widget");
-  assert.equal(await bluetooth.getByLabel(/Color pair for Polar H10 TEST1234/).count(), 1, "connected H10 widget has no source-palette picker");
+  assert.equal(await bluetooth.locator('.connected-device-widget[data-device-profile="polar"] .source-live-badge').textContent(), "LIVE");
+  assert.equal(await bluetooth.getByLabel(/Source color for Polar H10 TEST1234/).count(), 1, "connected H10 widget has no source-color picker");
+  assert.equal(await bluetooth.locator('.connected-device-widget[data-device-profile="polar"] .device-color-swatches i').count(), 1,
+    "connected H10 widget must show one source-identity swatch");
   assert.equal(await bluetooth.locator("#battery-value").textContent(), "87%");
   assert.equal(await bluetooth.locator("#runtime-path-label").textContent(), "Browser Bluetooth · experimental");
   const bluetoothContract = await bluetooth.evaluate(() => ({
@@ -833,6 +851,11 @@ try {
   await bluetooth.locator('.metric-option[data-metric-id="ecg_mean"]').click();
   assert.equal(await bluetooth.locator("#save-metric-output").textContent(), "Desktop only");
   assert.match(await bluetooth.locator("#dialog-output-status").textContent(), /requires the desktop app/);
+  await bluetooth.evaluate(() => window.__polarFake.dropConnection());
+  await bluetooth.locator("#input-state").filter({ hasText: "Attention" }).waitFor();
+  assert.equal(await bluetooth.locator('.connected-device-widget[data-device-profile="polar"]').count(), 0,
+    "unexpected H10 drop remained labeled live");
+  assert.match(await bluetooth.locator('.device-row[data-input-kind="web-bluetooth"]').textContent(), /Attention/);
   await assertNoHorizontalOverflow(bluetooth, "desktop Web Bluetooth input");
   await bluetooth.close();
 
@@ -848,8 +871,12 @@ try {
   assert.equal(await vernier.locator("#visual-empty-state").isVisible(), true);
   const vernierRow = vernier.locator('.device-row[data-input-kind="web-bluetooth-vernier"]');
   assert.match(await vernierRow.textContent(), /Vernier Go Direct via browser/);
-  assert.match(await vernierRow.textContent(), /Connect/);
-  await vernierRow.click();
+  assert.match(await vernierRow.textContent(), /Select/);
+  const vernierExpectedColor = await vernierRow.evaluate((row) => {
+    const paletteId = row.parentElement?.querySelector(".device-palette-choice select")?.value;
+    return window.PolarSourcePalettes.find((palette) => palette.id === paletteId)?.light.primary;
+  });
+  await selectAndConnect(vernier, vernierRow);
   await vernier.waitForFunction(() => window.VernierWebBluetooth.activeSources().length === 1);
   const vernierContract = await vernier.evaluate(() => ({
     request: window.__vernierFake.lastRequest,
@@ -866,6 +893,7 @@ try {
   await vernier.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
   assert.equal(await vernier.locator('.device-row[data-input-kind="web-bluetooth-vernier"]').count(), 0, "connected GDX remained a discovery row");
   assert.equal(await vernier.locator('.connected-device-widget[data-device-profile="vernier"]').count(), 1, "connected GDX did not become a widget");
+  assert.equal(await vernier.locator('.connected-device-widget[data-device-profile="vernier"] .source-live-badge').textContent(), "LIVE");
   await vernier.waitForFunction(() => document.querySelector("#raw-force-value")?.textContent === "3.750");
   assert.equal(await vernier.locator("#connection-metric-1-label").textContent(), "FORCE");
   assert.equal(await vernier.locator("#connection-metric-1-value").textContent(), "10 Hz");
@@ -875,7 +903,10 @@ try {
   assert.equal(await vernier.locator("#battery-value").textContent(), "83%");
   assert.match(await vernier.locator("#app-state-text").textContent(), /Go Direct connected directly/);
   assert.match(await vernier.locator(".active-source-chip").textContent(), /Browser source 1.*GDX-RB TEST/);
-  assert.equal(await vernier.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), "#176B9E");
+  assert.equal(await vernier.getByLabel(/Source color for GDX-RB TEST/).count(), 1, "connected Vernier widget has no source-color picker");
+  assert.equal(await vernier.locator('.connected-device-widget[data-device-profile="vernier"] .device-color-swatches i').count(), 1,
+    "connected Vernier widget must show one source-identity swatch");
+  assert.equal(await vernier.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), vernierExpectedColor);
   assert.equal(await vernier.locator("body").getAttribute("data-device-profile"), "vernier");
   assert.match(await vernier.locator("#device-profile-title").textContent(), /respiration belt/i);
   assert.match(await vernier.locator("#device-profile-description").textContent(), /Primary use: breathing/i);
@@ -935,15 +966,20 @@ try {
   await phone.waitForFunction(() => document.querySelector("#scan-button span")?.textContent === "Search devices");
   assert.equal(await phone.evaluate(() => window.__polarFake.lastRequest ?? null), null, "phone Search opened a chooser before Connect");
   await phone.evaluate(() => window.__polarFake.disableNextChooser());
-  await phone.locator('.device-row[data-input-kind="web-bluetooth"]').click();
-  await phone.locator("#input-state").filter({ hasText: "Error" }).waitFor();
+  await selectAndConnect(phone, phone.locator('.device-row[data-input-kind="web-bluetooth"]'));
+  await phone.locator("#input-state").filter({ hasText: "Attention" }).waitFor();
   assert.match(await phone.locator("#connection-detail").textContent(), /Google Chrome on Android/);
   await phone.waitForFunction(() => !document.querySelector(".toast"));
-  await phone.locator('.device-row[data-input-kind="web-bluetooth"]').click();
+  await selectAndConnect(phone, phone.locator('.device-row[data-input-kind="web-bluetooth"]'));
   await phone.locator("#input-state").filter({ hasText: "Browser BLE live" }).waitFor();
   assert.deepEqual(await phone.evaluate(() => window.__polarFake.wakeLockRequests), ["screen"]);
   await phone.locator('.connected-device-widget[data-device-profile="polar"] .connected-device-disconnect').click();
   await phone.locator("#input-state").filter({ hasText: "Browser ready" }).waitFor();
+  assert.equal(
+    await phone.locator('.device-row[data-input-kind="web-bluetooth"]').getAttribute("data-contract-state"),
+    "available",
+    "deliberate Disconnect retained an automatic-reconnect contract",
+  );
   await connectMock(phone);
   assert.equal(await phone.locator("#lsl-destination-row").isVisible(), true, "phone browser UI hid the shared LSL control after connection");
   assert.equal(await phone.locator("#osc-destination-row").isVisible(), true, "phone browser UI hid the shared OSC control after connection");

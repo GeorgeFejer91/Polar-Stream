@@ -37,5 +37,20 @@ test("saving Vernier keep-connected policy preserves other preferences", () => {
     lastDevice: { id: "vernier:opaque-device", name: "GDX-RB" },
     outputConfig: { outputs: ["raw_force"] },
     keepVernierAwake: false,
+    devicePalettes: {},
+  });
+});
+
+test("device source-color choices are remembered independently", () => {
+  const preferences = loadPreferences();
+
+  preferences.saveDevicePalette("polar:first", "ocean");
+  preferences.saveDevicePalette("polar:second", "sunset");
+  preferences.saveDevicePalette("vernier:belt", "meadow");
+
+  assert.deepEqual(JSON.parse(JSON.stringify(preferences.load().devicePalettes)), {
+    "polar:first": "ocean",
+    "polar:second": "sunset",
+    "vernier:belt": "meadow",
   });
 });

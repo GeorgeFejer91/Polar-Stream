@@ -36,10 +36,12 @@ Bundled LabRecorder (separate process)
 Native publication is the authoritative real-time path. The WebView is a
 display consumer and must not create backpressure.
 Each connected native source owns an independent input session and output
-router. Connecting or selecting another source never replaces the first: while
-one sensor family is active, discovery scans only the missing family, and both
-families publish source-suffixed outlets concurrently once connected. The UI
-source selector affects presentation only.
+router. Connecting or selecting another source never replaces the first.
+Manual discovery may refresh both supported providers while a refcounted lease
+suspends only qualified H10 silence watchdogs; targeted recovery scans only the
+disconnected device's provider. Selected native devices connect sequentially,
+then all sources publish source-suffixed outlets concurrently. The UI source
+selector affects presentation only.
 
 The same files in `apps/polar-stream/ui/` also form the GitHub Pages browser
 demo. Runtime behavior is selected once through the frontend runtime adapter:
@@ -101,6 +103,15 @@ operational contract for that ordering.
   `vernierBreathing`, while rawForce remains an optional compatibility module.
   When both families are connected, selecting a source switches the entire UI
   profile and never combines Polar cards/formulas with Vernier breathing cards.
+- At 901 CSS pixels and wider, Input, Output, and Visualization remain one grid
+  but expose two keyboard- and pointer-operable vertical separators. Each
+  separator changes only its adjacent panes within usable width bounds. The UI
+  persists normalized three-pane proportions under
+  `polar-stream.workspace-layout.v1`; double-click restores defaults, while
+  Home/End move the focused separator to its limits. At 900 pixels and below,
+  stored proportions remain intact but separators are hidden and disabled for
+  the canonical single-column layout. Canvas backing dimensions must follow
+  every Visualization-pane resize.
 - The native Add-device action scans only an inactive protocol family. Existing
   Polar or Go Direct acquisition and publication continue during that scan, and
   the default liblsl path can expose Polar ECG/ACC plus Vernier raw/breathing
@@ -108,9 +119,14 @@ operational contract for that ordering.
 - Input has two distinct UI states: classified discovery rows and connected
   source widgets. Only a successful connection creates a widget. Device-profile
   attributes come from the typed Polar/Go Direct identification boundary, not a
-  renderer name guess. Widgets own source telemetry, disconnect, session color,
-  and applicable controls; keep-connected is Vernier-only and defaults on for a
-  new preference state.
+  renderer name guess. Widgets own source telemetry, disconnect, the remembered
+  user-selectable source color identity, and applicable controls; every
+  candidate automatically receives an unused color that follows it into the
+  connection. The same identity marks
+  that source's widget, Output cards, visualization frame, trace, and legend.
+  Checked candidates plus Connect selected form a current-session desired set:
+  native setup is serialized, LIVE requires a streaming event, and unexpected
+  native drops receive bounded retries before visible ATTENTION.
 - Raw source outputs are automatic and non-removable. A native physical
   connection automatically enables LSL and applies the source-owned raw output
   configuration. Processed metrics/formulas remain explicit additions, and
@@ -133,9 +149,18 @@ operational contract for that ordering.
   samples: nominal timing is used for the first frame and gaps, while ordinary
   batches interpolate between consecutive newest-sample device anchors. They
   produce canonical scalar outputs; adaptive display bounds never
-  change the fixed state coordinate. Bounded waveform points may be smoothed or
-  intentionally delayed only in the renderer and never enter output transports
-  or feed the estimator.
+  change the fixed state coordinate. The renderer may use the finite unclipped
+  projection, independently robust-normalize each source, resample mapped host
+  time behind one bounded delayed playhead, and apply light causal smoothing.
+  It must not extrapolate across the newest observation or a source gap. A
+  conservative session-only Vernier polarity comparison and manual Normal/Flip
+  controls affect presentation only; neither path enters output transports or
+  feeds the estimator.
+- Compatible live signals may share one host-time visualization either as an
+  overlay or as one labeled lane per source. The selection is presentation-only
+  and may include every compatible active source; it never enables, fuses, or
+  republishes data. The normalized Polar and Vernier breathing waveforms share
+  the fixed 0–1 scale, while incompatible units remain unavailable together.
 - Formula-compatible catalog entries expose editable templates through a
   bounded native formula runtime; sensor time is the automatic x-axis and each
   formula produces a scalar y-value from one source clock.

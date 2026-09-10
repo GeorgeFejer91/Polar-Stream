@@ -74,6 +74,23 @@ pub struct BreathingDiagnostics {
 pub struct BreathingWaveformPoint {
     pub source_timestamp_ns: u64,
     pub volume_01: f32,
+    /// Signed projection onto the calibrated breathing axis, before the
+    /// renderer-facing 0-1 clamp is applied.
+    pub projection_g: f32,
+}
+
+impl BreathingWaveformPoint {
+    pub(crate) fn renderer_only(
+        source_timestamp_ns: u64,
+        volume_01: f32,
+        projection_g: f32,
+    ) -> Self {
+        Self {
+            source_timestamp_ns,
+            volume_01: finite_or(volume_01, 0.5).clamp(0.0, 1.0),
+            projection_g: finite_or(projection_g, 0.0),
+        }
+    }
 }
 
 /// Saved controls shared by the experimental accelerometer breathing outputs.

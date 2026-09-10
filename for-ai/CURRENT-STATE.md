@@ -1,8 +1,40 @@
 # Current state
 
-Last verified: 2026-08-27
+Last verified: 2026-09-10
 
 ## Implemented
+
+- The ordinary desktop Input surface now forms an explicit current-session
+  connection contract: candidates have checkboxes, **Connect selected** queues
+  native setup serially, and a source becomes live only after its first
+  validated streaming event. Unexpected loss of a desired source enters bounded
+  1.5/3/6/12/24-second recovery attempts; exhausted recovery becomes visible
+  **Attention**, while explicit disconnect removes the source from the desired
+  set. Discovery and setup leases suppress the H10 steady-state watchdog so a
+  scan cannot falsely declare an otherwise live PMD stream stale.
+- Every pending or connected input receives one automatically distinct,
+  user-selectable identity color from an accessible eight-color catalog. The
+  same single color frames the complete Input widget, accents its Output cards,
+  and draws its Visualization trace and legend in light and dark themes. Device
+  color choices persist, while the session restore contract retains the full
+  visible source set, focus, and selected visualization rather than allowing a
+  reconnect event to collapse the display to one source.
+- Compatible comparison is now an N-way checkbox surface for as many as eight
+  active sources, with **Select all**, an **Overlay** view, and independent
+  **Separate** lanes. Polar `breathing_volume` and Vernier
+  `vernier_breathing` can therefore appear together with additional breathing
+  sources in one visualization. Two accessible pointer/keyboard workspace
+  dividers resize the Input, Output, and Visualization panels and persist the
+  desktop proportions; the stacked mobile layout deliberately disables them.
+- Comparative breathing display is presentation-only and preserves canonical
+  output samples. Each source is robustly normalized from its recent 5th–95th
+  percentile span, mapped to source time, resampled to 30–60 Hz without forward
+  extrapolation, causally smoothed, and rendered against one shared 180 ms
+  delayed playhead. Gaps remain explicit. Vernier inhale-rises polarity is the
+  reference; a Polar source changes direction automatically only after stable
+  zero-lag correlation evidence, with session-only **Normal** and **Flip**
+  overrides and honest provisional/uncertain status. This avoids hardcoding a
+  mounting-specific accelerometer axis or sign.
 
 - Native desktop packages stage the official LabRecorder 1.17.0 from pinned,
   checksum-verified upstream release/source revisions together with its own
@@ -111,8 +143,8 @@ Last verified: 2026-08-27
   Go Direct sources. Each source owns an independent input session, decoder,
   event receiver, metric engine, and output router; shared maps and mutexes are
   lifecycle-only. Presentation slots add stable stream-name suffixes and receive
-  one unique remembered two-color `SourcePalette` from an eight-pair catalog;
-  both light/dark variants propagate through UI, LSL metadata, native CSV v3,
+  one unique remembered single-color `SourcePalette` from an eight-color catalog;
+  its light/dark identity propagates through UI, LSL metadata, native CSV v3,
   and browser event/recording v3 contracts while `color` remains a compatibility
   alias. Internal source instance IDs are non-reused UUIDs.
   UI temporal buffers are per source, so selecting a device cannot mix samples
@@ -121,9 +153,10 @@ Last verified: 2026-08-27
   the primary ACC library to raw X/Y/Z, 3D motion magnitude, and normalized
   **ACC breathing magnitude (0–1)**. Signed projection, phase, diagnostics,
   rate, and dynamics remain under Extra options without changing IDs. Mixed
-  visual comparison is opt-in and permits one active compatible comparator;
-  Polar `breathing_volume` and Vernier `vernier_breathing` share a fixed 0–1
-  host-monotonic view, while ECG/breathing and raw-force/ACC pairs are excluded.
+  visual comparison is opt-in and permits up to seven active compatible
+  comparators through checkboxes; breathing sources share a presentation-only
+  per-source 0–1 view on one delayed source-time playhead, while incompatible
+  ECG/breathing and raw-force/ACC pairs remain excluded.
   Saved output configuration is transport-free: formula validation uses a
   destination-disabled router and only connected source routers may create
   LSL/OSC/CSV endpoints, preventing empty legacy unsuffixed streams.
@@ -252,9 +285,9 @@ Last verified: 2026-08-27
   complete preset, and deterministic/browser checks reject cross-family cards,
   visualizations, and formulas.
 - Input discovery now renders supported candidates as non-widget rows with an
-  explicit Connect action. Only a successful connection creates a persistent
+  explicit checkbox connection-contract action. Only a successful streaming connection creates a persistent
   source widget. Each widget owns telemetry, source selection, disconnect, and
-  a color picker; the chosen live-session color outlines that source's widget,
+  a single-color picker; the chosen live-session color outlines that source's complete widget,
   raw/processed output cards, and visualization surfaces. The native Vernier
   widget alone exposes Keep connected / awake, default-on for a new preference
   state while preserving a previously saved off choice.
@@ -290,8 +323,11 @@ Last verified: 2026-08-27
 - Low-latency renderer scheduling capped at 30 Hz and paused while hidden.
   Values, mapped timestamps, and gaps live in rate-aware bounded typed rings;
   Canvas plots use time/pixel extrema rather than sample-index paths. Mixed
-  Polar/Vernier sessions expose force+ACC stacked lanes and belt+ACC breathing
-  overlays on one host-time axis. Renderer reload replaces only the display
+  Polar/Vernier sessions expose force+ACC stacked lanes and multi-source belt+
+  ACC breathing overlays or separate lanes on one shared delayed playhead.
+  Between 10 Hz Vernier arrivals the playhead and eligible higher-rate Polar
+  traces continue advancing; endpoint values always come from the newest
+  chronological sample rather than a pixel-bucket extremum. Renderer reload replaces only the display
   channel and replays connection state; it cannot stop native acquisition.
 - Output configuration updates are serialized and transactional across all
   active routers, and source connection uses the same configuration lifecycle
@@ -387,6 +423,26 @@ Last verified: 2026-08-27
 `for-ai/scripts/repo-snapshot.sh`; do not infer it from this snapshot.
 
 ## Known constraints
+
+- In a live 2026-09-10 installed-Windows check, one H10 established ECG/ACC
+  streaming and remained live while the independent GDX-RB connection contract
+  exhausted its retries. A bounded 30-second reattachment trace received 6,012
+  ACC samples in 167 frames and 3,942 ECG samples, with zero gap flags, median
+  179.78 ms ACC frame spacing, 179.84 ms p95, 179.96 ms maximum, and no interval
+  over 250 ms. After the current-session breathing setup was changed from X+Z
+  to all three axes with a lower 0.003 g movement gate, the same trace emitted
+  167 breathing metric frames and 6,012 unclipped presentation points. This is
+  useful live engineering evidence, not reference-sensor agreement. The H10
+  reported only 10% battery.
+- The same live check repeatedly found one GDX-RB advertising near -57 to
+  -58 dBm, but both the installed app and standalone native verifier failed
+  before its first Force frame: connection first timed out and then returned
+  `Not connected`. A second H10 was also advertising but its WinRT
+  PMD service request returned `GattCommunicationStatus::Unreachable`. These
+  are Bluetooth-central/device-ownership failures before normalization or
+  plotting. Phone/other sensor clients must be excluded and, if necessary, the
+  Intel Bluetooth adapter reset before final two-device installed-window
+  qualification.
 
 - Real BLE behavior and latency still depend on platform adapters, radio state,
   ATT MTU, and operating-system scheduling.

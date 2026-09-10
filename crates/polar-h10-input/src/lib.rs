@@ -10,7 +10,7 @@ use std::{
 };
 
 #[cfg(target_os = "windows")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 #[cfg(target_os = "windows")]
 mod windows_backend;
@@ -115,7 +115,56 @@ pub struct InputManager {
     devices: Mutex<HashMap<String, ScannedDevice>>,
     active: Mutex<Option<ActiveConnection>>,
     #[cfg(target_os = "windows")]
+    discovery_activity: Arc<DiscoveryActivity>,
+    #[cfg(target_os = "windows")]
     next_generation: AtomicU64,
+}
+
+#[cfg(target_os = "windows")]
+struct DiscoveryActivity {
+    leases: AtomicUsize,
+    active: watch::Sender<bool>,
+}
+
+#[cfg(target_os = "windows")]
+impl DiscoveryActivity {
+    fn new() -> Arc<Self> {
+        let (active, _) = watch::channel(false);
+        Arc::new(Self {
+            leases: AtomicUsize::new(0),
+            active,
+        })
+    }
+
+    fn begin(self: &Arc<Self>) -> DiscoveryActivityLease {
+        if self.leases.fetch_add(1, Ordering::AcqRel) == 0 {
+            self.active.send_replace(true);
+        }
+        DiscoveryActivityLease {
+            activity: self.clone(),
+        }
+    }
+}
+
+/// Keeps active Windows H10 sessions from declaring a PMD stall while an
+/// intentional app-owned Bluetooth discovery or connection setup operation
+/// is in progress.
+/// Nested leases are reference-counted and the final drop starts a fresh
+/// steady-state liveness grace period.
+#[cfg(target_os = "windows")]
+pub struct DiscoveryActivityLease {
+    activity: Arc<DiscoveryActivity>,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for DiscoveryActivityLease {
+    fn drop(&mut self) {
+        let previous = self.activity.leases.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "discovery activity lease underflow");
+        if previous == 1 {
+            self.activity.active.send_replace(false);
+        }
+    }
 }
 
 struct PooledInputSession {
@@ -138,6 +187,8 @@ struct CachedDeviceSummary {
 /// be observed.
 pub struct InputSessionPool {
     discovery: Arc<InputManager>,
+    #[cfg(target_os = "windows")]
+    discovery_activity: Arc<DiscoveryActivity>,
     candidates: Mutex<HashMap<String, CachedDeviceSummary>>,
     sessions: Mutex<HashMap<String, PooledInputSession>>,
     operation_gate: Mutex<()>,
@@ -153,8 +204,17 @@ impl InputSessionPool {
     /// Construct a bounded pool. Each session retains an independent platform
     /// owner and hot path; the bound applies only to lifecycle admission.
     pub fn with_max_sessions(max_sessions: usize) -> Self {
+        #[cfg(target_os = "windows")]
+        let discovery_activity = DiscoveryActivity::new();
         Self {
+            #[cfg(target_os = "windows")]
+            discovery: Arc::new(InputManager::with_discovery_activity(
+                discovery_activity.clone(),
+            )),
+            #[cfg(not(target_os = "windows"))]
             discovery: Arc::new(InputManager::new()),
+            #[cfg(target_os = "windows")]
+            discovery_activity,
             candidates: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             operation_gate: Mutex::new(()),
@@ -166,6 +226,8 @@ impl InputSessionPool {
     /// owners. The ordinary add-device workflow seeks one new H10, so Windows
     /// can stop as soon as one non-active exact-name candidate is observed.
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
+        #[cfg(target_os = "windows")]
+        let _discovery_activity = self.begin_discovery();
         let _operation = self.operation_gate.lock().await;
         self.prune_finished_sessions().await;
         let active_device_ids = self
@@ -231,6 +293,11 @@ impl InputSessionPool {
                 "That sensor is no longer in the shared scan results. Scan again.".to_string()
             })?;
 
+        #[cfg(target_os = "windows")]
+        let manager = Arc::new(InputManager::with_discovery_activity(
+            self.discovery_activity.clone(),
+        ));
+        #[cfg(not(target_os = "windows"))]
         let manager = Arc::new(InputManager::new());
         manager
             .devices
@@ -303,6 +370,21 @@ impl InputSessionPool {
         self.sessions.lock().await.len()
     }
 
+    /// Bracket an app-level discovery transaction that may include another
+    /// Bluetooth provider using the same Windows adapter. Active H10 sessions
+    /// suspend only their silence watchdog; acquisition ownership is unchanged.
+    #[cfg(target_os = "windows")]
+    pub fn begin_discovery(&self) -> DiscoveryActivityLease {
+        self.begin_radio_activity()
+    }
+
+    /// Bracket intentional Bluetooth adapter work such as another provider's
+    /// connection setup. This shares the same nested lease as discovery.
+    #[cfg(target_os = "windows")]
+    pub fn begin_radio_activity(&self) -> DiscoveryActivityLease {
+        self.discovery_activity.begin()
+    }
+
     async fn prune_finished_sessions(&self) {
         let sessions = self
             .sessions
@@ -373,10 +455,22 @@ impl Default for InputManager {
 
 impl InputManager {
     pub fn new() -> Self {
+        #[cfg(target_os = "windows")]
+        return Self::with_discovery_activity(DiscoveryActivity::new());
+
+        #[cfg(not(target_os = "windows"))]
         Self {
             devices: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
-            #[cfg(target_os = "windows")]
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn with_discovery_activity(discovery_activity: Arc<DiscoveryActivity>) -> Self {
+        Self {
+            devices: Mutex::new(HashMap::new()),
+            active: Mutex::new(None),
+            discovery_activity,
             next_generation: AtomicU64::new(1),
         }
     }
@@ -544,7 +638,10 @@ impl InputManager {
                 Arc::downgrade(self),
                 generation,
                 cancelled,
-                finished_tx.clone(),
+                (
+                    finished_tx.clone(),
+                    self.discovery_activity.active.subscribe(),
+                ),
             )
             .await
             {
@@ -824,6 +921,8 @@ async fn send(sender: &mpsc::Sender<InputEvent>, event: InputEvent) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use super::DiscoveryActivity;
     use super::{
         InputManager, InputSessionPool, PooledInputSession, parse_bluetooth_address,
         validate_session_admission, validate_session_slot,
@@ -859,6 +958,23 @@ mod tests {
         assert!(validate_session_slot("").is_err());
         assert!(validate_session_slot("device 1").is_err());
         assert!(validate_session_slot(&"x".repeat(33)).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn nested_discovery_leases_keep_liveness_suspended_until_final_drop() {
+        let activity = DiscoveryActivity::new();
+        let observed = activity.active.subscribe();
+        assert!(!*observed.borrow());
+
+        let outer = activity.begin();
+        assert!(*observed.borrow());
+        let inner = activity.begin();
+        assert!(*observed.borrow());
+        drop(inner);
+        assert!(*observed.borrow());
+        drop(outer);
+        assert!(!*observed.borrow());
     }
 
     #[test]
