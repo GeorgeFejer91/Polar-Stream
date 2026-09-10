@@ -411,10 +411,12 @@ impl TimedBreathingState {
         if update_phase {
             self.update_phase(source_timestamp_ns, projection);
         }
-        self.presentation_points.push_back(BreathingWaveformPoint {
-            source_timestamp_ns,
-            volume_01: self.latest_volume_01,
-        });
+        self.presentation_points
+            .push_back(BreathingWaveformPoint::renderer_only(
+                source_timestamp_ns,
+                self.latest_volume_01,
+                projection,
+            ));
         while self.presentation_points.len() > PRESENTATION_POINT_LIMIT {
             self.presentation_points.pop_front();
         }
@@ -1290,6 +1292,36 @@ mod tests {
     }
 
     #[test]
+    fn presentation_keeps_finite_projection_before_volume_clamping() {
+        let mut state = TimedBreathingState::new(test_settings(), 0);
+        state.calibrated = true;
+        state.center = [0.0; 3];
+        state.axis = [1.0, 0.0, 0.0];
+        state.output_lower = -0.01;
+        state.output_upper = 0.01;
+        state.fixed_lower = -0.01;
+        state.fixed_upper = 0.01;
+        state.calibration_span = 0.02;
+
+        state.process_sample(
+            AccSample {
+                x_mg: 100,
+                y_mg: 0,
+                z_mg: 0,
+            },
+            1_000_000_000,
+            false,
+        );
+        let points = state.take_presentation_points();
+
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].volume_01, 1.0);
+        assert!(points[0].projection_g.is_finite());
+        assert!(points[0].projection_g > state.output_upper);
+        assert_eq!(points[0].projection_g, state.latest_projection_g);
+    }
+
+    #[test]
     fn presentation_points_are_bounded_and_source_ordered() {
         let mut processor = BreathingProcessor::new(test_settings());
         let samples = (0..1_400).map(sample).collect::<Vec<_>>();
@@ -1312,6 +1344,7 @@ mod tests {
                 .windows(2)
                 .all(|pair| { pair[0].source_timestamp_ns < pair[1].source_timestamp_ns })
         );
+        assert!(points.iter().all(|point| point.projection_g.is_finite()));
         assert!(processor.take_presentation_points().is_empty());
     }
 }

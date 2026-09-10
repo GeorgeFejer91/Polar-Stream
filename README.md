@@ -60,20 +60,42 @@ adaptive-bound controls remain available through **Adjust**.
 The waveform is already canonical 0–1, so a second output normalization is not
 offered for new configurations. Its display separately offers responsive fresh smoothing or an
 intentional 0.18-second timestamp-faithful delay; neither presentation mode
-changes canonical LSL, OSC, CSV, or classifier values. Every output is an
-unvalidated respiratory-motion/effort surrogate—not lung volume or airflow—and
-should be compared with a synchronized respiratory reference. Mounting can
-reverse polarity, so users must verify or invert direction. The classifier
+changes canonical LSL, OSC, CSV, or classifier values. The comparative display
+also consumes the finite, unclipped signed projection on its
+mapped source timeline, advances one shared playhead at the render cadence, and
+uses a bounded 0.18-second delay plus light causal smoothing. This removes BLE
+notification batching from visible motion while preserving honest breaks
+across acquisition gaps and never extrapolating beyond the newest observation.
+It does not change canonical LSL, OSC, CSV, or classifier values. Every output
+is an unvalidated respiratory-motion/effort surrogate—not lung volume or
+airflow—and should be compared with a synchronized respiratory reference. When
+a Vernier belt is present, **Auto** can learn a conservative, session-only
+display direction from stable zero-lag agreement; weak or changing evidence
+stays explicitly provisional or uncertain. **Normal** and **Flip** remain
+available for each H10. Mounting and posture can reverse polarity, so this
+display aid is not physiological validation. The classifier
 circle expands or shrinks with phase alone, approaches its size limits
 asymptotically, and eases its velocity toward rest during holds.
 
 Raw acceleration is presented as one visualizer choice with X, Y, and Z in
 three labeled, color-coded lanes, so comparing axes does not require switching
-the visualizer source. When another connected source already has a compatible
-active signal, **Add comparison source** overlays one comparator without
-enabling any output. Polar's normalized `breathing_volume` and Vernier's
-normalized breathing waveform share a fixed 0–1 host-monotonic view; raw force
-cannot be compared with ACC and breathing cannot be compared with ECG.
+the visualizer source. When other connected sources already have the same
+compatible active signal, the **Compare** checkbox list can include any or all of them without
+enabling an output. **Overlay** draws the selected sources on common axes;
+**Separate** gives each source a labeled lane in the same visualization
+workspace. Polar's normalized `breathing_volume` and Vernier's normalized
+breathing waveform share a fixed 0–1 host-monotonic scale, including two H10s
+plus one belt; raw force cannot be combined with ACC and breathing cannot be
+combined with ECG.
+
+On desktop widths, two slim vertical dividers resize Input, Output, and
+Visualization without detaching them from the canonical workspace. Dragging a
+divider changes only its adjacent panes, saves normalized proportions for the
+next launch, and keeps the live canvas fitted to the Visualization pane.
+Keyboard users can focus either separator, resize with Left/Right (Shift uses a
+larger step), use Home/End for its limits, or double-click to restore the
+default three-pane balance. At 900 CSS pixels and below the dividers are removed
+from interaction and the same panels return to the single-column layout.
 
 > Unofficial research software. Not affiliated with or endorsed by Polar
 > Electro. This is not a medical device.
@@ -106,26 +128,32 @@ ECG/ACC and Formula Lab controls are not shown for that source. Browser Web
 Bluetooth remains channel-1 Force only and cannot create
 native LSL outlets.
 
-In the installed app, connecting one sensor changes the discovery action to
-**Add Vernier** or **Add Polar H10**. The connected source keeps acquiring and
-publishing while either protocol candidate cache is refreshed. Once both are
-connected, **Add another sensor** can find another non-active Polar or Vernier
-device without replacing either live owner. Their source-specific output
+In the installed app, **Search devices** discovers supported candidates without
+changing the desired connection set. Select one or more candidate checkboxes,
+then choose **Connect selected**. That action creates a current-session
+connection contract: native setup runs one device at a time, a widget becomes
+`LIVE` only after the device explicitly reports streaming, and an unexpected
+drop retries after bounded 1.5, 3, 6, 12, and 24 second delays before becoming
+`ATTENTION`. Manual Disconnect removes that device from the contract. Browser
+Bluetooth cannot reopen a chooser without another user gesture, so a browser
+drop becomes `ATTENTION` instead of claiming automatic recovery. Connected
+sources keep acquiring and publishing while discovery refreshes. Their source-specific output
 routers remain live together: Polar ECG/ACC/breathing and Vernier raw/breathing
 outlets can be recorded on the same LSL clock and in source-scoped CSV files.
 Selecting a source changes ordinary
-controls and charts only. A compatible active signal can be added explicitly as
-one comparator without stopping, merging, or republishing either source.
+controls and charts only. Any compatible active sources can be added explicitly
+to the same overlaid or separate-lane visualization without stopping, merging,
+or republishing them.
 
-Input discovery is deliberately separate from connection state. **Search
-devices** lists supported candidates as classified rows—Polar H10 for ECG or a
-metadata-verified GDX-RB for breathing—and **Connect** promotes a row to a
-persistent device widget only after the link succeeds. Connected widgets own
-their metadata, disconnect action, and two-color palette picker; the Vernier widget also
-owns its keep-connected/reconnect switch, which defaults on for a new
-preference state. Eight unique remembered palette pairs provide light and dark
-variants for each source and thread through Input, Output, Visualization,
-legends, LSL descriptors, and CSV metadata. The app-level sun/moon control
+Input discovery is deliberately separate from connection state. Candidate
+rows are classified as Polar H10 for ECG/ACC or metadata-verified GDX-RB for
+breathing. Connected widgets own their metadata, disconnect action, and one
+source-color picker. Every device automatically receives an unused color and the
+user can choose another unused color. The eight identities span blue, red,
+green, gold, purple, teal, orange, and indigo so simultaneous sources remain
+easy to distinguish. The same light/dark identity threads through Input,
+Output, Visualization, legends, LSL descriptors, and CSV metadata. The
+app-level sun/moon control
 follows the OS initially and persists an explicit choice without restarting
 outputs.
 

@@ -168,9 +168,13 @@ lung volume, airflow, or a clinical measurement.
 The application admits at most eight simultaneous sources. A source receives a
 stable slot (`source-1` through `source-8`) and one unique remembered
 `SourcePalette`: ocean, sunset, meadow, solar, orchid, lagoon, ember, or iris.
-Each ID contains primary/secondary colors for both light and dark themes. The
-complete definition is exported in LSL and CSV metadata; the legacy source
-`color` field remains the light-primary alias.
+Each ID is one distinct source identity for both light and dark themes. The
+wire-compatible primary/secondary fields carry that same color, so every signal
+from an H10 or GDX-RB stays visually tied to its physical input. A new
+connection automatically receives an unused color, and its device widget lets
+the user choose another unused color. The complete definition is
+exported in LSL and CSV metadata; the legacy source `color` field remains the
+light-primary alias.
 
 Each native source owns its input receiver, protocol state, metric engine, and
 output router. The shared maps and configuration mutex are lifecycle-only; raw
@@ -180,10 +184,13 @@ prevents an H10 from advertising an empty force outlet and prevents a Go Direct
 device from advertising empty ECG/ACC or H10-derived outlets.
 
 The UI keeps a separate circular buffer bank per source. Selecting a source
-switches the values and visualizer without mixing samples. Its pair marks the
-source chip, raw cards, output cards, legend, and visualizer frame/trace. Raw
-ACC uses primary, secondary, and their midpoint for X/Y/Z while retaining the
-source pair in its frame and legend.
+switches the values and visualizer without mixing samples. Connected-device
+widgets, Output cards, visualization frames, legends, and traces all use the
+same source identity color. Raw ACC distinguishes X/Y/Z with opacity variants
+of that identity while retaining the source palette in its frame and legend. A
+compatible visual may include every active source and switch between
+one overlaid host-time plot and one labeled lane per source. Both are
+presentation-only; they do not fuse or republish inputs.
 
 Chromium can hold several Go Direct sessions, up to the same eight-source
 bound. Web Bluetooth requires a fresh user-triggered chooser for each new
@@ -191,23 +198,22 @@ device, so a website cannot silently enumerate all nearby GDX sensors. Native
 desktop discovery can return multiple Polar and Vernier candidates in one
 application scan. The two advertisement scans run concurrently to avoid adding
 their full scan windows together; connection/setup remains serialized per
-selected device. Startup waits for an explicit Search action. After an
-unexpected drop from an established default-on Vernier session, its exact saved
-preference scans the Go Direct transport directly and reconnects without
-waiting for a Polar scan.
-After either family connects, the search action targets only the missing family,
-so the first input session and its output router continue publishing throughout
-discovery and connection. With both families active, the UI source selector is
+selected device. Startup waits for an explicit Search action. Checked rows plus
+Connect selected form a current-session desired set. After an unexpected native
+drop, the exact identity receives provider-targeted rediscovery and bounded
+retries without waiting for an unrelated protocol scan. Other active inputs and
+their output routers continue publishing throughout discovery and recovery.
+With both families active, the UI source selector is
 display-only: the two native receivers, processors, and source-suffixed output
 routers continue independently.
 
-Discovery results remain simple classified rows with an explicit Connect
-action. A successful source alone becomes a connected-device widget. That
+Discovery results remain simple classified rows with checkboxes and one
+Connect selected action. Only an explicit streaming event promotes a source to
+a connected-device widget. That
 widget owns its disconnect action, telemetry, and a session color picker whose
 color marks the selected source's Output and Visualization surfaces. The native
-Vernier widget additionally owns its keep-connected/reconnect toggle. A new
-preference state defaults that toggle on, while an explicit saved off choice is
-respected.
+connection contract applies the same recovery policy to Polar and Vernier;
+manual Disconnect removes that identity from the desired set before teardown.
 
 ## Latency and reliability choices
 
@@ -221,12 +227,11 @@ respected.
   until explicit disconnect. Vernier's public protocol implementations expose
   no keep-awake or remote-wake command; a sleeping, non-advertising belt still
   requires its physical button.
-- The default-on **Keep connected / awake** option inside the connected Vernier
-  widget leaves that
-  measurement subscription active and, after an unexpected link loss, performs
-  saved-device Go Direct-only discovery with exponential retry delays bounded
-  from 1.5 to 30 seconds. A deliberate Disconnect cancels retry. This is a
-  connection policy, not a firmware wake command, and it can reconnect only
+- The current-session connection contract leaves every selected measurement
+  subscription active and, after an unexpected link loss, performs exact-device
+  provider-targeted discovery with retry delays of 1.5, 3, 6, 12, and 24
+  seconds. A deliberate Disconnect cancels retry. This is a connection policy,
+  not a firmware wake command, and it can reconnect only
   while the belt advertises.
 - Each Go Direct session has its own decoder and bounded 256-event queue.
 - Cancellation races the complete BLE setup/stream future, not only the steady

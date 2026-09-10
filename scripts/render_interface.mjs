@@ -126,27 +126,96 @@ async function assertTextContrast(page, selector, minimum = 4.5) {
   );
 }
 
-async function inspectStackedCanvas(page, colors = [[23, 107, 158], [42, 168, 184], [33, 138, 171]]) {
+async function inspectCanvasTraceColors(page, colors) {
   return page.locator("#signal-canvas").evaluate((canvas, expectedColors) => {
     const context = canvas.getContext("2d");
-    const { data, width } = context.getImageData(0, 0, canvas.width, canvas.height);
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
     return expectedColors.map((expected) => {
       let count = 0;
-      let yTotal = 0;
       for (let index = 0; index < data.length; index += 4) {
-        if (data[index + 3] < 100) continue;
+        if (data[index + 3] < 90) continue;
         const distance = Math.hypot(
           data[index] - expected[0],
           data[index + 1] - expected[1],
           data[index + 2] - expected[2],
         );
-        if (distance >= 24) continue;
-        count += 1;
-        yTotal += Math.floor(index / 4 / width);
+        if (distance < 22) count += 1;
       }
-      return { count, averageY: count ? yTotal / count : 0 };
+      return count;
     });
   }, colors);
+}
+
+async function settleWorkspaceLayout(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+  }));
+}
+
+async function inspectWorkspaceLayout(page) {
+  return page.evaluate(() => {
+    const workspace = document.querySelector("#workspace");
+    const panels = ["#input-section", "#output-section", "#visual-section"]
+      .map((selector) => document.querySelector(selector).getBoundingClientRect());
+    const dividers = ["#input-output-divider", "#output-visual-divider"].map((selector) => {
+      const element = document.querySelector(selector);
+      const bounds = element.getBoundingClientRect();
+      const hitArea = getComputedStyle(element, "::after");
+      const hitLeft = Number.parseFloat(hitArea.left) || 0;
+      const hitRight = Number.parseFloat(hitArea.right) || 0;
+      return {
+        width: bounds.width,
+        hitWidth: bounds.width - hitLeft - hitRight,
+        display: getComputedStyle(element).display,
+        tabIndex: element.tabIndex,
+        role: element.getAttribute("role"),
+        orientation: element.getAttribute("aria-orientation"),
+        controls: element.getAttribute("aria-controls"),
+        ariaHidden: element.getAttribute("aria-hidden"),
+        ariaDisabled: element.getAttribute("aria-disabled"),
+        valueMin: Number(element.getAttribute("aria-valuemin")),
+        valueMax: Number(element.getAttribute("aria-valuemax")),
+        valueNow: Number(element.getAttribute("aria-valuenow")),
+        valueText: element.getAttribute("aria-valuetext"),
+      };
+    });
+    const panelWidth = panels.reduce((sum, panel) => sum + panel.width, 0);
+    let stored = null;
+    try {
+      stored = JSON.parse(localStorage.getItem("polar-stream.workspace-layout.v1") || "null");
+    } catch (_error) {
+      stored = null;
+    }
+    const chart = document.querySelector("#chart-shell").getBoundingClientRect();
+    const canvas = document.querySelector("#signal-canvas");
+    return {
+      workspaceWidth: workspace.getBoundingClientRect().width,
+      panelWidths: panels.map((panel) => panel.width),
+      panelScrollWidths: ["#input-section", "#output-section", "#visual-section"]
+        .map((selector) => document.querySelector(selector).scrollWidth),
+      panelTops: panels.map((panel) => panel.top),
+      proportions: panels.map((panel) => panel.width / panelWidth),
+      dividerWidth: dividers.reduce((sum, divider) => sum + divider.width, 0),
+      dividers,
+      stored,
+      chartWidth: chart.width,
+      canvasCssWidth: canvas.getBoundingClientRect().width,
+      canvasPixelWidth: canvas.width,
+      pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+    };
+  });
+}
+
+async function dragWorkspaceDivider(page, selector, deltaX) {
+  const bounds = await page.locator(selector).boundingBox();
+  assert.ok(bounds, `${selector} has no draggable bounds`);
+  const startX = bounds.x + bounds.width / 2;
+  const y = bounds.y + Math.min(120, bounds.height / 2);
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  await page.mouse.move(startX + deltaX, y, { steps: 6 });
+  await page.mouse.up();
+  await settleWorkspaceLayout(page);
 }
 
 await mkdir(output, { recursive: true });
@@ -172,6 +241,21 @@ try {
   assert.equal(designBaseline.decorativeDashboardElements, 0, "decorative dashboard UI returned");
   assert.ok(designBaseline.bodyFontSize >= 14, "base UI copy is smaller than 14px");
   assert.equal(designBaseline.mainCount, 1, "the page must have one main landmark");
+  const connectionContract = await page.evaluate(async () => ({
+    policy: window.PolarInterfaceRenderer.connectionContractPolicy(),
+    queue: await window.PolarInterfaceRenderer.probeConnectionQueue(),
+  }));
+  assert.deepEqual(connectionContract.policy, {
+    streamingConfirmationRequired: true,
+    readyTimeoutMilliseconds: 15_000,
+    retryDelaysMilliseconds: [1_500, 3_000, 6_000, 12_000, 24_000],
+  });
+  assert.deepEqual(connectionContract.queue.order, [
+    "start:polar-a", "end:polar-a",
+    "start:vernier", "end:vernier",
+    "start:polar-b", "end:polar-b",
+  ], "selected-device connection attempts were not serialized");
+  assert.equal(connectionContract.queue.maximumActive, 1, "more than one sensor setup ran concurrently");
   const emptyState = await page.evaluate(() => ({
     profile: document.body.dataset.deviceProfile,
     outputEmptyVisible: !document.querySelector("#output-empty-state").hidden,
@@ -268,32 +352,44 @@ try {
   assert.match(accelerometer.currentLabel, /^X [-\d]+  ·  Y [-\d]+  ·  Z [-\d]+$/);
   assert.match(accelerometer.chartClass, /stacked-axes/);
   assert.match(accelerometer.canvasLabel, /three stacked plots/);
-  const stackedColors = await inspectStackedCanvas(page);
-  assert.ok(stackedColors.every(({ count }) => count > 40), `one or more ACC traces were not drawn: ${JSON.stringify(stackedColors)}`);
-  assert.ok(stackedColors[0].averageY < stackedColors[1].averageY && stackedColors[1].averageY < stackedColors[2].averageY,
-    `ACC traces were not stacked X/Y/Z: ${JSON.stringify(stackedColors)}`);
+  const stackedColors = await inspectCanvasTraceColors(page, [[19, 104, 170]]);
+  assert.ok(stackedColors[0] > 120, `the blue ACC traces were not drawn: ${JSON.stringify(stackedColors)}`);
   const accelerometerScreenshot = join(output, "raw-accelerometer-stacked.png");
   await page.screenshot({ path: accelerometerScreenshot, fullPage: true });
   assert.ok((await stat(accelerometerScreenshot)).size > 20_000, "stacked ACC screenshot was unexpectedly empty");
 
   const multipleSources = await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
-  assert.deepEqual(multipleSources.sourceOptions, ["source-1", "source-2"]);
-  assert.deepEqual(multipleSources.chipColors, ["#176B9E", "#B83E35"]);
+  assert.deepEqual(multipleSources.sourceOptions, ["source-1", "source-2", "source-3"]);
+  assert.deepEqual(multipleSources.chipColors, ["#1368AA", "#B43C4C", "#18794E"]);
   assert.deepEqual(multipleSources.connectedWidgets, [
-    { sourceId: "source-1", profile: "polar", color: "#176B9E", hasKeepConnected: false, keepConnected: null },
-    { sourceId: "source-2", profile: "vernier", color: "#B83E35", hasKeepConnected: true, keepConnected: true },
+    {
+      sourceId: "source-1", profile: "polar", color: "#1368AA", cardiacColor: "#1368AA",
+      breathingColor: "#1368AA", swatchCount: 1,
+      pickerLabel: "Source color for Polar H10 A", hasKeepConnected: false, keepConnected: null,
+    },
+    {
+      sourceId: "source-2", profile: "vernier", color: "#B43C4C", cardiacColor: "#B43C4C",
+      breathingColor: "#B43C4C", swatchCount: 1,
+      pickerLabel: "Source color for GDX-RB A", hasKeepConnected: false, keepConnected: null,
+    },
+    {
+      sourceId: "source-3", profile: "polar", color: "#18794E", cardiacColor: "#18794E",
+      breathingColor: "#18794E", swatchCount: 1,
+      pickerLabel: "Source color for Polar H10 B", hasKeepConnected: false, keepConnected: null,
+    },
   ]);
-  assert.equal(multipleSources.palettePickerCount, 2);
+  assert.equal(multipleSources.palettePickerCount, 3);
   assert.ok(multipleSources.availableDeviceCount >= 1, "available devices disappeared after sources connected");
   assert.equal(multipleSources.selectedSource, "source-2");
-  assert.equal(multipleSources.chartColor, "#B83E35");
-  assert.ok(multipleSources.outputColors.every((color) => color === "#B83E35"));
+  assert.equal(multipleSources.chartColor, "#B43C4C");
+  assert.ok(multipleSources.outputColors.every((color) => color === "#B43C4C"));
   assert.notEqual(multipleSources.forceValue, "—");
   assert.match(multipleSources.breathingValue, /^(?:0\.\d{3}|1\.000)$/);
   assert.equal(multipleSources.selectedVisual, "vernier_breathing");
   assert.deepEqual(multipleSources.visualOptions, ["raw_force", "vernier_breathing"]);
-  assert.deepEqual(multipleSources.comparisonOptions, [""]);
-  assert.equal(multipleSources.comparisonHidden, true, "comparison control appeared without an active compatible signal");
+  assert.deepEqual(multipleSources.comparisonOptions, ["source-1", "source-3"]);
+  assert.deepEqual(multipleSources.comparisonSelected, []);
+  assert.equal(multipleSources.comparisonHidden, false, "compatible breathing sources were not offered");
   assert.equal(multipleSources.deviceProfile, "vernier");
   assert.match(multipleSources.deviceProfileTitle, /respiration belt/i);
   assert.deepEqual(multipleSources.rawCardVisibility, { ecg: false, acc: false, force: true, breathing: true });
@@ -317,7 +413,7 @@ try {
   assert.equal(multipleSources.polarSwitch.automaticRawCount, 2);
   assert.ok(!multipleSources.polarSwitch.outputLabels.includes("Raw Go Direct force"));
   assert.deepEqual(multipleSources.polarSwitch.rawCardVisibility, { ecg: true, acc: true, force: false, breathing: false });
-  await page.getByLabel("Color pair for GDX-RB A").selectOption("meadow");
+  await page.getByLabel("Source color for GDX-RB A").selectOption("lagoon");
   const recolored = await page.evaluate(() => ({
     widget: document.querySelector('[data-source-id="source-2"]').style.getPropertyValue("--source-color"),
     chart: document.querySelector("#chart-shell").style.getPropertyValue("--source-color"),
@@ -325,29 +421,230 @@ try {
     outputPanelMarked: document.querySelector("#output-workspace").classList.contains("source-panel-marked"),
     visualPanelMarked: document.querySelector("#visual-workspace").classList.contains("source-panel-marked"),
   }));
-  assert.equal(recolored.widget, "#4E7B27");
-  assert.equal(recolored.chart, "#4E7B27");
-  assert.ok(recolored.outputs.every((color) => color === "#4E7B27"));
+  assert.equal(recolored.widget, "#007A78");
+  assert.equal(recolored.chart, "#007A78");
+  assert.ok(recolored.outputs.every((color) => color === "#007A78"));
   assert.equal(recolored.outputPanelMarked, true);
   assert.equal(recolored.visualPanelMarked, true);
   await page.screenshot({ path: join(output, "multiple-colored-sources.png"), fullPage: true });
 
-  const comparison = await page.evaluate(() => window.PolarInterfaceRenderer.render("multi-source-comparison"));
-  assert.equal(comparison.selectedVisual, "breathing_volume");
-  assert.ok(comparison.visualOptions.includes("breathing_volume"));
-  assert.deepEqual(comparison.comparisonOptions, ["", "source-2"]);
-  assert.deepEqual(comparison.incompatibleComparisonOptions, { raw_ecg: [""], raw_acc: [""] });
-  assert.equal(comparison.visualMode, "time-aligned-comparison");
-  assert.equal(comparison.composite, "breathing_waveform_01");
-  assert.match(comparison.currentLabel, /^Source 1 0\.\d{3} · Source 2 0\.\d{3}$/);
-  assert.match(comparison.canvasLabel, /time-aligned comparison/i);
-  assert.match(comparison.chartClass, /stacked-axes/);
-  assert.deepEqual(comparison.legendLabels, ["Source 1 · Polar H10 A", "Source 2 · GDX-RB A"]);
+  const breathingTraceColors = ["#1368AA", "#B43C4C", "#18794E"];
+  const breathingTraceRgb = [[19, 104, 170], [180, 60, 76], [24, 121, 78]];
+  const comparisonOverlay = await page.evaluate(() => window.PolarInterfaceRenderer.render("multi-source-comparison-overlay"));
+  assert.equal(comparisonOverlay.selectedVisual, "breathing_volume");
+  assert.ok(comparisonOverlay.visualOptions.includes("breathing_volume"));
+  assert.deepEqual(comparisonOverlay.comparisonOptions, ["source-2", "source-3"]);
+  assert.deepEqual(comparisonOverlay.comparisonSelected, ["source-2", "source-3"]);
+  assert.equal(comparisonOverlay.comparisonCount, "2 selected");
+  assert.equal(comparisonOverlay.selectAllChecked, true);
+  assert.deepEqual(comparisonOverlay.incompatibleComparisonOptions, { raw_ecg: ["source-3"], raw_acc: ["source-3"] });
+  assert.equal(comparisonOverlay.visualMode, "time-aligned-comparison");
+  assert.equal(comparisonOverlay.composite, "breathing_waveform_01");
+  assert.equal(comparisonOverlay.comparisonLayout, "overlay");
+  assert.deepEqual(comparisonOverlay.comparisonSources, ["source-1", "source-2", "source-3"]);
+  assert.deepEqual(comparisonOverlay.traceColors, breathingTraceColors);
+  assert.deepEqual(comparisonOverlay.alignmentStatuses, ["manual", "reference", "manual"]);
+  assert.deepEqual(comparisonOverlay.alignmentSigns, [-1, 1, -1]);
+  assert.deepEqual(comparisonOverlay.breathingRawKinds, ["polar-projection", "vernier-force", "polar-projection"]);
+  assert.deepEqual(comparisonOverlay.alignmentControls, [
+    { sourceId: "source-1", value: "flip" },
+    { sourceId: "source-3", value: "flip" },
+  ]);
+  assert.equal(comparisonOverlay.laneCount, 1);
+  assert.ok(
+    comparisonOverlay.smoothPlayheadAdvance >= 0.025,
+    `breathing playhead did not advance between input packets: ${comparisonOverlay.smoothPlayheadAdvance}`,
+  );
+  assert.ok(
+    comparisonOverlay.latestTracePoint <= comparisonOverlay.comparisonEnd + 1e-6,
+    "breathing renderer extrapolated a trace beyond the delayed display playhead",
+  );
+  assert.deepEqual(comparisonOverlay.layoutInputs, { overlay: true, separate: false });
+  assert.match(comparisonOverlay.currentLabel, /^Source 1 0\.\d{3} · Source 2 0\.\d{3} · Source 3 0\.\d{3}$/);
+  assert.match(comparisonOverlay.canvasLabel, /comparative overlay view of 3 independent breathing sources/i);
+  assert.match(comparisonOverlay.canvasLabel, /matched to Vernier automatically or manually/i);
+  assert.match(comparisonOverlay.chartClass, /stacked-axes/);
+  assert.doesNotMatch(comparisonOverlay.chartClass, /comparison-separate/);
+  assert.deepEqual(comparisonOverlay.legendLabels, [
+    "Source 1 · Polar H10 A", "Source 2 · GDX-RB A", "Source 3 · Polar H10 B",
+  ]);
+  assert.deepEqual(comparisonOverlay.legendColors, ["rgb(19, 104, 170)", "rgb(180, 60, 76)", "rgb(24, 121, 78)"]);
+  const overlayColorCounts = await inspectCanvasTraceColors(page, breathingTraceRgb);
+  assert.ok(overlayColorCounts.every((count) => count > 25), `one or more breathing overlays were not drawn: ${JSON.stringify(overlayColorCounts)}`);
   const comparisonCanvas = await inspectCanvas(page);
-  assert.ok(comparisonCanvas.width > 500 && comparisonCanvas.height > 150, `time-aligned comparison did not span the canvas: ${JSON.stringify(comparisonCanvas)}`);
-  const comparisonScreenshot = join(output, "multi-source-comparison.png");
-  await page.screenshot({ path: comparisonScreenshot, fullPage: true });
-  assert.ok((await stat(comparisonScreenshot)).size > 20_000, "comparison screenshot was unexpectedly empty");
+  assert.ok(comparisonCanvas.width > 500 && comparisonCanvas.height > 150, `time-aligned overlay did not span the canvas: ${JSON.stringify(comparisonCanvas)}`);
+  const overlayScreenshot = join(output, "multi-source-comparison-overlay.png");
+  await page.screenshot({ path: overlayScreenshot, fullPage: true });
+  assert.ok((await stat(overlayScreenshot)).size > 20_000, "overlay comparison screenshot was unexpectedly empty");
+
+  const comparisonSeparate = await page.evaluate(() => window.PolarInterfaceRenderer.render("multi-source-comparison-separate"));
+  assert.equal(comparisonSeparate.visualMode, "time-aligned-comparison");
+  assert.equal(comparisonSeparate.composite, "breathing_waveform_01");
+  assert.equal(comparisonSeparate.comparisonLayout, "separate");
+  assert.deepEqual(comparisonSeparate.comparisonSources, ["source-1", "source-2", "source-3"]);
+  assert.deepEqual(comparisonSeparate.traceColors, breathingTraceColors);
+  assert.deepEqual(comparisonSeparate.alignmentStatuses, comparisonOverlay.alignmentStatuses);
+  assert.deepEqual(comparisonSeparate.alignmentSigns, comparisonOverlay.alignmentSigns);
+  assert.deepEqual(comparisonSeparate.breathingRawKinds, comparisonOverlay.breathingRawKinds);
+  assert.equal(comparisonSeparate.laneCount, 3);
+  assert.deepEqual(comparisonSeparate.layoutInputs, { overlay: false, separate: true });
+  assert.match(comparisonSeparate.canvasLabel, /comparative separate-lane view of 3 independent breathing sources/i);
+  assert.match(comparisonSeparate.chartClass, /comparison-separate/);
+  assert.deepEqual(comparisonSeparate.legendLabels, comparisonOverlay.legendLabels);
+  const separateColorCounts = await inspectCanvasTraceColors(page, breathingTraceRgb);
+  assert.ok(separateColorCounts.every((count) => count > 25), `one or more separate breathing lanes were not drawn: ${JSON.stringify(separateColorCounts)}`);
+  const separateScreenshot = join(output, "multi-source-comparison-separate.png");
+  await page.screenshot({ path: separateScreenshot, fullPage: true });
+  assert.ok((await stat(separateScreenshot)).size > 20_000, "separate comparison screenshot was unexpectedly empty");
+
+  const reconnectComparison = await page.evaluate(() => window.PolarInterfaceRenderer.probeComparisonReconnect());
+  assert.equal(reconnectComparison.duringReconnect.selectedSourceId, "source-2");
+  assert.deepEqual(reconnectComparison.restored, {
+    selectedSourceId: "source-1",
+    visibleSourceIds: ["source-1", "source-2", "source-3"],
+  }, `comparison membership was not restored: ${JSON.stringify(reconnectComparison)}`);
+
+  const defaultWorkspaceProportions = [0.84 / 3.16, 1 / 3.16, 1.32 / 3.16];
+  const initialWorkspace = await inspectWorkspaceLayout(page);
+  assert.ok(initialWorkspace.dividers.every((divider) => divider.display === "block" && divider.width === 7));
+  assert.ok(initialWorkspace.dividers.every((divider) => divider.tabIndex === 0 && divider.ariaHidden === null));
+  assert.deepEqual(initialWorkspace.dividers.map(({ role, orientation, controls }) => ({ role, orientation, controls })), [
+    { role: "separator", orientation: "vertical", controls: "input-section output-section" },
+    { role: "separator", orientation: "vertical", controls: "output-section visual-section" },
+  ]);
+  assert.ok(initialWorkspace.dividers.every((divider) => divider.hitWidth >= 11), "divider pointer target is too narrow");
+  assert.ok(initialWorkspace.dividers.every((divider) => (
+    Number.isFinite(divider.valueNow)
+    && divider.valueNow >= divider.valueMin
+    && divider.valueNow <= divider.valueMax
+    && /Input \d+%, Output \d+%, Visualization \d+%/.test(divider.valueText)
+  )), `workspace divider ARIA state is incomplete: ${JSON.stringify(initialWorkspace.dividers)}`);
+  assert.ok(Math.abs(
+    initialWorkspace.panelWidths.reduce((sum, width) => sum + width, 0)
+      + initialWorkspace.dividerWidth - initialWorkspace.workspaceWidth,
+  ) < 1.5, "desktop panes and dividers do not preserve total workspace width");
+
+  await dragWorkspaceDivider(page, "#input-output-divider", 72);
+  const afterFirstDivider = await inspectWorkspaceLayout(page);
+  assert.ok(afterFirstDivider.panelWidths[0] - initialWorkspace.panelWidths[0] > 66, "first divider did not grow Input");
+  assert.ok(initialWorkspace.panelWidths[1] - afterFirstDivider.panelWidths[1] > 66, "first divider did not shrink Output");
+  assert.ok(Math.abs(afterFirstDivider.panelWidths[2] - initialWorkspace.panelWidths[2]) < 1.5,
+    "first divider changed the non-adjacent Visualization pane");
+
+  await dragWorkspaceDivider(page, "#output-visual-divider", -64);
+  const afterSecondDivider = await inspectWorkspaceLayout(page);
+  assert.ok(Math.abs(afterSecondDivider.panelWidths[0] - afterFirstDivider.panelWidths[0]) < 1.5,
+    "second divider changed the non-adjacent Input pane");
+  assert.ok(afterFirstDivider.panelWidths[1] - afterSecondDivider.panelWidths[1] > 58, "second divider did not shrink Output");
+  assert.ok(afterSecondDivider.panelWidths[2] - afterFirstDivider.panelWidths[2] > 58, "second divider did not grow Visualization");
+  assert.equal(afterSecondDivider.stored?.panes?.length, 3, "resized proportions were not persisted");
+  assert.ok(Math.abs(afterSecondDivider.stored.panes.reduce((sum, pane) => sum + pane, 0) - 1) < 0.00001,
+    "persisted pane proportions are not normalized");
+  assert.ok(Math.abs(afterSecondDivider.canvasPixelWidth - afterSecondDivider.chartWidth * afterSecondDivider.pixelRatio) <= 2,
+    "visualization canvas did not resize with its pane");
+  const resizedWorkspaceScreenshot = join(output, "workspace-resized-three-source.png");
+  await page.screenshot({ path: resizedWorkspaceScreenshot, fullPage: true });
+  assert.ok((await stat(resizedWorkspaceScreenshot)).size > 20_000, "resized workspace screenshot was unexpectedly empty");
+
+  const persistedWorkspaceProportions = [...afterSecondDivider.stored.panes];
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForFunction(() => Boolean(window.PolarInterfaceRenderer));
+  await page.evaluate(() => window.PolarInterfaceRenderer.ready());
+  await settleWorkspaceLayout(page);
+  const restoredWorkspace = await inspectWorkspaceLayout(page);
+  restoredWorkspace.proportions.forEach((pane, index) => {
+    assert.ok(Math.abs(pane - persistedWorkspaceProportions[index]) < 0.003,
+      `pane ${index + 1} did not restore its persisted proportion`);
+  });
+
+  const firstDivider = page.locator("#input-output-divider");
+  await firstDivider.dblclick();
+  await settleWorkspaceLayout(page);
+  await firstDivider.focus();
+  const beforeArrow = await inspectWorkspaceLayout(page);
+  await page.keyboard.press("ArrowRight");
+  await settleWorkspaceLayout(page);
+  const afterArrow = await inspectWorkspaceLayout(page);
+  const arrowDelta = afterArrow.panelWidths[0] - beforeArrow.panelWidths[0];
+  assert.ok(arrowDelta > 12 && arrowDelta < 20, `ArrowRight used an unexpected step: ${arrowDelta}`);
+  await firstDivider.dblclick();
+  await settleWorkspaceLayout(page);
+  const beforeShiftArrow = await inspectWorkspaceLayout(page);
+  await firstDivider.focus();
+  await page.keyboard.press("Shift+ArrowRight");
+  await settleWorkspaceLayout(page);
+  const afterShiftArrow = await inspectWorkspaceLayout(page);
+  const shiftArrowDelta = afterShiftArrow.panelWidths[0] - beforeShiftArrow.panelWidths[0];
+  assert.ok(shiftArrowDelta > arrowDelta * 2.5, `Shift+ArrowRight did not use a larger step: ${shiftArrowDelta}`);
+  await page.keyboard.press("Home");
+  await settleWorkspaceLayout(page);
+  const homeMinimumWorkspace = await inspectWorkspaceLayout(page);
+  assert.equal(homeMinimumWorkspace.dividers[0].valueNow, homeMinimumWorkspace.dividers[0].valueMin,
+    "Home did not move the focused separator to its minimum");
+  assert.ok(Math.abs(homeMinimumWorkspace.panelWidths[2] - afterShiftArrow.panelWidths[2]) < 1.5,
+    "Home changed the non-adjacent Visualization pane");
+  await page.keyboard.press("End");
+  await settleWorkspaceLayout(page);
+  const endMaximumWorkspace = await inspectWorkspaceLayout(page);
+  assert.equal(endMaximumWorkspace.dividers[0].valueNow, endMaximumWorkspace.dividers[0].valueMax,
+    "End did not move the focused separator to its maximum");
+  assert.ok(Math.abs(endMaximumWorkspace.panelWidths[2] - homeMinimumWorkspace.panelWidths[2]) < 1.5,
+    "End changed the non-adjacent Visualization pane");
+
+  await firstDivider.dblclick();
+  await settleWorkspaceLayout(page);
+  const doubleClickResetWorkspace = await inspectWorkspaceLayout(page);
+  doubleClickResetWorkspace.proportions.forEach((pane, index) => {
+    assert.ok(Math.abs(pane - defaultWorkspaceProportions[index]) < 0.003,
+      `double-click did not reset pane ${index + 1}`);
+  });
+  assert.deepEqual(doubleClickResetWorkspace.stored?.panes, defaultWorkspaceProportions.map((pane) => Number(pane.toFixed(6))));
+
+  await page.evaluate(() => window.PolarInterfaceRenderer.render("multi-source-comparison-separate"));
+  await settleWorkspaceLayout(page);
+
+  await page.setViewportSize({ width: 900, height: 780 });
+  await settleWorkspaceLayout(page);
+  const mobileWorkspace = await inspectWorkspaceLayout(page);
+  assert.ok(mobileWorkspace.dividers.every((divider) => (
+    divider.display === "none" && divider.tabIndex === -1 && divider.ariaHidden === "true" && divider.ariaDisabled === "true"
+  )), "workspace dividers remain interactive in the single-column layout");
+  assert.ok(mobileWorkspace.panelWidths.every((width) => Math.abs(width - mobileWorkspace.workspaceWidth) < 1.5),
+    "mobile panels are not full-width single-column lanes");
+  assert.ok(mobileWorkspace.panelTops[0] < mobileWorkspace.panelTops[1] && mobileWorkspace.panelTops[1] < mobileWorkspace.panelTops[2],
+    "mobile panels are not vertically ordered");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await settleWorkspaceLayout(page);
+  const desktopWorkspaceAgain = await inspectWorkspaceLayout(page);
+  assert.ok(desktopWorkspaceAgain.dividers.every((divider) => divider.display === "block" && divider.tabIndex === 0));
+  desktopWorkspaceAgain.proportions.forEach((pane, index) => {
+    assert.ok(Math.abs(pane - defaultWorkspaceProportions[index]) < 0.003,
+      `pane ${index + 1} did not restore after returning from mobile`);
+  });
+
+  await page.setViewportSize({ width: 901, height: 780 });
+  await settleWorkspaceLayout(page);
+  const narrowDesktopWorkspace = await inspectWorkspaceLayout(page);
+  assert.ok(narrowDesktopWorkspace.dividers.every((divider) => (
+    divider.display === "block"
+    && divider.tabIndex === 0
+    && divider.valueMin < divider.valueMax
+    && divider.valueNow >= divider.valueMin
+    && divider.valueNow <= divider.valueMax
+  )), `901px divider constraints are not operable: ${JSON.stringify(narrowDesktopWorkspace.dividers)}`);
+  const secondDivider = page.locator("#output-visual-divider");
+  await secondDivider.focus();
+  await page.keyboard.press("End");
+  await settleWorkspaceLayout(page);
+  const narrowVisualMinimum = await inspectWorkspaceLayout(page);
+  assert.equal(narrowVisualMinimum.dividers[1].valueNow, narrowVisualMinimum.dividers[1].valueMax);
+  assert.ok(narrowVisualMinimum.panelScrollWidths[2] <= narrowVisualMinimum.panelWidths[2] + 2,
+    `narrow Visualization pane overflows horizontally: ${JSON.stringify(narrowVisualMinimum)}`);
+  assert.ok(Math.abs(narrowVisualMinimum.canvasPixelWidth - narrowVisualMinimum.chartWidth * narrowVisualMinimum.pixelRatio) <= 2,
+    "canvas backing width did not follow the narrow Visualization pane");
+  await secondDivider.dblclick();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await settleWorkspaceLayout(page);
 
   const accLibrary = await page.evaluate(() => window.PolarInterfaceRenderer.render("acc-primary-library"));
   assert.deepEqual(accLibrary.primaryIds, [
@@ -614,14 +911,14 @@ try {
 
   await page.locator("#output-dialog").evaluate((dialog) => dialog.close());
   await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
-  for (const [theme, expectedColor] of [["light", "#176B9E"], ["dark", "#7CCBFF"]]) {
+  for (const [theme, expectedColor] of [["light", "#1368AA"], ["dark", "#67B7F7"]]) {
     const wantsDark = theme === "dark";
     const isDark = await page.locator("html").getAttribute("data-theme") === "dark";
     if (isDark !== wantsDark) await page.locator("#theme-toggle").click();
     assert.equal(await page.locator("#theme-toggle").getAttribute("aria-pressed"), String(wantsDark));
     assert.equal(await page.locator("meta[name='theme-color']").getAttribute("content"), wantsDark ? "#202428" : "#17221d");
     await page.evaluate(() => window.PolarInterfaceRenderer.render("multiple-colored-sources"));
-    await page.evaluate(() => document.querySelector('[data-source-id="source-1"] button').click());
+    await page.locator("#visual-device").selectOption("source-1");
     assert.equal(await page.locator("#chart-shell").evaluate((node) => node.style.getPropertyValue("--source-color")), expectedColor);
     for (const selector of [
       '#connected-device-list [data-source-id="source-1"] .device-icon',
@@ -699,7 +996,7 @@ try {
   assert.equal(await firstPaintTheme.locator("html").getAttribute("data-theme"), "light", "explicit theme preference did not override the OS setting");
   await firstPaintTheme.close();
 
-  process.stdout.write(`Validated primary/extra ACC outputs, safe breathing comparison, source palettes, light/dark desktop, dialog, mobile, and intermediate-width states, ${targets.length} classifier renders, and ${library.previewCount} metric previews in ${output}\n`);
+  process.stdout.write(`Validated the quiet research-workbench UI, output transactions, draggable persisted desktop splitters, three-source breathing comparison, source palettes, light/dark desktop, dialog, mobile, and intermediate-width states, ${targets.length} classifier renders, and ${library.previewCount} metric previews in ${output}\n`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

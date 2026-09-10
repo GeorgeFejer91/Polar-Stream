@@ -432,14 +432,17 @@ mod tests {
             polar_h10_metrics::BreathingWaveformPoint {
                 source_timestamp_ns: 1_000_000_000,
                 volume_01: 0.5,
+                projection_g: 0.0,
             },
             polar_h10_metrics::BreathingWaveformPoint {
                 source_timestamp_ns: 1_004_940_000,
                 volume_01: 0.5,
+                projection_g: 0.0,
             },
             polar_h10_metrics::BreathingWaveformPoint {
                 source_timestamp_ns: 1_009_880_000,
                 volume_01: 0.5,
+                projection_g: 0.0,
             },
         ]);
 
@@ -463,18 +466,22 @@ mod tests {
             polar_h10_metrics::BreathingWaveformPoint {
                 source_timestamp_ns: 1_000_000_000,
                 volume_01: 0.5,
+                projection_g: 0.0,
             },
             polar_h10_metrics::BreathingWaveformPoint {
                 source_timestamp_ns: 1_004_400_000,
                 volume_01: 0.5,
+                projection_g: 0.0,
             },
             polar_h10_metrics::BreathingWaveformPoint {
                 source_timestamp_ns: 1_004_400_000,
                 volume_01: 0.5,
+                projection_g: 0.0,
             },
             polar_h10_metrics::BreathingWaveformPoint {
                 source_timestamp_ns: 1_010_600_000,
                 volume_01: 0.5,
+                projection_g: 0.0,
             },
         ]);
 

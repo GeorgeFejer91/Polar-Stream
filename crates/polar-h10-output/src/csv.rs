@@ -723,6 +723,10 @@ mod tests {
         assert!(contents.contains(",4000000000,vernier_breathing,1,,,,0.75,0–1"));
         assert!(contents.contains("# schema_version,3"));
         assert!(contents.contains("# source_palette_id,ocean"));
+        assert!(contents.contains("# source_palette_light_primary,#1368AA"));
+        assert!(contents.contains("# source_palette_light_secondary,#1368AA"));
+        assert!(contents.contains("# source_palette_dark_primary,#67B7F7"));
+        assert!(contents.contains("# source_palette_dark_secondary,#67B7F7"));
         assert!(contents.contains("# polar_respiration_algorithm,polar-stream-acc-respiration"));
         assert!(contents.contains("# polar_respiration_volume_mode,timed-pca-v1"));
         assert!(contents.contains("# polar_respiration_state_mode,hysteresis-v1"));

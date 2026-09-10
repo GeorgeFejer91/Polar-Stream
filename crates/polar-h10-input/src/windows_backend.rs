@@ -68,6 +68,12 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const GATT_TIMEOUT: Duration = Duration::from_secs(5);
 const PMD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const FIRST_STREAM_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+// ECG and ACC share the PMD data characteristic and ordinarily arrive many
+// times per second. Windows can leave a GATT session object open while its
+// notifications have silently stopped (for example after radio-intensive
+// discovery on some adapters). Do not keep advertising frozen samples as a
+// live stream indefinitely.
+const STEADY_STATE_PMD_STALL_TIMEOUT: Duration = Duration::from_secs(3);
 const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(45);
 const EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const CLEANUP_OPERATION_TIMEOUT: Duration = Duration::from_millis(500);
@@ -1594,6 +1600,7 @@ fn run_synchronous_session_owner(
     event_tx: mpsc::Sender<InputEvent>,
     setup_tx: &mut Option<oneshot::Sender<Result<(), String>>>,
     cancelled: watch::Receiver<bool>,
+    discovery_active: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let diagnostics_enabled = std::env::var_os(SESSION_DIAGNOSTICS_ENV).is_some();
     if diagnostics_enabled {
@@ -1698,18 +1705,38 @@ fn run_synchronous_session_owner(
             .map_err(|_| "Windows H10 setup receiver closed".to_string())?;
     }
 
-    while !*cancelled.borrow() {
-        inbox.callback_state.check()?;
-        match inbox.rx.recv_timeout(SYNC_OWNER_POLL_INTERVAL) {
-            Ok(raw) => {
-                if let Some(event) = decode_notification(raw) {
-                    try_send_sync(&event_tx, event)?;
-                }
+    let mut last_pmd_at = Instant::now();
+    let steady_state_result = (|| {
+        while !*cancelled.borrow() {
+            inbox.callback_state.check()?;
+            if *discovery_active.borrow() {
+                // Scans are explicitly bounded by the pool/app lease. Start a
+                // complete post-discovery grace period instead of treating
+                // intentional adapter contention as a dead PMD stream.
+                last_pmd_at = Instant::now();
             }
-            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+            let remaining = STEADY_STATE_PMD_STALL_TIMEOUT.saturating_sub(last_pmd_at.elapsed());
+            if remaining.is_zero() {
+                return Err(pmd_stall_error(STEADY_STATE_PMD_STALL_TIMEOUT));
+            }
+            match inbox
+                .rx
+                .recv_timeout(SYNC_OWNER_POLL_INTERVAL.min(remaining))
+            {
+                Ok(raw) => {
+                    if raw.source == NotificationSource::PmdData {
+                        last_pmd_at = Instant::now();
+                    }
+                    if let Some(event) = decode_notification(raw) {
+                        try_send_sync(&event_tx, event)?;
+                    }
+                }
+                Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+            }
         }
-    }
+        Ok(())
+    })();
     session.cleanup();
     let _ = try_send_sync(
         &event_tx,
@@ -1718,7 +1745,7 @@ fn run_synchronous_session_owner(
             battery_percent: None,
         },
     );
-    Ok(())
+    steady_state_result
 }
 
 fn clear_active_synchronously(manager: &Weak<InputManager>, generation: u64) {
@@ -1740,8 +1767,9 @@ pub(super) async fn spawn_session(
     manager: Weak<InputManager>,
     generation: u64,
     mut cancelled: watch::Receiver<bool>,
-    finished: watch::Sender<bool>,
+    lifecycle: (watch::Sender<bool>, watch::Receiver<bool>),
 ) -> Result<(), String> {
+    let (finished, mut discovery_active) = lifecycle;
     let profile = SessionProfile::from_environment()?;
     let (setup_tx, setup_rx) = oneshot::channel();
     thread::Builder::new()
@@ -1763,6 +1791,7 @@ pub(super) async fn spawn_session(
                     event_tx.clone(),
                     &mut setup_tx,
                     cancelled,
+                    discovery_active,
                 );
                 if let Err(error) = result {
                     if let Some(sender) = setup_tx.take() {
@@ -1791,7 +1820,15 @@ pub(super) async fn spawn_session(
                             }
                             return;
                         }
-                        run_connection(prepared, manager, generation, cancelled, finished).await;
+                        run_connection(
+                            prepared,
+                            manager,
+                            generation,
+                            cancelled,
+                            finished,
+                            &mut discovery_active,
+                        )
+                        .await;
                     }
                     Err(error) => {
                         if let Some(manager) = manager.upgrade() {
@@ -1814,6 +1851,38 @@ enum NotificationSource {
     PmdControl,
     PmdData,
     HeartRate,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PmdLiveness {
+    timeout: Duration,
+    deadline: tokio::time::Instant,
+}
+
+impl PmdLiveness {
+    fn new(now: tokio::time::Instant, timeout: Duration) -> Self {
+        Self {
+            timeout,
+            deadline: now + timeout,
+        }
+    }
+
+    fn observe(&mut self, source: NotificationSource, now: tokio::time::Instant) {
+        if source == NotificationSource::PmdData {
+            self.deadline = now + self.timeout;
+        }
+    }
+
+    fn deadline(self) -> tokio::time::Instant {
+        self.deadline
+    }
+}
+
+fn pmd_stall_error(timeout: Duration) -> String {
+    format!(
+        "Polar H10 ECG and accelerometer notifications stopped for {:.0} seconds. The stale Windows Bluetooth session was closed so a clean reconnection can resume live data.",
+        timeout.as_secs_f32()
+    )
 }
 
 impl NotificationSource {
@@ -3435,6 +3504,7 @@ async fn run_connection(
     generation: u64,
     mut cancelled: watch::Receiver<bool>,
     finished: watch::Sender<bool>,
+    discovery_active: &mut watch::Receiver<bool>,
 ) {
     if *cancelled.borrow() {
         prepared.session.shutdown().await;
@@ -3477,6 +3547,10 @@ async fn run_connection(
         let mut diagnostic_tick = tokio::time::interval(Duration::from_secs(5));
         diagnostic_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         diagnostic_tick.tick().await;
+        let mut pmd_liveness =
+            PmdLiveness::new(tokio::time::Instant::now(), STEADY_STATE_PMD_STALL_TIMEOUT);
+        let pmd_stall = tokio::time::sleep_until(pmd_liveness.deadline());
+        tokio::pin!(pmd_stall);
         loop {
             tokio::select! {
                 changed = cancelled.changed() => {
@@ -3494,13 +3568,44 @@ async fn run_connection(
                         break;
                     }
                 }
+                changed = discovery_active.changed() => {
+                    if changed.is_ok() {
+                        // Whether discovery just started or ended, allow one
+                        // complete PMD interval budget before judging silence.
+                        // The timeout branch independently checks the current
+                        // flag, so a simultaneous scan-start cannot false-fire.
+                        pmd_liveness = PmdLiveness::new(
+                            tokio::time::Instant::now(),
+                            STEADY_STATE_PMD_STALL_TIMEOUT,
+                        );
+                        pmd_stall.as_mut().reset(pmd_liveness.deadline());
+                    }
+                }
                 raw = prepared.raw_rx.recv() => {
                     let Some(raw) = raw else { break };
+                    pmd_liveness.observe(raw.source, tokio::time::Instant::now());
+                    pmd_stall.as_mut().reset(pmd_liveness.deadline());
                     if let Some(event) = decode_notification(raw)
                         && send_event(&prepared.event_tx, event).await.is_err()
                     {
                         break;
                     }
+                }
+                () = &mut pmd_stall => {
+                    if *discovery_active.borrow() {
+                        pmd_liveness = PmdLiveness::new(
+                            tokio::time::Instant::now(),
+                            STEADY_STATE_PMD_STALL_TIMEOUT,
+                        );
+                        pmd_stall.as_mut().reset(pmd_liveness.deadline());
+                        continue;
+                    }
+                    let _ = send_event(
+                        &prepared.event_tx,
+                        InputEvent::Error(pmd_stall_error(STEADY_STATE_PMD_STALL_TIMEOUT)),
+                    )
+                    .await;
+                    break;
                 }
                 _ = diagnostic_tick.tick() => {
                     prepared.session.report_link_diagnostic("steady-state");
@@ -4373,11 +4478,33 @@ mod tests {
         assert!(*finished_rx.borrow());
     }
 
+    #[test]
+    fn pmd_liveness_ignores_heart_rate_but_extends_on_sensor_data() {
+        let timeout = Duration::from_secs(3);
+        let started = tokio::time::Instant::now();
+        let mut liveness = PmdLiveness::new(started, timeout);
+        assert_eq!(liveness.deadline(), started + timeout);
+
+        liveness.observe(
+            NotificationSource::HeartRate,
+            started + Duration::from_secs(1),
+        );
+        assert_eq!(liveness.deadline(), started + timeout);
+
+        liveness.observe(
+            NotificationSource::PmdData,
+            started + Duration::from_secs(2),
+        );
+        assert_eq!(liveness.deadline(), started + Duration::from_secs(5));
+        assert!(pmd_stall_error(timeout).contains("stale Windows Bluetooth session was closed"));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn session_owner_reports_setup_failure_without_blocking_the_caller_runtime() {
         let manager = Arc::new(InputManager::new());
         let (event_tx, _event_rx) = mpsc::channel(4);
         let (_cancel_tx, cancelled) = watch::channel(false);
+        let (_discovery_tx, discovery_active) = watch::channel(false);
         let (finished_tx, mut finished_rx) = watch::channel(false);
         let heartbeat = tokio::spawn(async {
             tokio::task::yield_now().await;
@@ -4391,7 +4518,7 @@ mod tests {
             Arc::downgrade(&manager),
             1,
             cancelled,
-            finished_tx,
+            (finished_tx, discovery_active),
         )
         .await
         .unwrap_err();

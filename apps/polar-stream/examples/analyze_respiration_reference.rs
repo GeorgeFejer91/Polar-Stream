@@ -569,7 +569,7 @@ mod tests {
     use super::*;
 
     const HEADER_V2: &str = "# Polar Stream native recording\n# schema_version,2\nhost_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream,sample_index,x_mg,y_mg,z_mg,value,unit\n";
-    const HEADER_V3: &str = "# Polar Stream native recording\n# schema_version,3\nhost_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream,sample_index,x_mg,y_mg,z_mg,value,unit\n";
+    const HEADER_V3: &str = "# Polar Stream native recording\n# schema_version,3\n# source_palette_id,ocean\nhost_timestamp_ms,relative_time_s,sensor_timestamp_ns,stream,sample_index,x_mg,y_mg,z_mg,value,unit\n";
 
     #[test]
     fn parses_h10_batches_and_preserves_notification_boundaries() {
@@ -602,6 +602,16 @@ mod tests {
             parse_native_csv(csv, RecordingRole::Gdx).unwrap_err(),
             "native CSV did not declare supported schema version 2 or 3"
         );
+    }
+
+    #[test]
+    fn accepts_current_schema_three_recordings() {
+        let csv = format!(
+            "{HEADER_V3}1000.000,0.000000,1000000000,raw_acc,0,1,2,3,,mg\n1005.000,0.005000,1005000000,raw_acc,1,4,5,6,,mg\n"
+        );
+        let parsed = parse_native_csv(&csv, RecordingRole::H10).unwrap();
+        assert_eq!(parsed.schema_version.as_deref(), Some("3"));
+        assert_eq!(parsed.raw_acc_samples, 2);
     }
 
     #[test]

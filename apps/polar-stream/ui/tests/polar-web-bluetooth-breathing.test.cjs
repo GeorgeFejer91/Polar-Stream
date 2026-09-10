@@ -160,9 +160,30 @@ test("36-sample physical cadence interpolates between newest PMD anchors", () =>
   const second = processor.pushTimed(batch, 2_422_400_000n);
   assert.equal(second.sensorTimestampNs, "2422400000");
   assert.equal(second.presentationPoints.at(-1).sourceTimestampNs, "2422400000");
+  assert.ok(Number.isFinite(second.presentationPoints.at(-1).projectionG));
+  assert.equal(second.presentationPoints.at(-1).projectionG, second.magnitudeG);
   const prior = second.presentationPoints.at(-36);
   assert.equal(prior.sourceTimestampNs, "2249538888");
   assert.ok(Number(second.presentationPoints.at(-1).sourceTimestampNs) - Number(prior.sourceTimestampNs) > 170_000_000);
+});
+
+test("timed presentation keeps projection before the canonical volume clamp", () => {
+  const api = load();
+  const processor = api.createTimedBreathingProcessor({ adaptiveBounds: false });
+  processor.calibrated = true;
+  processor.center = [0, 0, 0];
+  processor.axis = [1, 0, 0];
+  processor.boundMin = -0.01;
+  processor.boundMax = 0.01;
+  processor.calibrationSpan = 0.02;
+
+  const snapshot = processor.pushTimed([{ xMg: 100, yMg: 0, zMg: 0 }], 1_000_000_000n);
+  const point = snapshot.presentationPoints.at(-1);
+
+  assert.equal(point.volume01, 1);
+  assert.ok(Number.isFinite(point.projectionG));
+  assert.ok(point.projectionG > processor.boundMax);
+  assert.equal(point.projectionG, snapshot.magnitudeG);
 });
 
 test("gap detection uses the batch boundary, not the full notification duration", () => {

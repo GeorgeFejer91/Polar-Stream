@@ -763,7 +763,11 @@
           }
           if (!hadForwardGap) this.lastProjection = projection;
           this.lastVolume = volume;
-          presentationPoints.push({ sourceTimestampNs: String(entry.timeNs), volume01: volume });
+          presentationPoints.push({
+            sourceTimestampNs: String(entry.timeNs),
+            volume01: volume,
+            projectionG: Number.isFinite(projection) ? projection : 0,
+          });
         }
       }
       this.diagnostics.accepted += accepted.length;

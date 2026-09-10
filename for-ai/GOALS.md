@@ -5,7 +5,28 @@ items into the dated history instead of silently deleting them.
 
 ## Now
 
-1. Publish a continuously synchronized browser demo on GitHub Pages.
+1. Demonstrate three simultaneous breathing sources in the installed app.
+   - Keep two Polar H10 sessions and one Vernier GDX-RB session acquiring at
+     the same time, with independent bounded buffers and source clocks.
+   - Automatically allocate one unused, visually distinct color when each
+     device connects, while letting the user choose another unused color from
+     its device widget. Use that same identity for every signal and UI surface
+     belonging to the input, including all overlaid breathing traces.
+   - Let every compatible active source join one visualization. Provide an
+     overlaid shared-axis layout and a separate-lane layout without enabling,
+     merging, or republishing a source as a side effect.
+   - Treat checked candidates plus Connect selected as a current-session
+     desired set. Serialize native setup, require a real streaming event before
+     LIVE, retry unexpected drops with bounded backoff, and restore the same
+     focused visual plus visible comparison set after recovery.
+   - Render breathing from mapped source time behind one bounded delayed
+     playhead, interpolating at the display cadence while preserving gaps and
+     never extrapolating samples. Keep H10 direction Auto/Normal/Flip
+     presentation-only and label weak or changing Vernier agreement honestly.
+   - Qualify the exact installed Windows program with two live H10 ACC
+     breathing waveforms and one live Vernier breathing waveform advancing in
+     three visibly distinct colors in the same visualization workspace.
+2. Publish a continuously synchronized browser demo on GitHub Pages.
    - Build Pages from the exact canonical `apps/polar-stream/ui/` assets used by
      Tauri; do not maintain a second interface copy.
    - Offer the canonical anonymized 60-second H10 recording as an explicit
@@ -27,6 +48,10 @@ items into the dated history instead of silently deleting them.
    - Cover desktop Chromium and smartphone layouts down to 320 CSS pixels,
      including the output library and metric controls, without horizontal page
      overflow.
+   - Preserve the two adjacent-only desktop pane separators, normalized local
+     persistence, keyboard limits/default reset, and canvas resize behavior at
+     901 CSS pixels and wider. Keep both separators hidden and disabled in the
+     single-column layout at 900 pixels and below.
    - Implementation and automated coverage are present; retain these as ongoing
      parity requirements for every future interface change.
    - Retain the shared CSV and experimental PCM-audio destination controls in
@@ -38,7 +63,7 @@ items into the dated history instead of silently deleting them.
    - After every completed edit, production-build/install the desktop app,
      publish the accepted canonical UI to `main`, verify the live Pages manifest
      against the checkout, and return the live Pages URL in the handoff.
-2. Keep the metric picker and Formula Lab evidence-first and approachable.
+3. Keep the metric picker and Formula Lab evidence-first and approachable.
    - Preserve one-at-a-time output addition and the responsive ECG/ACC filter
      layout.
    - Keep recorded preview coverage for every catalog metric, but animate only
@@ -55,10 +80,10 @@ items into the dated history instead of silently deleting them.
    - Offer only the quality-gated `breathing_volume` + readiness + confidence
      set for new Polar respiration work. Keep legacy respiration IDs restorable
      but hidden and visibly compatibility-only.
-3. Keep repository context agent-ready.
+4. Keep repository context agent-ready.
    - Root `AGENTS.md` routes agents to `for-ai/`.
    - Context validation passes in local work and CI when adopted.
-4. Keep native Vernier recording raw-first and immediately discoverable.
+5. Keep native Vernier recording raw-first and immediately discoverable.
    - On a verified GDX-RB connection, enable every compatible metadata-exposed
      numeric channel and create one stable per-device `rawVernier` LSL outlet
      before the first measurement is published.
@@ -71,7 +96,7 @@ items into the dated history instead of silently deleting them.
    - Keep the force-only browser transport and lack of browser LSL explicit.
      Retain official liblsl-consumer coverage and physically requalify the
      revised all-channel mask/two-outlet path before broadening hardware claims.
-5. Preserve device-first protocol modularity in the canonical interface.
+6. Preserve device-first protocol modularity in the canonical interface.
    - Keep Output and Visualization empty when no source is connected.
    - Treat connection as the only trigger for a device profile's default
      outputs, and treat those outputs as the only trigger for applicable
@@ -83,22 +108,24 @@ items into the dated history instead of silently deleting them.
      protocol candidate registry without stopping active same- or mixed-family
      owners, exclude connected identities, and keep every source-suffixed LSL
      outlet advancing concurrently.
-   - Preserve mapped timestamp/gap evidence in bounded temporal UI rings. Offer
-     one opt-in comparator only when another source already exposes an active,
-     family-safe signal; keep normalized Polar/Vernier breathing on a shared
-     fixed 0–1 host-time view and reject force/ACC or ECG/breathing pairings.
+   - Preserve mapped timestamp/gap evidence in bounded temporal UI rings. Let
+     the user add any number of active, family-safe sources to an overlay or
+     separate-lane view; keep normalized Polar/Vernier breathing on a shared
+     fixed 0–1 host-time scale and reject force/ACC or ECG/breathing pairings.
    - Retain the exact five-inlet official pylsl gate for ECG, ACC, Polar
      breathingVolume, rawVernier, and vernierBreathing with an overlapping
      local-LSL-clock interval. A
      physical paired H10/GDX run remains required before hardware qualification.
    - Keep search results as classified, non-widget candidates. Promote only a
-     successful connection into a device widget with source-owned controls and
-     color identity; keep Vernier's reconnect control inside that widget and on
-     by default for a new preference state.
+     streaming-confirmed connection into a device widget with source-owned
+     controls and color identity. Let the user select several candidates and
+     connect them as one current-session desired set, serialize native setup,
+     retry unexpected Polar or Vernier drops with bounded backoff, and require
+     deliberate Disconnect to remove a device from that set.
    - Keep device raw measurements automatic, non-removable outputs that enable
      native LSL on physical connection. Keep processed metrics/formulas opt-in,
      and derive Visualization availability from automatic or selected outputs.
-6. Ship a self-contained native XDF recording workflow.
+7. Ship a self-contained native XDF recording workflow.
    - Keep the official pinned LabRecorder and its Qt/liblsl runtime inside every
      desktop package; users must not need a separate recorder download.
    - Keep **Open Lab Recorder** in the shared Output UI. Native activation must

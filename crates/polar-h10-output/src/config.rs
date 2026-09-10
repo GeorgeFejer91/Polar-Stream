@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourcePaletteColors {
+    /// Canonical source identity color.
     pub primary: String,
+    /// Compatibility alias for the same source identity color.
     pub secondary: String,
 }
 
@@ -21,14 +23,14 @@ pub struct SourcePalette {
 }
 
 const SOURCE_PALETTE_VALUES: [(&str, &str, &str, &str, &str); 8] = [
-    ("ocean", "#176B9E", "#2AA8B8", "#7CCBFF", "#72E4EA"),
-    ("sunset", "#B83E35", "#C96815", "#FF8E84", "#FFB366"),
-    ("meadow", "#4E7B27", "#168267", "#A8DA6D", "#70DDB1"),
-    ("solar", "#8A6810", "#B58713", "#FFD166", "#FFE99A"),
-    ("orchid", "#6D55A3", "#A64476", "#C4AEFF", "#FF9BC5"),
-    ("lagoon", "#14796F", "#447E9C", "#67E0D0", "#A9D7F5"),
-    ("ember", "#A64925", "#B9445E", "#FF9A70", "#FF94AD"),
-    ("iris", "#4F63A3", "#7C6AB3", "#9FB3FF", "#CFB8FF"),
+    ("ocean", "#1368AA", "#1368AA", "#67B7F7", "#67B7F7"),
+    ("sunset", "#B43C4C", "#B43C4C", "#FF9292", "#FF9292"),
+    ("meadow", "#18794E", "#18794E", "#62D394", "#62D394"),
+    ("solar", "#806500", "#806500", "#E7C65C", "#E7C65C"),
+    ("orchid", "#8246A3", "#8246A3", "#D3A0ED", "#D3A0ED"),
+    ("lagoon", "#007A78", "#007A78", "#51D4CF", "#51D4CF"),
+    ("ember", "#B94D00", "#B94D00", "#FF9A5C", "#FF9A5C"),
+    ("iris", "#4F5EAD", "#4F5EAD", "#A8B1FF", "#A8B1FF"),
 ];
 
 pub fn source_palette_catalog() -> Vec<SourcePalette> {
@@ -173,8 +175,15 @@ impl OutputConfig {
 
     /// Tolerant one-time migration for preferences produced by an older app.
     /// Size bounds still apply, but retired metric IDs may be discarded.
-    pub fn migrated(self) -> Result<Self, String> {
+    pub fn migrated(mut self) -> Result<Self, String> {
         self.validate_collection_bounds()?;
+        self.source_palette = self
+            .source_palette
+            .map(|palette| {
+                source_palette(&palette.id)
+                    .ok_or_else(|| format!("Unknown source palette: {}", palette.id))
+            })
+            .transpose()?;
         self.normalized()
     }
 
@@ -480,6 +489,28 @@ mod tests {
         (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
     }
 
+    fn hue_degrees(color: &str) -> f64 {
+        let channel =
+            |offset| u8::from_str_radix(&color[offset..offset + 2], 16).unwrap() as f64 / 255.0;
+        let red = channel(1);
+        let green = channel(3);
+        let blue = channel(5);
+        let maximum = red.max(green).max(blue);
+        let minimum = red.min(green).min(blue);
+        let delta = maximum - minimum;
+        if delta == 0.0 {
+            return 0.0;
+        }
+        let hue = if maximum == red {
+            60.0 * ((green - blue) / delta).rem_euclid(6.0)
+        } else if maximum == green {
+            60.0 * ((blue - red) / delta + 2.0)
+        } else {
+            60.0 * ((red - green) / delta + 4.0)
+        };
+        hue.rem_euclid(360.0)
+    }
+
     #[test]
     fn source_palette_catalog_is_unique_and_canonical() {
         let palettes = source_palette_catalog();
@@ -489,6 +520,26 @@ mod tests {
             .map(|palette| palette.id.as_str())
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(ids.len(), palettes.len());
+        let light_primaries = palettes
+            .iter()
+            .map(|palette| palette.light.primary.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let light_secondaries = palettes
+            .iter()
+            .map(|palette| palette.light.secondary.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let dark_primaries = palettes
+            .iter()
+            .map(|palette| palette.dark.primary.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let dark_secondaries = palettes
+            .iter()
+            .map(|palette| palette.dark.secondary.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(light_primaries.len(), palettes.len());
+        assert_eq!(light_secondaries.len(), palettes.len());
+        assert_eq!(dark_primaries.len(), palettes.len());
+        assert_eq!(dark_secondaries.len(), palettes.len());
         for palette in palettes {
             for color in [
                 palette.light.primary,
@@ -504,10 +555,33 @@ mod tests {
     }
 
     #[test]
+    fn source_palettes_are_single_color_identities_with_distinct_hues() {
+        let palettes = source_palette_catalog();
+        for palette in source_palette_catalog() {
+            assert_eq!(palette.light.primary, palette.light.secondary);
+            assert_eq!(palette.dark.primary, palette.dark.secondary);
+        }
+        for (index, left) in palettes.iter().enumerate() {
+            for right in palettes.iter().skip(index + 1) {
+                let left_hue = hue_degrees(&left.light.primary);
+                let right_hue = hue_degrees(&right.light.primary);
+                let hue_distance = (left_hue - right_hue).abs();
+                let circular_distance = hue_distance.min(360.0 - hue_distance);
+                assert!(
+                    circular_distance >= 19.0,
+                    "{} and {} are not visually separated enough ({circular_distance} degrees)",
+                    left.id,
+                    right.id,
+                );
+            }
+        }
+    }
+
+    #[test]
     fn source_palettes_remain_visible_on_their_theme_foundations() {
         for palette in source_palette_catalog() {
             assert!(contrast_ratio(&palette.light.primary, "#FFFFFF") >= 4.5);
-            assert!(contrast_ratio(&palette.light.secondary, "#FFFFFF") >= 2.75);
+            assert!(contrast_ratio(&palette.light.secondary, "#FFFFFF") >= 4.5);
             assert!(contrast_ratio(&palette.dark.primary, "#090B0A") >= 7.0);
             assert!(contrast_ratio(&palette.dark.secondary, "#090B0A") >= 7.0);
         }
@@ -520,10 +594,10 @@ mod tests {
             palette.metadata_fields(),
             [
                 ("id", "ocean"),
-                ("light_primary", "#176B9E"),
-                ("light_secondary", "#2AA8B8"),
-                ("dark_primary", "#7CCBFF"),
-                ("dark_secondary", "#72E4EA"),
+                ("light_primary", "#1368AA"),
+                ("light_secondary", "#1368AA"),
+                ("dark_primary", "#67B7F7"),
+                ("dark_secondary", "#67B7F7"),
             ]
         );
     }
@@ -684,6 +758,29 @@ mod tests {
                 "{id} must not claim a regular LSL rate"
             );
         }
+    }
+
+    #[test]
+    fn legacy_migration_canonicalizes_embedded_palette_by_stable_id() {
+        let legacy_palette = SourcePalette {
+            id: "ocean".into(),
+            light: SourcePaletteColors {
+                primary: "#176B9E".into(),
+                secondary: "#2AA8B8".into(),
+            },
+            dark: SourcePaletteColors {
+                primary: "#7CCBFF".into(),
+                secondary: "#72E4EA".into(),
+            },
+        };
+        let config = OutputConfig {
+            source_palette: Some(legacy_palette),
+            ..OutputConfig::default()
+        }
+        .migrated()
+        .unwrap();
+
+        assert_eq!(config.source_palette, source_palette("ocean"));
     }
 
     #[test]

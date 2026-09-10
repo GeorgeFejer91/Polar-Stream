@@ -81,6 +81,108 @@ without changing active sensor ownership. Apply the same compensation rule to
 the renderer-owned audio modem. Browser mixed-source CSV exports must include a
 bounded identity manifest keyed by each data row's source ID so late-added
 Polar and Vernier inputs remain reconstructable.
+## 2026-09-10 — Smooth breathing on source time and keep direction evidence provisional
+
+The comparative breathing renderer consumes finite unclipped H10 projection
+points and raw Vernier force on their mapped host timelines. Normalize each
+source independently with robust recent bounds, then sample every trace behind
+one 0.18-second delayed playhead at the display cadence with light causal
+smoothing. The playhead may advance between BLE notifications, but a trace
+stops at its newest observed sample and breaks across gaps; presentation must
+never hold a value forward or invent future physiology. Canonical metrics,
+classification, LSL, OSC, and CSV remain unchanged.
+
+Vernier rise is the descriptive inhale-up reference. Each H10 offers
+session-only Auto, Normal, and Flip display direction. Auto may adopt a sign
+only after sufficient overlapping span, reversals, freshness, correlation, and
+repeat passes; weaker evidence is provisional, changing evidence is uncertain,
+and absent/flat/stale evidence does not acquire a direction. A synchronized
+diagnostic run showed that fixed axes, fitted projections, and whole-session
+inversion can reverse with posture and overfit across time windows, so do not
+ship a reference-fitted transform or claim physiological validation from one
+mounting/session.
+
+## 2026-09-10 — A selected device set is a current-session connection contract
+
+Available sensors use checkboxes and one **Connect selected** action. That
+action adds every selected identity to the desired set for the current app
+instance; native attempts run strictly one at a time so multiple H10 and
+Vernier setup operations do not compete for the Bluetooth adapter. A device is
+labeled `LIVE` only after its connection event explicitly reports streaming.
+The descriptor returned by the connect command is not sufficient evidence.
+
+An unexpected disconnect keeps the device identity and color, performs a
+provider-targeted discovery under the native radio-activity lease, and retries with
+bounded 1.5, 3, 6, 12, and 24 second backoff. Exhaustion becomes `ATTENTION`
+instead of silently claiming a live stream. Deliberate Disconnect removes the
+device from the desired set before transport teardown; shutdown invalidates all
+timers and queued attempts. Browser Bluetooth cannot retry without a fresh user
+gesture, so browser drops become `ATTENTION` and require another explicit
+Connect selected action. This contract is session-local and does not silently
+connect hardware after a later app launch.
+
+The same refcounted lease covers each intentional serialized BLE connection
+setup. Qualified H10 sessions therefore suspend only their silence watchdog
+during scan/setup contention and restart with a full grace interval afterward;
+their acquisition ownership and output publication remain independent.
+
+## 2026-09-10 — Use one visually continuous color identity per input source
+
+This supersedes the cardiac-red/breathing-blue split in the color portion of
+the same-day N-way visualization decision below. Each active input receives one
+automatically unused color from an eight-hue categorical catalog, and the user
+may replace it with another unused color from a single-swatch picker. The same
+theme-aware identity must mark the connected-device box, selected Input and
+Output surfaces, visualization frame, every trace from that source, comparison
+checkbox, and legend. Signal type no longer changes a source's color.
+
+Preserve the stable `SourcePalette` IDs and primary/secondary light/dark wire
+shape for saved preferences, LSL descriptors, native CSV, and browser CSV.
+Canonical palettes set primary and secondary to the same value in each theme;
+the legacy top-level `color` remains the light-primary alias. Palette changes
+retain the existing clean output-metadata boundary and restart behavior. This
+is a presentation identity change only and does not alter raw values, derived
+processing, units, clocks, output names, or the N-way compatibility rules.
+
+## 2026-09-10 — Keep pane sizing local, adjacent, and responsive
+
+The canonical Input / Output / Visualization workspace uses two slim vertical
+separators at desktop widths of 901 CSS pixels and above. Pointer movement and
+Left/Right keyboard steps change only the two panes touching the focused
+separator; minimum-width constraints preserve the total workspace width. Home
+and End move that separator to its constrained limits, while double-click is
+the explicit reset to the default three-pane balance.
+
+Persist only three normalized proportions in browser-local UI storage under
+`polar-stream.workspace-layout.v1`. This presentation preference never enters
+native configuration or the acquisition/output path. At 900 pixels and below,
+hide and disable both separators and use the existing single-column layout
+without deleting the saved desktop proportions. Resize the Canvas 2D backing
+store whenever the Visualization pane changes so resizing cannot stretch or
+erase the live presentation.
+
+## 2026-09-10 — Give every source a cardiac/breathing pair and allow N-way views
+
+This supersedes the 2026-08-27 limit of one comparison source and gives the
+existing `SourcePalette` pair a semantic contract without changing its IDs or
+wire shape. For every light/dark pair, `primary` is the source's reddish
+cardiac/ECG identity and `secondary` is its bluish breathing identity. A Polar
+H10 uses both members; a Vernier belt uses only the breathing member. Automatic
+connection allocation continues to choose an unused pair, active duplicate
+assignments remain blocked, and the user may choose another unused pair from
+the source widget. The legacy top-level `color` field remains the light-primary
+alias for compatibility; signal-aware renderers use the full palette.
+
+The visualizer may include every other active source that exposes the same
+comparison family and key. Normalized Polar ACC breathing and Vernier belt
+breathing therefore share one fixed 0–1 host-time view, including the intended
+two-H10-plus-one-belt case, while ECG/breathing, force/ACC, and other
+incompatible pairings remain unavailable. The user can switch the selected
+set between an overlaid common-axis view and separate labeled source lanes.
+Both modes read the same independent bounded temporal buffers and gap evidence;
+they never enable a processor, fuse streams, mutate raw units, or republish an
+  output. This is a presentation capability, not evidence of simultaneous
+  physical capture or physiological agreement.
 
 ## 2026-08-27 — Make breathing comparison opt-in and source identity a two-color contract
 
