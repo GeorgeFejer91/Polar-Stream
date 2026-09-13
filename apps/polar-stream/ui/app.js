@@ -1808,13 +1808,13 @@
 
   function idleDestinationDetail(protocol) {
     if (selectedDeviceProfile().id !== "vernier") {
-      if (protocol === "lsl") return "Local network · time synchronized";
+      if (protocol === "lsl") return "Local network timestamps";
       if (protocol === "osc") return "UDP · localhost:9000";
-      return "All received raw data and produced metrics · bounded writer";
+      return "Raw + metrics CSV · bounded writer";
     }
-    if (protocol === "lsl") return "Automatic rawVernier Double64 + vernierBreathing Float32 0–1";
-    if (protocol === "osc") return "Selected force compatibility outputs · UDP localhost:9000";
-    return "Raw Vernier rows and selected outputs · bounded writer";
+    if (protocol === "lsl") return "rawVernier + vernierBreathing LSL";
+    if (protocol === "osc") return "Force compatibility outputs · UDP";
+    return "Raw Vernier + selected CSV";
   }
 
   function normalizeStreamBase(value) {
@@ -6064,7 +6064,7 @@
       : elements["csv-toggle"].checked ? health.csv : idleDestinationDetail("csv");
     const audioText = elements["audio-toggle"].checked
       ? health.audio || audioDataLink?.supportStatus().reason
-      : "CRC-checked stereo data modem · cable or digital recording";
+      : "CRC stereo modem · cable or recording";
     elements["lsl-detail"].textContent = lslText;
     elements["osc-detail"].textContent = oscText;
     if (!runtime.isBrowser) elements["csv-detail"].textContent = csvText;
