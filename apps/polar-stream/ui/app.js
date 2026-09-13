@@ -6054,10 +6054,10 @@
 
   function updateDestinationHealth(health) {
     const lslText = runtime.isBrowser
-      ? health.lsl
+      ? "Installed app required"
       : elements["lsl-toggle"].checked ? health.lsl : idleDestinationDetail("lsl");
     const oscText = runtime.isBrowser
-      ? health.osc
+      ? "Installed app required"
       : elements["osc-toggle"].checked ? health.osc : idleDestinationDetail("osc");
     const csvText = runtime.isBrowser
       ? elements["csv-detail"].textContent
