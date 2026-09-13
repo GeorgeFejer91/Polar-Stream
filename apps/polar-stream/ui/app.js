@@ -27,7 +27,7 @@
   let rendererOutputConfigFailure = null;
   const WORKSPACE_LAYOUT_STORAGE_KEY = "polar-stream.workspace-layout.v1";
   const VIEW_MODE_STORAGE_KEY = "polar-stream.workspace-view.v1";
-  const NODE_GRAPH_STORAGE_KEY = "polar-stream.node-graph.v1";
+  const NODE_GRAPH_STORAGE_KEY = "polar-stream.node-graph.v2";
   const VIEW_MODES = Object.freeze(["panels", "nodes"]);
   const DEFAULT_WORKSPACE_PROPORTIONS = Object.freeze([0.84 / 3.16, 1 / 3.16, 1.32 / 3.16]);
   const WORKSPACE_MINIMUM_WIDTHS = Object.freeze([220, 245, 300]);
@@ -43,6 +43,7 @@
   let nodeDrag = null;
   let nodePan = null;
   let nodeLinkDrag = null;
+  let nodeSourcePreviewAnimationId = 0;
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
@@ -523,7 +524,7 @@
   let buffers = createBufferBank();
   const elements = {};
   const ids = [
-    "workspace", "node-workspace", "node-board", "node-view-summary", "node-add-button", "node-reset-view", "node-open-panels", "node-editor", "node-grid", "node-stage", "node-link-layer", "node-draft-layer", "node-layer", "node-menu", "node-menu-search", "node-menu-list", "node-editor-help", "panel-view-toggle", "node-view-toggle", "input-section", "output-section", "visual-section", "input-output-divider", "output-visual-divider",
+    "workspace", "node-workspace", "node-board", "node-view-summary", "node-add-source-button", "node-add-transformer-button", "node-add-output-button", "node-add-visualizer-button", "node-reset-view", "node-open-panels", "node-editor", "node-grid", "node-stage", "node-link-layer", "node-draft-layer", "node-layer", "node-empty-state", "node-menu", "node-menu-search", "node-menu-list", "node-editor-help", "panel-view-toggle", "node-view-toggle", "input-section", "output-section", "visual-section", "input-output-divider", "output-visual-divider",
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value", "connection-metric-1-label", "connection-metric-1-value", "connection-metric-2-label", "connection-metric-2-value", "active-source-strip",
     "scan-button", "scan-caption", "connect-selected-button", "selected-device-count", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "device-result-count", "connected-devices-block", "connected-device-list", "connected-device-count", "source-palette-status", "activity-list", "output-state", "raw-ecg-value",
@@ -544,6 +545,9 @@
     "formula-unit", "formula-expression", "formula-keyboard", "formula-preview-current",
     "formula-preview-canvas", "formula-preview-note", "formula-validation-status",
     "delete-custom-formula", "save-custom-formula", "theme-toggle",
+    "node-source-dialog", "node-source-dialog-title", "node-source-dialog-subtitle", "node-source-close",
+    "node-source-preview-status", "node-source-preview-canvas", "node-source-stream-status",
+    "node-source-signal-list", "node-source-dialog-status", "node-source-search-button", "node-source-preview-button",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
   const signalContext = elements["signal-canvas"].getContext("2d", {
@@ -615,6 +619,7 @@
     nodeGraph: loadNodeGraph(),
     selectedNodeId: null,
     selectedLinkId: null,
+    activeSourceDialogNodeId: null,
   };
 
   function loadViewMode() {
@@ -937,146 +942,243 @@
     return labels;
   }
 
+  function sourceSignalOptions(type) {
+    if (type === "polar-source" || type === "mock-polar-source") {
+      return [
+        { id: "ecg", label: "Raw ECG", portLabel: "ECG", family: "ecg", detail: "rawECG · microvolts · source timed", bufferId: "raw_ecg" },
+        { id: "acc", label: "Raw accelerometer", portLabel: "ACC", family: "acc", detail: "rawACC · X/Y/Z milligravity", bufferId: "acc_x" },
+        { id: "polarMetrics", label: "Polar device metrics", portLabel: "HR", family: "cardiac", detail: "heart rate, RR, and device events", bufferId: "raw_ecg" },
+      ];
+    }
+    if (type === "vernier-source" || type === "mock-vernier-source") {
+      return [
+        { id: "rawVernier", label: "Raw Vernier channels", portLabel: "RAW", family: "vernierRaw", detail: "all compatible numeric channels plus diagnostics", bufferId: "raw_force" },
+        { id: "force", label: "Force compatibility", portLabel: "N", family: "force", detail: "channel-1 Force in newtons", bufferId: "raw_force" },
+        { id: "vernierBreathing", label: "Breathing waveform", portLabel: "BR", family: "breathing", detail: "relative belt-force waveform, 0 to 1", bufferId: "vernier_breathing" },
+      ];
+    }
+    return [];
+  }
+
+  function defaultNodeSettings(type) {
+    const signals = sourceSignalOptions(type);
+    return signals.length
+      ? { includedSignals: Object.fromEntries(signals.map((signal) => [signal.id, true])) }
+      : {};
+  }
+
   function nodeCatalog() {
     return [
       {
-        type: "recorded-polar",
-        category: "Input",
-        label: "Recorded Polar H10",
+        type: "polar-source",
+        menuGroup: "source",
+        category: "Input / source",
+        label: "Polar H10 source",
         mark: "H10",
         accent: "#b94b40",
-        detail: "Local ECG and ACC fixture. Starts the seamless recorded preview.",
-        action: "Start preview",
-        outputs: ["source"],
+        detail: "Physical Polar source. ECG, ACC, and device metrics are included by default.",
+        action: "Inspect",
+        sourceKind: "polar",
       },
       {
-        type: "vernier-mock",
-        category: "Input",
-        label: "Vernier mock source",
-        mark: "GDX",
-        accent: "#157a55",
-        detail: "Planning node for a belt-force source; live data still needs a GDX-RB connection.",
-        action: "Open Input",
-        outputs: ["source"],
-      },
-      {
-        type: "polar-connect",
-        category: "Input",
-        label: "Polar H10 connection",
-        mark: "BLE",
-        accent: "#d85151",
-        detail: "Search for a physical Polar H10 and promote it after streaming starts.",
-        action: "Search",
-        outputs: ["source"],
-      },
-      {
-        type: "vernier-connect",
-        category: "Input",
-        label: "Vernier GDX-RB",
+        type: "vernier-source",
+        menuGroup: "source",
+        category: "Input / source",
+        label: "Vernier GDX-RB source",
         mark: "GDX",
         accent: "#0d6242",
-        detail: "Search for a Go Direct respiration belt and keep its raw path first.",
-        action: "Search",
-        outputs: ["source"],
+        detail: "Physical Vernier belt source. Raw Vernier and breathing outputs are included by default.",
+        action: "Inspect",
+        sourceKind: "vernier",
       },
       {
-        type: "output-router",
-        category: "Processing",
-        label: "Output configuration",
-        mark: "OUT",
+        type: "mock-polar-source",
+        menuGroup: "source",
+        category: "Input / source",
+        label: "Mock Polar H10",
+        mark: "MOCK",
+        accent: "#b94b40",
+        detail: "Recorded ECG and ACC fixture with all Polar source signals checked.",
+        action: "Inspect",
+        sourceKind: "polar",
+        mock: true,
+      },
+      {
+        type: "mock-vernier-source",
+        menuGroup: "source",
+        category: "Input / source",
+        label: "Mock Vernier",
+        mark: "MOCK",
+        accent: "#157a55",
+        detail: "Planning node for a belt fixture; raw Vernier signals stay checked by default.",
+        action: "Inspect",
+        sourceKind: "vernier",
+        mock: true,
+      },
+      {
+        type: "polar-acc-transformer",
+        menuGroup: "transformer",
+        category: "Transformer",
+        label: "Polar ACC transformer",
+        mark: "ACC",
         accent: "#a66d19",
-        detail: "Selected raw, metric, formula, and automatic protocol outputs.",
+        detail: "Consumes Polar accelerometer output and emits a breathing-compatible stream.",
         action: "Open Output",
-        inputs: ["source"],
-        outputs: ["signals"],
+        inputs: [{ id: "acc", label: "ACC", accepts: ["acc"] }],
+        outputs: [{ id: "breathing", label: "BR", family: "breathing" }],
       },
       {
-        type: "lsl-out",
-        category: "Destination",
-        label: "LSL outlet",
+        type: "vernier-transformer",
+        menuGroup: "transformer",
+        category: "Transformer",
+        label: "Vernier transformer",
+        mark: "GDX",
+        accent: "#8a6a1b",
+        detail: "Reserved transformer for Vernier-specific processing; current raw belt output already has breathing.",
+        action: "Open Output",
+        inputs: [{ id: "vernier", label: "RAW", accepts: ["vernierRaw", "force"] }],
+        outputs: [{ id: "breathing", label: "BR", family: "breathing" }],
+      },
+      {
+        type: "lsl-recorder",
+        menuGroup: "output",
+        category: "Output",
+        label: "LSL recorder",
         mark: "LSL",
         accent: "#3b78aa",
-        detail: "Native Lab Streaming Layer destination. Browser attempts fail closed.",
+        detail: "Native discoverable LSL output path. Browser attempts fail closed.",
         action: "Enable",
-        inputs: ["signals"],
+        inputs: [{ id: "signal", label: "IN", accepts: ["any"] }],
       },
       {
         type: "osc-out",
-        category: "Destination",
+        menuGroup: "output",
+        category: "Output",
         label: "OSC sender",
         mark: "OSC",
         accent: "#3b78aa",
         detail: "Native Open Sound Control destination. Browser attempts fail closed.",
         action: "Enable",
-        inputs: ["signals"],
+        inputs: [{ id: "signal", label: "IN", accepts: ["any"] }],
       },
       {
         type: "csv-out",
-        category: "Destination",
+        menuGroup: "output",
+        category: "Output",
         label: "Local CSV recorder",
         mark: "CSV",
         accent: "#157a55",
         detail: "Bounded native or browser-local CSV capture.",
         action: "Enable",
-        inputs: ["signals"],
+        inputs: [{ id: "signal", label: "IN", accepts: ["any"] }],
       },
       {
         type: "audio-out",
-        category: "Destination",
+        menuGroup: "output",
+        category: "Output",
         label: "PCM audio modem",
         mark: "PCM",
         accent: "#5f6d63",
         detail: "Experimental stereo data modem with CRC32 framing.",
         action: "Enable",
-        inputs: ["signals"],
-      },
-      {
-        type: "visualizer",
-        category: "View",
-        label: "Visualizer",
-        mark: "VIEW",
-        accent: "#0d6242",
-        detail: "Display-rate chart fed by bounded UI buffers.",
-        action: "Open Visual",
-        inputs: ["signals"],
+        inputs: [{ id: "signal", label: "IN", accepts: ["any"] }],
       },
       {
         type: "lab-recorder",
-        category: "Destination",
+        menuGroup: "output",
+        category: "Output",
         label: "LabRecorder",
         mark: "XDF",
         accent: "#5f6d63",
         detail: "Launch the packaged recorder and choose discoverable native LSL streams.",
         action: runtime.isBrowser ? "Open Output" : "Launch",
-        inputs: ["signals"],
+        inputs: [{ id: "signal", label: "IN", accepts: ["any"] }],
+      },
+      {
+        type: "ecg-visualizer",
+        menuGroup: "visualizer",
+        category: "Visualizer",
+        label: "ECG visualizer",
+        mark: "ECG",
+        accent: "#b94b40",
+        detail: "Accepts ECG streams only.",
+        action: "Open Visual",
+        inputs: [{ id: "signal", label: "ECG", accepts: ["ecg"] }],
+      },
+      {
+        type: "acc-visualizer",
+        menuGroup: "visualizer",
+        category: "Visualizer",
+        label: "ACC visualizer",
+        mark: "ACC",
+        accent: "#3b78aa",
+        detail: "Accepts accelerometer streams only.",
+        action: "Open Visual",
+        inputs: [{ id: "signal", label: "ACC", accepts: ["acc"] }],
+      },
+      {
+        type: "breathing-visualizer",
+        menuGroup: "visualizer",
+        category: "Visualizer",
+        label: "Breathing visualizer",
+        mark: "BR",
+        accent: "#0d6242",
+        detail: "Accepts Polar ACC transformer and Vernier breathing streams, not ECG.",
+        action: "Open Visual",
+        inputs: [{ id: "signal", label: "BR", accepts: ["breathing"] }],
       },
     ];
   }
 
   function nodeTypeDefinition(type) {
-    return nodeCatalog().find((definition) => definition.type === type) || nodeCatalog()[0];
+    const catalog = nodeCatalog();
+    return catalog.find((definition) => definition.type === type) || catalog[0];
+  }
+
+  function nodeTypeExists(type) {
+    return nodeCatalog().some((definition) => definition.type === type);
+  }
+
+  function normalizeNodePort(port) {
+    if (typeof port === "string") return { id: port, label: port, family: port, accepts: [port] };
+    return {
+      id: String(port.id),
+      label: String(port.label || port.id),
+      family: port.family ? String(port.family) : null,
+      accepts: Array.isArray(port.accepts) ? port.accepts.map(String) : [],
+      signalId: port.signalId ? String(port.signalId) : null,
+      bufferId: port.bufferId ? String(port.bufferId) : null,
+    };
+  }
+
+  function nodeSignalIncluded(node, signalId) {
+    return node?.settings?.includedSignals?.[signalId] !== false;
+  }
+
+  function nodePortsFor(node, direction) {
+    if (!node) return [];
+    const definition = nodeTypeDefinition(node.type);
+    if (direction === "output" && definition.sourceKind) {
+      return sourceSignalOptions(node.type)
+        .filter((signal) => nodeSignalIncluded(node, signal.id))
+        .map((signal) => normalizeNodePort({
+          id: signal.id,
+          label: signal.portLabel || signal.label,
+          family: signal.family,
+          signalId: signal.id,
+          bufferId: signal.bufferId,
+        }));
+    }
+    const key = direction === "output" ? "outputs" : "inputs";
+    return (definition[key] || []).map(normalizeNodePort);
   }
 
   function defaultNodeGraph() {
     return {
-      viewport: { x: 76, y: 56, zoom: 0.92 },
+      viewport: { x: 88, y: 64, zoom: 0.96 },
       nextNodeNumber: 1,
-      nodes: [
-        { id: "node-recorded-polar", type: "recorded-polar", x: 120, y: 150 },
-        { id: "node-polar-connect", type: "polar-connect", x: 120, y: 340 },
-        { id: "node-vernier-connect", type: "vernier-connect", x: 120, y: 530 },
-        { id: "node-output-router", type: "output-router", x: 465, y: 300 },
-        { id: "node-lsl", type: "lsl-out", x: 790, y: 140 },
-        { id: "node-osc", type: "osc-out", x: 790, y: 300 },
-        { id: "node-csv", type: "csv-out", x: 790, y: 460 },
-        { id: "node-visualizer", type: "visualizer", x: 1110, y: 250 },
-        { id: "node-lab-recorder", type: "lab-recorder", x: 1110, y: 450 },
-      ],
-      links: [
-        { id: "link-recorded-output", from: { nodeId: "node-recorded-polar", port: "source" }, to: { nodeId: "node-output-router", port: "source" } },
-        { id: "link-output-lsl", from: { nodeId: "node-output-router", port: "signals" }, to: { nodeId: "node-lsl", port: "signals" } },
-        { id: "link-output-visual", from: { nodeId: "node-output-router", port: "signals" }, to: { nodeId: "node-visualizer", port: "signals" } },
-      ],
+      nodes: [],
+      links: [],
     };
   }
 
@@ -1086,12 +1188,16 @@
       if (!stored || !Array.isArray(stored.nodes) || !Array.isArray(stored.links)) return defaultNodeGraph();
       const fallback = defaultNodeGraph();
       const nodes = stored.nodes
-        .filter((node) => node?.id && node?.type)
+        .filter((node) => node?.id && node?.type && nodeTypeExists(String(node.type)))
         .map((node) => ({
           id: String(node.id),
           type: String(node.type),
           x: Math.max(20, Math.min(NODE_STAGE_SIZE.width - NODE_SIZE.width, Number(node.x) || 80)),
           y: Math.max(20, Math.min(NODE_STAGE_SIZE.height - NODE_SIZE.height, Number(node.y) || 80)),
+          settings: {
+            ...defaultNodeSettings(String(node.type)),
+            ...(node.settings && typeof node.settings === "object" ? node.settings : {}),
+          },
         }));
       const nodeIds = new Set(nodes.map((node) => node.id));
       const links = stored.links
@@ -1100,7 +1206,8 @@
           id: String(link.id),
           from: { nodeId: String(link.from.nodeId), port: String(link.from.port || "source") },
           to: { nodeId: String(link.to.nodeId), port: String(link.to.port || "signals") },
-        }));
+        }))
+        .filter((link) => !nodeConnectionProblemForNodes(nodes, link));
       return {
         viewport: {
           x: Number.isFinite(stored.viewport?.x) ? stored.viewport.x : fallback.viewport.x,
@@ -1108,7 +1215,7 @@
           zoom: clamp(Number(stored.viewport?.zoom) || fallback.viewport.zoom, NODE_ZOOM_LIMITS.min, NODE_ZOOM_LIMITS.max),
         },
         nextNodeNumber: Math.max(1, Number(stored.nextNodeNumber) || fallback.nextNodeNumber),
-        nodes: nodes.length ? nodes : fallback.nodes,
+        nodes,
         links,
       };
     } catch (_error) {
@@ -1128,16 +1235,69 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  function graphNodeById(nodeId, nodes = app.nodeGraph.nodes) {
+    return nodes.find((candidate) => candidate.id === nodeId) || null;
+  }
+
+  function graphPortById(node, direction, portId) {
+    return nodePortsFor(node, direction).find((port) => port.id === portId) || null;
+  }
+
+  function inputAcceptsFamily(inputPort, family) {
+    return inputPort.accepts.includes("any") || inputPort.accepts.includes(family);
+  }
+
+  function nodeConnectionProblemForNodes(nodes, link) {
+    if (link.from.nodeId === link.to.nodeId) return "Nodes cannot connect to themselves.";
+    const fromNode = graphNodeById(link.from.nodeId, nodes);
+    const toNode = graphNodeById(link.to.nodeId, nodes);
+    if (!fromNode || !toNode) return "One of these nodes is missing.";
+    const outputPort = graphPortById(fromNode, "output", link.from.port);
+    const inputPort = graphPortById(toNode, "input", link.to.port);
+    if (!outputPort || !inputPort) return "That port is not available.";
+    if (!inputAcceptsFamily(inputPort, outputPort.family)) {
+      return `${nodeTypeDefinition(toNode.type).label} accepts ${inputPort.accepts.join(", ")} signals, not ${outputPort.family}.`;
+    }
+    return null;
+  }
+
+  function canConnectGraphPorts(fromNodeId, fromPort, toNodeId, toPort, { quiet = false, allowDuplicate = false } = {}) {
+    const link = {
+      from: { nodeId: fromNodeId, port: fromPort },
+      to: { nodeId: toNodeId, port: toPort },
+    };
+    const duplicate = app.nodeGraph.links.some((candidate) => (
+      candidate.from.nodeId === fromNodeId && candidate.from.port === fromPort
+      && candidate.to.nodeId === toNodeId && candidate.to.port === toPort
+    ));
+    if (duplicate && !allowDuplicate) {
+      if (!quiet) toast("Those ports are already connected.", true);
+      return false;
+    }
+    const problem = nodeConnectionProblemForNodes(app.nodeGraph.nodes, link);
+    if (problem && !quiet) toast(problem, true);
+    return !problem;
+  }
+
   function nodeActive(type) {
-    if (type === "recorded-polar") return [...app.activeSources.values()].some((source) => source.inputKind === "mock");
-    if (type === "polar-connect") return [...app.activeSources.values()].some((source) => deviceProfileForSource(source).id === "polar");
-    if (type === "vernier-connect") return [...app.activeSources.values()].some((source) => deviceProfileForSource(source).id === "vernier");
-    if (type === "output-router") return selectedOutputCount() > 0;
-    if (type === "lsl-out") return elements["lsl-toggle"].checked;
+    if (type === "mock-polar-source") return [...app.activeSources.values()].some((source) => source.inputKind === "mock");
+    if (type === "polar-source") return [...app.activeSources.values()].some((source) => deviceProfileForSource(source).id === "polar");
+    if (type === "vernier-source") return [...app.activeSources.values()].some((source) => deviceProfileForSource(source).id === "vernier");
+    if (type === "mock-vernier-source") return false;
+    if (type === "polar-acc-transformer" || type === "vernier-transformer") {
+      return app.nodeGraph.links.some((link) => {
+        const fromNode = graphNodeById(link.from.nodeId);
+        const toNode = graphNodeById(link.to.nodeId);
+        return fromNode?.type === type || toNode?.type === type;
+      });
+    }
+    if (type === "lsl-recorder") return elements["lsl-toggle"].checked;
     if (type === "osc-out") return elements["osc-toggle"].checked;
     if (type === "csv-out") return elements["csv-toggle"].checked;
     if (type === "audio-out") return elements["audio-toggle"].checked;
-    if (type === "visualizer") return Boolean(visualDefinitions[app.selectedVisual] && app.activeSources.size);
+    if (type === "ecg-visualizer") return app.selectedVisual === "raw_ecg" && app.activeSources.size > 0;
+    if (type === "acc-visualizer") return app.selectedVisual === "raw_acc" && app.activeSources.size > 0;
+    if (type === "breathing-visualizer") return Boolean(visualDefinitions[app.selectedVisual]?.comparisonFamily === "breathing" && app.activeSources.size);
     if (type === "lab-recorder") return !runtime.isBrowser && elements["lsl-toggle"].checked;
     return false;
   }
@@ -1149,33 +1309,32 @@
 
   function nodeDetailFor(type) {
     const definition = nodeTypeDefinition(type);
-    const sourceCount = app.activeSources.size;
-    if (type === "recorded-polar") {
-      return nodeActive(type) ? "Recorded preview is streaming through the shared UI event path." : definition.detail;
-    }
-    if (type === "vernier-mock") {
-      return "Layout-only mock node until a checked-in Vernier fixture exists.";
-    }
-    if (type === "polar-connect" || type === "vernier-connect") {
-      const profileId = type === "vernier-connect" ? "vernier" : "polar";
+    if (definition.sourceKind) {
+      const profileId = definition.sourceKind;
       const count = [...app.activeSources.values()].filter((source) => deviceProfileForSource(source).id === profileId).length;
-      return count ? `${count} ${profileId === "vernier" ? "Vernier" : "Polar"} source${count === 1 ? "" : "s"} live.` : definition.detail;
+      if (count) return `${count} ${profileId === "vernier" ? "Vernier" : "Polar"} source${count === 1 ? "" : "s"} live; automatic source outputs stay included.`;
+      return definition.detail;
     }
-    if (type === "output-router") {
-      const count = selectedOutputCount();
-      return count ? `${count} active output${count === 1 ? "" : "s"} under ${app.streamName || "current stream"}.` : definition.detail;
+    if (type === "polar-acc-transformer" || type === "vernier-transformer") {
+      const incoming = app.nodeGraph.links.filter((link) => graphNodeById(link.to.nodeId)?.type === type).length;
+      return incoming ? `${incoming} upstream connection${incoming === 1 ? "" : "s"} into this transformer.` : definition.detail;
     }
-    if (type === "visualizer") return visualDefinitions[app.selectedVisual]?.label || definition.detail;
+    if (type.endsWith("-visualizer")) {
+      const incoming = app.nodeGraph.links.filter((link) => graphNodeById(link.to.nodeId)?.type === type).length;
+      return incoming ? `${incoming} compatible stream${incoming === 1 ? "" : "s"} routed to this visualizer.` : definition.detail;
+    }
     if (type === "lab-recorder" && runtime.isBrowser) return "XDF recording opens from the installed desktop app.";
     return definition.detail;
   }
 
-  function nodePortPoint(nodeId, direction) {
-    const node = app.nodeGraph.nodes.find((candidate) => candidate.id === nodeId);
+  function nodePortPoint(nodeId, direction, portId = null) {
+    const node = graphNodeById(nodeId);
     if (!node) return { x: 0, y: 0 };
+    const ports = nodePortsFor(node, direction);
+    const index = Math.max(0, ports.findIndex((port) => port.id === portId));
     return {
       x: node.x + (direction === "output" ? NODE_SIZE.width : 0),
-      y: node.y + 98,
+      y: node.y + 51 + index * 20,
     };
   }
 
@@ -1187,8 +1346,8 @@
   function renderNodeLinks() {
     if (!elements["node-link-layer"]) return;
     const paths = app.nodeGraph.links.map((link) => {
-      const from = nodePortPoint(link.from.nodeId, "output");
-      const to = nodePortPoint(link.to.nodeId, "input");
+      const from = nodePortPoint(link.from.nodeId, "output", link.from.port);
+      const to = nodePortPoint(link.to.nodeId, "input", link.to.port);
       const path = document.createElementNS(svgNamespace, "path");
       path.dataset.linkId = link.id;
       path.setAttribute("d", nodeLinkPath(from, to));
@@ -1238,6 +1397,31 @@
     };
   }
 
+  function createNodePortStack(node, direction) {
+    const stack = document.createElement("div");
+    stack.className = `node-port-stack ${direction}`;
+    const ports = nodePortsFor(node, direction);
+    for (const portDefinition of ports) {
+      const row = document.createElement("span");
+      row.className = `node-port-row ${direction}`;
+      const port = document.createElement("span");
+      port.className = `node-port ${direction}`;
+      port.dataset.nodeId = node.id;
+      port.dataset.port = portDefinition.id;
+      port.dataset.portDirection = direction;
+      port.title = portDefinition.family
+        ? `${portDefinition.label} · ${portDefinition.family}`
+        : portDefinition.label;
+      const label = document.createElement("span");
+      label.className = "node-port-label";
+      label.textContent = portDefinition.label;
+      if (direction === "input") row.append(port, label);
+      else row.append(label, port);
+      stack.append(row);
+    }
+    return stack;
+  }
+
   function createPatchNode(node) {
     const definition = nodeTypeDefinition(node.type);
     const active = nodeActive(node.type);
@@ -1256,28 +1440,6 @@
     const body = document.createElement("p");
     body.textContent = nodeDetailFor(node.type);
     const footer = document.createElement("footer");
-    const inputPorts = definition.inputs || [];
-    const outputPorts = definition.outputs || [];
-    const inputRow = document.createElement("span");
-    inputRow.className = "node-port-row";
-    if (inputPorts.length) {
-      const port = document.createElement("span");
-      port.className = "node-port input";
-      port.dataset.nodeId = node.id;
-      port.dataset.port = inputPorts[0];
-      port.dataset.portDirection = "input";
-      inputRow.append(port, document.createTextNode(inputPorts[0]));
-    }
-    const outputRow = document.createElement("span");
-    outputRow.className = "node-port-row";
-    if (outputPorts.length) {
-      const port = document.createElement("span");
-      port.className = "node-port output";
-      port.dataset.nodeId = node.id;
-      port.dataset.port = outputPorts[0];
-      port.dataset.portDirection = "output";
-      outputRow.append(document.createTextNode(outputPorts[0]), port);
-    }
     const action = document.createElement("button");
     action.type = "button";
     action.textContent = definition.action;
@@ -1285,8 +1447,8 @@
       event.stopPropagation();
       void runNodeAction(node);
     });
-    footer.append(inputRow, action, outputRow);
-    card.append(header, body, footer);
+    footer.append(action);
+    card.append(createNodePortStack(node, "input"), createNodePortStack(node, "output"), header, body, footer);
     return card;
   }
 
@@ -1294,6 +1456,7 @@
     if (!elements["node-layer"]) return;
     const nodes = app.nodeGraph.nodes.map((node) => createPatchNode(node));
     elements["node-layer"].replaceChildren(...nodes);
+    if (elements["node-empty-state"]) elements["node-empty-state"].hidden = nodes.length > 0;
     renderNodeLinks();
     applyNodeViewport();
   }
@@ -1305,14 +1468,23 @@
     const transports = activeTransportLabels();
     elements["node-view-summary"].textContent = sourceCount
       ? `${sourceCount} source${sourceCount === 1 ? "" : "s"} · ${outputCount} output${outputCount === 1 ? "" : "s"} · ${transports.length ? transports.join(" / ") : "no transport selected"}`
-      : "Patch field ready · double-click or press Tab to add nodes";
+      : "Patch field ready · add an input/source to begin";
     renderNodeGraph();
   }
 
-  function openNodeMenu(clientX, clientY) {
+  function nodeMenuGroupTitle(group) {
+    if (group === "source") return "Input / source";
+    if (group === "transformer") return "Transformer";
+    if (group === "output") return "Output";
+    if (group === "visualizer") return "Visualizer";
+    return "All nodes";
+  }
+
+  function openNodeMenu(clientX, clientY, { group = "all" } = {}) {
     const editorRect = elements["node-editor"].getBoundingClientRect();
     const world = worldPointFromEvent({ clientX, clientY });
     elements["node-menu"].hidden = false;
+    elements["node-menu"].dataset.group = group;
     elements["node-menu"].dataset.worldX = String(clamp(world.x, 20, NODE_STAGE_SIZE.width - NODE_SIZE.width));
     elements["node-menu"].dataset.worldY = String(clamp(world.y, 20, NODE_STAGE_SIZE.height - NODE_SIZE.height));
     const width = Math.min(320, editorRect.width - 24);
@@ -1321,6 +1493,7 @@
     elements["node-menu"].style.left = `${left}px`;
     elements["node-menu"].style.top = `${Math.max(12, top)}px`;
     elements["node-menu-search"].value = "";
+    elements["node-menu-search"].placeholder = `Search ${nodeMenuGroupTitle(group).toLowerCase()}`;
     renderNodeMenu("");
     elements["node-menu-search"].focus({ preventScroll: true });
   }
@@ -1331,8 +1504,10 @@
 
   function renderNodeMenu(query) {
     const normalized = query.trim().toLowerCase();
+    const activeGroup = elements["node-menu"].dataset.group || "all";
     const groups = new Map();
     for (const definition of nodeCatalog()) {
+      if (activeGroup !== "all" && definition.menuGroup !== activeGroup) continue;
       const haystack = `${definition.label} ${definition.category} ${definition.detail}`.toLowerCase();
       if (normalized && !haystack.includes(normalized)) continue;
       if (!groups.has(definition.category)) groups.set(definition.category, []);
@@ -1375,8 +1550,8 @@
   function addGraphNode(type) {
     const x = clamp(Number(elements["node-menu"].dataset.worldX) || 160, 20, NODE_STAGE_SIZE.width - NODE_SIZE.width);
     const y = clamp(Number(elements["node-menu"].dataset.worldY) || 160, 20, NODE_STAGE_SIZE.height - NODE_SIZE.height);
-    const id = `node-custom-${app.nodeGraph.nextNodeNumber++}`;
-    app.nodeGraph.nodes.push({ id, type, x, y });
+    const id = `node-${type}-${app.nodeGraph.nextNodeNumber++}`;
+    app.nodeGraph.nodes.push({ id, type, x, y, settings: defaultNodeSettings(type) });
     app.selectedNodeId = id;
     app.selectedLinkId = null;
     saveNodeGraph();
@@ -1399,6 +1574,184 @@
       saveNodeGraph();
       renderNodeLinks();
     }
+  }
+
+  function includedSourceSignals(node) {
+    return sourceSignalOptions(node?.type).filter((signal) => nodeSignalIncluded(node, signal.id));
+  }
+
+  function sourceNodeActiveSource(node) {
+    const definition = nodeTypeDefinition(node?.type);
+    if (!definition.sourceKind) return null;
+    const sources = [...app.activeSources.values()];
+    if (node.type === "mock-polar-source") return sources.find((source) => source.inputKind === "mock") || null;
+    return sources.find((source) => deviceProfileForSource(source).id === definition.sourceKind) || null;
+  }
+
+  function pruneInvalidNodeLinks() {
+    const before = app.nodeGraph.links.length;
+    app.nodeGraph.links = app.nodeGraph.links.filter((link) => !nodeConnectionProblemForNodes(app.nodeGraph.nodes, link));
+    if (app.nodeGraph.links.length !== before) {
+      app.selectedLinkId = null;
+      saveNodeGraph();
+    }
+  }
+
+  function updateSourceNodeDialogSummary(node) {
+    const allSignals = sourceSignalOptions(node?.type);
+    const included = includedSourceSignals(node);
+    elements["node-source-stream-status"].textContent = `${included.length}/${allSignals.length} checked`;
+    elements["node-source-dialog-status"].textContent = included.length
+      ? `${included.map((signal) => signal.portLabel || signal.label).join(" / ")} exposed as node ports.`
+      : "No source signals exposed from this node.";
+  }
+
+  function renderSourceNodeSignalList(node) {
+    const signals = sourceSignalOptions(node?.type);
+    const rows = signals.map((signal) => {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = nodeSignalIncluded(node, signal.id);
+      input.addEventListener("change", () => {
+        node.settings = node.settings || defaultNodeSettings(node.type);
+        node.settings.includedSignals = {
+          ...Object.fromEntries(signals.map((entry) => [entry.id, true])),
+          ...(node.settings.includedSignals || {}),
+          [signal.id]: input.checked,
+        };
+        pruneInvalidNodeLinks();
+        saveNodeGraph();
+        renderSourceNodeSignalList(node);
+        updateSourceNodeDialogSummary(node);
+        renderNodeView();
+      });
+      const copy = document.createElement("span");
+      const title = document.createElement("strong");
+      title.textContent = signal.label;
+      const detail = document.createElement("small");
+      detail.textContent = signal.detail;
+      copy.append(title, detail);
+      label.append(input, copy);
+      return label;
+    });
+    elements["node-source-signal-list"].replaceChildren(...rows);
+  }
+
+  function previewBufferForSignal(node, signal) {
+    const source = sourceNodeActiveSource(node);
+    const bank = source?.id ? buffersForSource(source.id) : buffers;
+    if (signal.id === "acc") return bank.acc_x || bank[signal.bufferId];
+    return bank[signal.bufferId] || bank.raw_ecg || null;
+  }
+
+  function syntheticNodePreviewValue(signal, index, count, now) {
+    const t = index / Math.max(1, count - 1);
+    if (signal.family === "ecg") return Math.sin((t * 18 + now * 2.4) * Math.PI) * 0.24 + Math.sin((t * 48 + now * 3.1) * Math.PI) * 0.08;
+    if (signal.family === "acc") return Math.sin((t * 3.6 + now * 0.7) * Math.PI) * 0.55;
+    if (signal.family === "breathing") return Math.sin((t * 1.8 + now * 0.35) * Math.PI) * 0.45;
+    return Math.sin((t * 2.4 + now * 0.5) * Math.PI) * 0.34;
+  }
+
+  function drawNodeSourcePreview() {
+    const canvas = elements["node-source-preview-canvas"];
+    if (!canvas) return;
+    const node = graphNodeById(app.activeSourceDialogNodeId);
+    const context = canvas.getContext("2d");
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.floor(rect.width * dpr));
+    const height = Math.max(1, Math.floor(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, rect.width, rect.height);
+    context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--paper").trim() || "#f7faf8";
+    context.fillRect(0, 0, rect.width, rect.height);
+    const signals = includedSourceSignals(node);
+    const laneHeight = rect.height / Math.max(1, signals.length);
+    const colors = ["#b94b40", "#3b78aa", "#0d6242", "#8a6a1b"];
+    context.lineWidth = 1.6;
+    context.font = "10px system-ui, sans-serif";
+    context.textBaseline = "top";
+    signals.forEach((signal, laneIndex) => {
+      const top = laneIndex * laneHeight;
+      const mid = top + laneHeight / 2;
+      context.strokeStyle = "rgba(117, 132, 123, 0.24)";
+      context.beginPath();
+      context.moveTo(10, mid);
+      context.lineTo(rect.width - 10, mid);
+      context.stroke();
+      context.fillStyle = canvasTextColor(true);
+      context.fillText(signal.portLabel || signal.label, 12, top + 8);
+      const buffer = previewBufferForSignal(node, signal);
+      const sampleCount = 120;
+      const bufferSize = buffer?.tailSize ? buffer.tailSize(sampleCount) : 0;
+      const values = [];
+      if (buffer && bufferSize > 2) {
+        for (let index = 0; index < bufferSize; index += 1) values.push(buffer.tailValue(index, bufferSize));
+      } else {
+        const now = performance.now() / 1000;
+        for (let index = 0; index < sampleCount; index += 1) values.push(syntheticNodePreviewValue(signal, index, sampleCount, now));
+      }
+      const finite = values.filter(Number.isFinite);
+      const min = finite.length ? Math.min(...finite) : -1;
+      const max = finite.length ? Math.max(...finite) : 1;
+      const span = Math.max(0.0001, max - min);
+      context.strokeStyle = colors[laneIndex % colors.length];
+      context.beginPath();
+      values.forEach((value, index) => {
+        const x = 12 + (index / Math.max(1, values.length - 1)) * (rect.width - 24);
+        const normalized = Number.isFinite(value) ? (value - min) / span : 0.5;
+        const y = top + 18 + (1 - normalized) * Math.max(8, laneHeight - 30);
+        if (index === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      });
+      context.stroke();
+    });
+    if (!signals.length) {
+      context.fillStyle = canvasTextColor();
+      context.fillText("No source signals selected", 14, 14);
+    }
+  }
+
+  function stopNodeSourcePreview() {
+    if (nodeSourcePreviewAnimationId) {
+      cancelAnimationFrame(nodeSourcePreviewAnimationId);
+      nodeSourcePreviewAnimationId = 0;
+    }
+  }
+
+  function scheduleNodeSourcePreview() {
+    stopNodeSourcePreview();
+    const tick = () => {
+      if (!elements["node-source-dialog"].open) {
+        nodeSourcePreviewAnimationId = 0;
+        return;
+      }
+      drawNodeSourcePreview();
+      nodeSourcePreviewAnimationId = requestAnimationFrame(tick);
+    };
+    nodeSourcePreviewAnimationId = requestAnimationFrame(tick);
+  }
+
+  function openSourceNodeDialog(node) {
+    const definition = nodeTypeDefinition(node.type);
+    app.activeSourceDialogNodeId = node.id;
+    elements["node-source-dialog-title"].textContent = definition.label;
+    elements["node-source-dialog-subtitle"].textContent = definition.sourceKind === "vernier"
+      ? "Raw Vernier and breathing source"
+      : "Raw Polar ECG, ACC, and device metrics";
+    elements["node-source-preview-status"].textContent = sourceNodeActiveSource(node) ? "Live source" : definition.mock ? "Mock source" : "Preview";
+    renderSourceNodeSignalList(node);
+    updateSourceNodeDialogSummary(node);
+    const canPreview = node.type === "mock-polar-source";
+    elements["node-source-preview-button"].hidden = !canPreview;
+    elements["node-source-search-button"].hidden = Boolean(definition.mock);
+    if (!elements["node-source-dialog"].open) elements["node-source-dialog"].showModal();
+    scheduleNodeSourcePreview();
   }
 
   async function startRecordedPolarFromNode() {
@@ -1425,7 +1778,7 @@
 
   async function enableDestinationFromNode(type) {
     const map = {
-      "lsl-out": ["lsl-toggle", "LSL"],
+      "lsl-recorder": ["lsl-toggle", "LSL"],
       "osc-out": ["osc-toggle", "OSC"],
       "csv-out": ["csv-toggle", "CSV"],
       "audio-out": ["audio-toggle", "audio"],
@@ -1442,11 +1795,10 @@
   }
 
   async function runNodeAction(node) {
-    if (node.type === "recorded-polar") return startRecordedPolarFromNode();
-    if (node.type === "polar-connect" || node.type === "vernier-connect" || node.type === "vernier-mock") return openInputAndSearch();
-    if (node.type === "output-router") return openOutputFromNode();
-    if (["lsl-out", "osc-out", "csv-out", "audio-out"].includes(node.type)) return enableDestinationFromNode(node.type);
-    if (node.type === "visualizer") return openPanelFromNode("visual-section");
+    if (nodeTypeDefinition(node.type).sourceKind) return openSourceNodeDialog(node);
+    if (node.type === "polar-acc-transformer" || node.type === "vernier-transformer") return openOutputFromNode();
+    if (["lsl-recorder", "osc-out", "csv-out", "audio-out"].includes(node.type)) return enableDestinationFromNode(node.type);
+    if (node.type.endsWith("-visualizer")) return openPanelFromNode("visual-section");
     if (node.type === "lab-recorder") {
       if (!runtime.isBrowser && !elements["open-lab-recorder"].disabled) elements["open-lab-recorder"].click();
       else openOutputFromNode();
@@ -1457,21 +1809,16 @@
     const fromNode = app.nodeGraph.nodes.find((node) => node.id === link.from.nodeId);
     const toNode = app.nodeGraph.nodes.find((node) => node.id === link.to.nodeId);
     if (!fromNode || !toNode) return;
-    if (fromNode.type === "recorded-polar" && !nodeActive("recorded-polar")) {
+    if (fromNode.type === "mock-polar-source" && !nodeActive("mock-polar-source")) {
       void startRecordedPolarFromNode();
     }
-    if (["lsl-out", "osc-out", "csv-out", "audio-out"].includes(toNode.type)) {
+    if (["lsl-recorder", "osc-out", "csv-out", "audio-out"].includes(toNode.type)) {
       void enableDestinationFromNode(toNode.type);
     }
   }
 
   function connectGraphPorts(fromNodeId, fromPort, toNodeId, toPort) {
-    if (fromNodeId === toNodeId) return;
-    const duplicate = app.nodeGraph.links.some((link) => (
-      link.from.nodeId === fromNodeId && link.from.port === fromPort
-      && link.to.nodeId === toNodeId && link.to.port === toPort
-    ));
-    if (duplicate) return;
+    if (!canConnectGraphPorts(fromNodeId, fromPort, toNodeId, toPort)) return;
     const link = {
       id: `link-${Date.now().toString(36)}-${app.nodeGraph.links.length}`,
       from: { nodeId: fromNodeId, port: fromPort },
@@ -1523,7 +1870,7 @@
   function beginNodeLinkDrag(event, port) {
     if (port.dataset.portDirection !== "output") return;
     event.stopPropagation();
-    const from = nodePortPoint(port.dataset.nodeId, "output");
+    const from = nodePortPoint(port.dataset.nodeId, "output", port.dataset.port);
     const editorPoint = worldToEditorPoint(from);
     nodeLinkDrag = {
       pointerId: event.pointerId,
@@ -1561,9 +1908,20 @@
   }
 
   function installNodeEditor() {
-    elements["node-add-button"].addEventListener("click", () => {
+    const openMenuFromButton = (group, button) => {
+      const editorRect = elements["node-editor"].getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
+      const x = clamp(buttonRect.left + buttonRect.width / 2, editorRect.left + 40, editorRect.right - 40);
+      const y = editorRect.top + Math.min(180, editorRect.height * 0.26);
+      openNodeMenu(x, y, { group });
+    };
+    elements["node-add-source-button"].addEventListener("click", () => openMenuFromButton("source", elements["node-add-source-button"]));
+    elements["node-add-transformer-button"].addEventListener("click", () => openMenuFromButton("transformer", elements["node-add-transformer-button"]));
+    elements["node-add-output-button"].addEventListener("click", () => openMenuFromButton("output", elements["node-add-output-button"]));
+    elements["node-add-visualizer-button"].addEventListener("click", () => openMenuFromButton("visualizer", elements["node-add-visualizer-button"]));
+    elements["node-editor-help"].addEventListener("dblclick", () => {
       const rect = elements["node-editor"].getBoundingClientRect();
-      openNodeMenu(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      openNodeMenu(rect.left + rect.width / 2, rect.top + rect.height / 2, { group: "source" });
     });
     elements["node-reset-view"].addEventListener("click", () => {
       const fresh = defaultNodeGraph();
@@ -1579,7 +1937,7 @@
     });
     elements["node-editor"].addEventListener("dblclick", (event) => {
       if (nodeElementFromEvent(event) || portElementFromEvent(event)) return;
-      openNodeMenu(event.clientX, event.clientY);
+      openNodeMenu(event.clientX, event.clientY, { group: "source" });
     });
     elements["node-editor"].addEventListener("wheel", (event) => {
       event.preventDefault();
@@ -1641,7 +1999,7 @@
       if (event.key === "Tab") {
         event.preventDefault();
         const rect = elements["node-editor"].getBoundingClientRect();
-        openNodeMenu(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        openNodeMenu(rect.left + rect.width / 2, rect.top + rect.height / 2, { group: "source" });
       } else if (event.key === "Escape") {
         closeNodeMenu();
       } else if (event.key === "Delete" || event.key === "Backspace") {
@@ -1652,6 +2010,23 @@
       if (elements["node-menu"].hidden) return;
       if (event.target instanceof Element && (elements["node-menu"].contains(event.target) || elements["node-editor"].contains(event.target))) return;
       closeNodeMenu();
+    });
+    elements["node-source-close"].addEventListener("click", () => elements["node-source-dialog"].close());
+    elements["node-source-dialog"].addEventListener("close", () => {
+      stopNodeSourcePreview();
+      app.activeSourceDialogNodeId = null;
+    });
+    elements["node-source-search-button"].addEventListener("click", () => {
+      elements["node-source-dialog"].close();
+      openInputAndSearch();
+    });
+    elements["node-source-preview-button"].addEventListener("click", async () => {
+      await startRecordedPolarFromNode();
+      const node = graphNodeById(app.activeSourceDialogNodeId);
+      if (node) {
+        elements["node-source-preview-status"].textContent = sourceNodeActiveSource(node) ? "Live source" : "Preview";
+        updateSourceNodeDialogSummary(node);
+      }
     });
   }
 

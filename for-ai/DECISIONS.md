@@ -9,11 +9,17 @@ local presentation preference only; it must not create another acquisition path,
 another output configuration owner, or a second browser-specific interface.
 
 Node view uses draggable square boxes on a zoomable/pannable field, a
-double-click/Tab searchable node menu, visible input/output ports, and drawn
-connectors. The supported node catalog is deliberately narrower than Goofi
-Pipe: recorded Polar, planned Vernier mock, physical Polar/Vernier connection
-intents, output configuration, LSL, OSC, CSV, PCM audio, visualization, and
-LabRecorder. Graph layout and links persist only as local UI state.
+dedicated source/transformer/output/visualizer creation toolbar, scoped
+searchable node menus, visible input/output ports, and drawn connectors. The
+graph opens empty rather than seeded with a demonstration patch. Source nodes
+default every Polar or Vernier raw/device signal lane to included, expose those
+lanes as ports, and provide a raw-preview dialog with advanced checkboxes.
+Transformer nodes are deliberately narrow: Polar ACC can emit a
+breathing-compatible stream and Vernier has a placeholder transformer while the
+raw belt output already carries its current breathing stream. ECG, ACC, and
+breathing visualizers reject incompatible modalities so users can compare
+compatible streams without mixing unrelated signal families. Graph layout and
+links persist only as local UI state.
 
 Connector and node actions may call existing safe UI actions, such as starting
 the recorded Polar preview, searching Input, opening Output/Visualization, or

@@ -1,6 +1,6 @@
 # Current state
 
-Last verified: 2026-09-10
+Last verified: 2026-09-13
 
 ## Implemented
 
@@ -13,12 +13,17 @@ Last verified: 2026-09-10
   A top-level view switch now lets users move between the standard three-panel
   workspace and a Goofi-Pipe-inspired patch field over the same live state
   without reconnecting devices, restarting outputs, or forking the browser
-  interface. Node view has draggable square source/output/view boxes, curved
-  connector drawing from ports, wheel zoom, mouse panning, and a double-click/
-  Tab searchable node menu for Polar/Vernier inputs and LSL/OSC/CSV/visual
-  destinations. Graph layout and links are local presentation state; node
-  actions call existing Input/Output/Visualization controls instead of creating
-  another acquisition or output owner.
+  interface. Node view opens as an empty graph and has draggable square boxes,
+  curved connector drawing from ports, wheel zoom, mouse panning, and dedicated
+  add menus for input/source, transformer, output, and visualizer nodes. Source
+  nodes default every Polar or Vernier raw/device signal lane to included and
+  expose those lanes as graph ports; source-node dialogs show a compact raw
+  preview plus the advanced include checkboxes. Polar ACC and Vernier
+  transformer nodes can route into breathing-compatible visualizers, while ECG,
+  ACC, and breathing visualizer nodes reject incompatible modalities. Graph
+  layout and links are local presentation state; node actions call existing
+  Input/Output/Visualization controls instead of creating another acquisition
+  or output owner.
   Connected-device space remains empty until a real or mock source exists, and
   candidate devices use a single-row visual boundary instead of palette
   sidecars.

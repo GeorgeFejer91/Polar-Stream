@@ -292,6 +292,7 @@ try {
     nodeTypes: [...document.querySelectorAll(".patch-node")].map((node) => window.getComputedStyle(node).cursor ? node.querySelector("strong")?.textContent : ""),
     linkCount: document.querySelectorAll("#node-link-layer path").length,
     nodeSummary: document.querySelector("#node-view-summary").textContent,
+    emptyVisible: !document.querySelector("#node-empty-state").hidden,
   }));
   assert.deepEqual(nodeToggle, {
     mode: "nodes",
@@ -300,33 +301,14 @@ try {
     nodePressed: "true",
     panelPressed: "false",
     editorVisible: true,
-    nodeIds: [
-      "node-recorded-polar",
-      "node-polar-connect",
-      "node-vernier-connect",
-      "node-output-router",
-      "node-lsl",
-      "node-osc",
-      "node-csv",
-      "node-visualizer",
-      "node-lab-recorder",
-    ],
-    nodeTypes: [
-      "Recorded Polar H10",
-      "Polar H10 connection",
-      "Vernier GDX-RB",
-      "Output configuration",
-      "LSL outlet",
-      "OSC sender",
-      "Local CSV recorder",
-      "Visualizer",
-      "LabRecorder",
-    ],
-    linkCount: 3,
-    nodeSummary: "Patch field ready · double-click or press Tab to add nodes",
+    nodeIds: [],
+    nodeTypes: [],
+    linkCount: 0,
+    nodeSummary: "Patch field ready · add an input/source to begin",
+    emptyVisible: true,
   }, "node view toggle did not expose the interactive signal-flow node editor");
-  await page.locator("#node-add-button").click();
-  await page.locator("#node-menu-search").fill("osc");
+  await page.locator("#node-add-source-button").click();
+  await page.locator("#node-menu-search").fill("polar");
   const nodeMenu = await page.evaluate(() => ({
     hidden: document.querySelector("#node-menu").hidden,
     focused: document.activeElement?.id,
@@ -335,8 +317,41 @@ try {
   assert.deepEqual(nodeMenu, {
     hidden: false,
     focused: "node-menu-search",
-    entries: ["OSC sender"],
+    entries: ["Polar H10 source", "Mock Polar H10"],
   }, "node menu did not expose searchable patch nodes");
+  await page.locator("#node-menu-list button", { hasText: "Mock Polar H10" }).click();
+  const sourceNode = await page.evaluate(() => ({
+    nodeTypes: [...document.querySelectorAll(".patch-node strong")].map((node) => node.textContent),
+    outputPortLabels: [...document.querySelectorAll(".patch-node .node-port-row.output .node-port-label")].map((node) => node.textContent),
+    emptyVisible: !document.querySelector("#node-empty-state").hidden,
+  }));
+  assert.deepEqual(sourceNode, {
+    nodeTypes: ["Mock Polar H10"],
+    outputPortLabels: ["ECG", "ACC", "HR"],
+    emptyVisible: false,
+  }, "source node did not expose default checked raw/source output ports");
+  await page.locator(".patch-node button", { hasText: "Inspect" }).click();
+  const sourceDialog = await page.evaluate(() => ({
+    open: document.querySelector("#node-source-dialog").open,
+    title: document.querySelector("#node-source-dialog-title").textContent,
+    checked: [...document.querySelectorAll("#node-source-signal-list input")].map((input) => input.checked),
+    streamStatus: document.querySelector("#node-source-stream-status").textContent,
+  }));
+  assert.deepEqual(sourceDialog, {
+    open: true,
+    title: "Mock Polar H10",
+    checked: [true, true, true],
+    streamStatus: "3/3 checked",
+  }, "source node dialog did not default every source signal to included");
+  await page.locator("#node-source-close").click();
+  await page.locator("#node-add-transformer-button").click();
+  await page.locator("#node-menu-search").fill("acc");
+  const transformerMenu = await page.evaluate(() => ({
+    entries: [...document.querySelectorAll("#node-menu-list button strong")].map((node) => node.textContent),
+  }));
+  assert.deepEqual(transformerMenu, {
+    entries: ["Polar ACC transformer"],
+  }, "transformer menu did not expose the Polar ACC transformer node");
   await page.keyboard.press("Escape");
   await page.locator("#panel-view-toggle").click();
   const panelToggle = await page.evaluate(() => ({

@@ -189,6 +189,7 @@ body.workspace-resizing * { cursor: col-resize !important; }
 .node-view-header h2 { margin: 0; font-size: 17px; line-height: 1.2; }
 .node-view-header p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
 .node-view-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.node-view-actions button { white-space: nowrap; }
 .node-board {
   position: relative;
   overflow: hidden;
@@ -251,6 +252,7 @@ body.workspace-resizing * { cursor: col-resize !important; }
   background: var(--surface);
   box-shadow: var(--shadow);
   cursor: grab;
+  overflow: visible;
 }
 .patch-node:active { cursor: grabbing; }
 .patch-node.selected {
@@ -279,7 +281,7 @@ body.workspace-resizing * { cursor: col-resize !important; }
   font: 800 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .patch-node p { margin: 0; padding: 10px; color: var(--muted); font-size: 11px; line-height: 1.38; }
-.patch-node footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px 10px; }
+.patch-node footer { display: flex; align-items: center; justify-content: center; min-height: 38px; gap: 8px; padding: 0 10px 10px; }
 .patch-node button {
   min-height: 28px;
   border: 1px solid var(--line-strong);
@@ -290,7 +292,35 @@ body.workspace-resizing * { cursor: col-resize !important; }
   font-size: 10px;
   font-weight: 750;
 }
-.node-port-row { display: flex; align-items: center; gap: 6px; color: var(--muted); font: 750 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node-port-stack {
+  position: absolute;
+  top: 45px;
+  z-index: 4;
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+.node-port-stack.input { left: -8px; justify-items: start; }
+.node-port-stack.output { right: -8px; justify-items: end; }
+.node-port-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font: 750 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  pointer-events: auto;
+}
+.node-port-row.output { justify-content: flex-end; }
+.node-port-label {
+  max-width: 58px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 4px;
+  background: var(--surface);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .node-port {
   width: 12px;
   height: 12px;
@@ -300,8 +330,6 @@ body.workspace-resizing * { cursor: col-resize !important; }
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--node-accent) 55%, var(--line-strong));
   cursor: crosshair;
 }
-.node-port.input { margin-left: -16px; }
-.node-port.output { margin-right: -16px; }
 .node-editor-help {
   position: absolute;
   left: 16px;
@@ -315,6 +343,24 @@ body.workspace-resizing * { cursor: col-resize !important; }
   color: var(--muted);
   font-size: 11px;
 }
+.node-empty-state {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 3;
+  display: grid;
+  gap: 4px;
+  min-width: 190px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  color: var(--muted);
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+.node-empty-state strong { color: var(--ink); font-size: 12px; }
+.node-empty-state span { font-size: 11px; }
 .node-menu {
   position: absolute;
   z-index: 20;
@@ -368,6 +414,78 @@ body.workspace-resizing * { cursor: col-resize !important; }
 .node-menu strong,
 .node-menu span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-menu span { color: var(--muted); font-size: 10px; }
+
+.node-source-dialog {
+  width: min(760px, calc(100vw - 28px));
+  max-height: min(720px, calc(100vh - 28px));
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+.node-source-dialog::backdrop { background: rgb(13 24 18 / 58%); }
+.node-source-dialog form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: min(720px, calc(100vh - 28px)); }
+.node-source-dialog form > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 16px 13px;
+  border-bottom: 1px solid var(--line);
+}
+.node-source-dialog h2 { margin: 0; font-size: 16px; line-height: 1.2; }
+.node-source-dialog header p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+.node-source-layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(220px, .75fr);
+  gap: 14px;
+  overflow: auto;
+  padding: 15px 16px;
+}
+.node-source-preview,
+.node-source-signals {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+.node-source-preview canvas {
+  width: 100%;
+  height: 230px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+}
+.node-source-signal-list { display: grid; gap: 8px; }
+.node-source-signal-list label {
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 9px;
+  background: var(--surface);
+}
+.node-source-signal-list input { width: 16px; height: 16px; margin: 0; accent-color: var(--green); }
+.node-source-signal-list span { min-width: 0; display: grid; gap: 2px; }
+.node-source-signal-list strong,
+.node-source-signal-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-source-signal-list strong { font-size: 11px; }
+.node-source-signal-list small { color: var(--muted); font-size: 10px; }
+.node-source-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+.node-source-dialog footer span { margin-right: auto; color: var(--muted); font-size: 11px; }
 
 .panel-empty-state {
   min-height: 220px;
@@ -1069,6 +1187,11 @@ html[data-theme="dark"] .compatibility-output-note { color: #e5bc7d; }
   .node-view-actions button { flex: 1 1 96px; }
   .patch-node { width: 172px; }
   .node-editor-help { right: 10px; bottom: 10px; left: 10px; font-size: 10px; }
+  .node-source-layout { grid-template-columns: 1fr; }
+  .node-source-preview canvas { height: 180px; }
+  .node-source-dialog footer { align-items: stretch; flex-direction: column; }
+  .node-source-dialog footer span { margin-right: 0; }
+  .node-source-dialog footer button { width: 100%; }
   .workspace-panel { padding: 16px; }
   .section-heading { margin-bottom: 17px; }
   .connection-card { grid-template-columns: 42px minmax(0, 1fr); }

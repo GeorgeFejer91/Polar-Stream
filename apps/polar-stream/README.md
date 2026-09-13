@@ -21,9 +21,11 @@ preview asset is derived from `ui/data/preview-recording.json`, an anonymized
 transform that recording in the dialog before the output is saved.
 
 The top-level **Node view** is an interactive patch field over the same runtime
-state. It supports draggable square nodes, mouse-wheel zoom, panning,
-double-click/Tab node creation, and port-to-port connector drawing for the
-Polar/Vernier inputs and supported destinations. The graph is a local
+state. It opens empty, then adds nodes through dedicated **Add input/source**,
+**Add transformer**, **Add output**, and **Visualizer nodes** menus. Source
+nodes expose default-checked Polar or Vernier signal lanes as ports, transformer
+nodes can convert compatible inputs such as Polar ACC into a breathing stream,
+and visualizer nodes accept only their matching modality. The graph is a local
 presentation surface: it can start the recorded Polar preview or route to the
 existing Input, Output, Visualization, LSL, OSC, CSV, and LabRecorder controls,
 but it does not create a second acquisition or transport owner.

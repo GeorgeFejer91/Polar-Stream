@@ -375,7 +375,10 @@
           <p id="node-view-summary">No connected sources</p>
         </div>
         <div class="node-view-actions">
-          <button class="secondary-button compact" id="node-add-button" type="button">Add node</button>
+          <button class="secondary-button compact" id="node-add-source-button" type="button">Add input/source</button>
+          <button class="secondary-button compact" id="node-add-transformer-button" type="button">Add transformer</button>
+          <button class="secondary-button compact" id="node-add-output-button" type="button">Add output</button>
+          <button class="secondary-button compact" id="node-add-visualizer-button" type="button">Visualizer nodes</button>
           <button class="secondary-button compact" id="node-reset-view" type="button">Reset view</button>
           <button class="secondary-button compact" id="node-open-panels" type="button">Open panels</button>
         </div>
@@ -388,7 +391,11 @@
             <div class="node-layer" id="node-layer"></div>
           </div>
           <svg class="node-draft-layer" id="node-draft-layer" aria-hidden="true"></svg>
-          <div class="node-editor-help" id="node-editor-help">Double-click or press Tab to add nodes · drag boxes and ports · wheel to zoom · middle-drag to pan</div>
+          <div class="node-empty-state" id="node-empty-state">
+            <strong>No nodes yet</strong>
+            <span>Add an input/source to begin.</span>
+          </div>
+          <div class="node-editor-help" id="node-editor-help">Use the add buttons, drag boxes and ports, wheel to zoom, middle-drag to pan</div>
         </div>
         <div class="node-menu" id="node-menu" hidden>
           <input id="node-menu-search" type="search" autocomplete="off" placeholder="Search nodes" aria-label="Search nodes" />
@@ -396,6 +403,33 @@
         </div>
       </div>
     </section>
+
+    <dialog class="node-source-dialog" id="node-source-dialog" aria-labelledby="node-source-dialog-title">
+      <form method="dialog">
+        <header>
+          <div>
+            <h2 id="node-source-dialog-title">Source node</h2>
+            <p id="node-source-dialog-subtitle">Automatic source outputs</p>
+          </div>
+          <button class="icon-button" id="node-source-close" type="button" aria-label="Close">×</button>
+        </header>
+        <div class="node-source-layout">
+          <section class="node-source-preview" aria-labelledby="node-source-preview-title">
+            <div class="mini-heading"><strong id="node-source-preview-title">Raw preview</strong><span id="node-source-preview-status">Idle</span></div>
+            <canvas id="node-source-preview-canvas" role="img" aria-label="Preview of the selected source node raw streams"></canvas>
+          </section>
+          <section class="node-source-signals" aria-labelledby="node-source-signals-title">
+            <div class="mini-heading"><strong id="node-source-signals-title">Included signals</strong><span id="node-source-stream-status">All checked</span></div>
+            <div class="node-source-signal-list" id="node-source-signal-list"></div>
+          </section>
+        </div>
+        <footer>
+          <span id="node-source-dialog-status">Signals are included by default.</span>
+          <button class="secondary-button compact" id="node-source-search-button" type="button">Search / connect</button>
+          <button class="primary-button compact" id="node-source-preview-button" type="button">Start preview</button>
+        </footer>
+      </form>
+    </dialog>
 
     <footer class="status-bar" role="status" aria-live="polite">
       <span><i class="footer-dot"></i><span id="footer-status">Engine ready</span></span>
