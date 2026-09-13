@@ -18,10 +18,13 @@ Last verified: 2026-09-13
   add menus for input/source, transformer, output, and visualizer nodes. Source
   nodes default every Polar or Vernier raw/device signal lane to included and
   expose those lanes as graph ports; source-node dialogs show a compact raw
-  preview plus the advanced include checkboxes. Polar ACC and Vernier
-  transformer nodes can route into breathing-compatible visualizers, while ECG,
-  ACC, and breathing visualizer nodes reject incompatible modalities. Graph
-  layout and links are local presentation state; node actions call existing
+  preview plus the advanced include checkboxes. Transformer, output, and
+  visualizer nodes open an inspector popup on clean click/keyboard activation
+  with details, ports, links, status, and the existing node action. Polar ACC
+  and Vernier transformer nodes can route into breathing-compatible
+  visualizers, while ECG, ACC, and breathing visualizer nodes reject
+  incompatible modalities. Graph layout and links are local presentation state;
+  node actions call existing
   Input/Output/Visualization controls instead of creating another acquisition
   or output owner.
   Connected-device space remains empty until a real or mock source exists, and

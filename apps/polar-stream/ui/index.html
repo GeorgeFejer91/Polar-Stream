@@ -491,6 +491,37 @@
       </form>
     </dialog>
 
+    <dialog class="node-inspector-dialog" id="node-inspector-dialog" aria-labelledby="node-inspector-title">
+      <form method="dialog">
+        <header>
+          <div class="node-inspector-title">
+            <span id="node-inspector-widget"></span>
+            <div>
+              <h2 id="node-inspector-title">Node</h2>
+              <p id="node-inspector-subtitle">Signal-flow node</p>
+            </div>
+          </div>
+          <button class="icon-button" id="node-inspector-close" type="button" aria-label="Close">×</button>
+        </header>
+        <div class="node-inspector-layout">
+          <section class="node-inspector-panel" aria-labelledby="node-inspector-details-title">
+            <div class="mini-heading"><strong id="node-inspector-details-title">Details</strong><span id="node-inspector-state">Idle</span></div>
+            <p id="node-inspector-detail"></p>
+            <dl class="node-inspector-facts" id="node-inspector-facts"></dl>
+          </section>
+          <section class="node-inspector-panel" aria-labelledby="node-inspector-ports-title">
+            <div class="mini-heading"><strong id="node-inspector-ports-title">Ports</strong><span id="node-inspector-link-status">No links</span></div>
+            <div class="node-inspector-port-list" id="node-inspector-port-list"></div>
+          </section>
+        </div>
+        <footer>
+          <span id="node-inspector-status">Node ready.</span>
+          <button class="secondary-button compact" id="node-inspector-panel-button" type="button">Open panels</button>
+          <button class="primary-button compact" id="node-inspector-action-button" type="button">Apply</button>
+        </footer>
+      </form>
+    </dialog>
+
     <footer class="status-bar" role="status" aria-live="polite">
       <span><i class="footer-dot"></i><span id="footer-status">Engine ready</span></span>
       <span id="sample-counter">0 samples</span>

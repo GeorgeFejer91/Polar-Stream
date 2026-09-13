@@ -25,10 +25,13 @@ state. It opens empty, then adds nodes through dedicated **Add input/source**,
 **Add transformer**, **Add output**, and **Visualizer nodes** menus. Source
 nodes expose default-checked Polar or Vernier signal lanes as ports, transformer
 nodes can convert compatible inputs such as Polar ACC into a breathing stream,
-and visualizer nodes accept only their matching modality. The graph is a local
-presentation surface: it can start the recorded Polar preview or route to the
-existing Input, Output, Visualization, LSL, OSC, CSV, and LabRecorder controls,
-but it does not create a second acquisition or transport owner.
+and visualizer nodes accept only their matching modality. Clicking a source node
+opens its raw preview and include-signal controls; clicking transformer, output,
+or visualizer nodes opens a compact inspector with details, ports, links, status,
+and the node's existing action. The graph is a local presentation surface: it can
+start the recorded Polar preview or route to the existing Input, Output,
+Visualization, LSL, OSC, CSV, and LabRecorder controls, but it does not create a
+second acquisition or transport owner.
 
 Formula Lab turns formula-compatible metric definitions into editable native
 custom outputs. It maps `ecg`, `x/y/z`, `hr`, and `rr`, retains sensor time as

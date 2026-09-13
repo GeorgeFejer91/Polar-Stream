@@ -14,6 +14,9 @@ searchable node menus, visible input/output ports, and drawn connectors. The
 graph opens empty rather than seeded with a demonstration patch. Source nodes
 default every Polar or Vernier raw/device signal lane to included, expose those
 lanes as ports, and provide a raw-preview dialog with advanced checkboxes.
+Clean-clicking or keyboard-activating any non-source node opens a compact
+inspector popup for details, ports, connection status, and the existing node
+action; dragging a box or drawing a connector must not trigger that inspector.
 Transformer nodes are deliberately narrow: Polar ACC can emit a
 breathing-compatible stream and Vernier has a placeholder transformer while the
 raw belt output already carries its current breathing stream. ECG, ACC, and

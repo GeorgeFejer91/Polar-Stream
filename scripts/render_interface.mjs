@@ -366,19 +366,59 @@ try {
     streamStatus: "3/3 checked",
   }, "source node dialog did not default every source signal to included");
   await page.locator("#node-source-close").click();
+  await page.locator(".patch-node", { hasText: "Mock Polar H10" }).locator("p").click();
+  const sourceClickDialog = await page.evaluate(() => ({
+    open: document.querySelector("#node-source-dialog").open,
+    title: document.querySelector("#node-source-dialog-title").textContent,
+  }));
+  assert.deepEqual(sourceClickDialog, {
+    open: true,
+    title: "Mock Polar H10",
+  }, "clicking a source node did not reopen its source popup");
+  await page.locator("#node-source-close").click();
   await page.locator("#node-add-transformer-button").click();
   await page.locator("#node-menu-search").fill("acc");
   const transformerMenu = await page.evaluate(() => ({
     entries: [...document.querySelectorAll("#node-menu-list button strong")].map((node) => node.textContent),
     widgetCount: document.querySelectorAll("#node-menu-list button .node-menu-widget").length,
+    lungPathCount: document.querySelectorAll("#node-menu-list [data-node-icon=\"polar-acc-transformer\"] .node-widget-lung").length,
     codeBadgeCount: document.querySelectorAll("#node-menu-list button code").length,
   }));
   assert.deepEqual(transformerMenu, {
     entries: ["Polar ACC transformer"],
     widgetCount: 1,
+    lungPathCount: 2,
     codeBadgeCount: 0,
   }, "transformer menu did not expose the Polar ACC transformer node");
-  await page.keyboard.press("Escape");
+  await page.locator("#node-menu-list button", { hasText: "Polar ACC transformer" }).click();
+  const transformerNodeWidget = await page.evaluate(() => ({
+    cardWidgetCount: document.querySelectorAll(".patch-node [data-node-icon=\"polar-acc-transformer\"].node-card-widget").length,
+    lungPathCount: document.querySelectorAll(".patch-node [data-node-icon=\"polar-acc-transformer\"].node-card-widget .node-widget-lung").length,
+    accTextBadgeCount: [...document.querySelectorAll(".patch-node mark")].filter((node) => node.textContent === "ACC").length,
+  }));
+  assert.deepEqual(transformerNodeWidget, {
+    cardWidgetCount: 1,
+    lungPathCount: 2,
+    accTextBadgeCount: 0,
+  }, "Polar ACC transformer node did not render its breath-shaped SVG widget");
+  await page.locator(".patch-node", { hasText: "Polar ACC transformer" }).locator("p").click();
+  const transformerDialog = await page.evaluate(() => ({
+    open: document.querySelector("#node-inspector-dialog").open,
+    title: document.querySelector("#node-inspector-title").textContent,
+    subtitle: document.querySelector("#node-inspector-subtitle").textContent,
+    state: document.querySelector("#node-inspector-state").textContent,
+    action: document.querySelector("#node-inspector-action-button").textContent,
+    portRows: document.querySelectorAll("#node-inspector-port-list .node-inspector-port-row").length,
+  }));
+  assert.deepEqual(transformerDialog, {
+    open: true,
+    title: "Polar ACC transformer",
+    subtitle: "Transformer",
+    state: "Awaiting input",
+    action: "Open Output",
+    portRows: 2,
+  }, "clicking a transformer node did not open the node inspector popup");
+  await page.locator("#node-inspector-close").click();
   await page.locator("#node-add-output-button").click();
   const outputMenu = await page.evaluate(() => ({
     entries: [...document.querySelectorAll("#node-menu-list button strong")].map((node) => node.textContent),
@@ -390,7 +430,25 @@ try {
     widgetCount: 5,
     codeBadgeCount: 0,
   }, "output node menu did not render every output option with a colored SVG widget");
-  await page.keyboard.press("Escape");
+  await page.locator("#node-menu-list button", { hasText: "LSL recorder" }).click();
+  await page.locator(".patch-node", { hasText: "LSL recorder" }).locator("p").click();
+  const outputDialog = await page.evaluate(() => ({
+    open: document.querySelector("#node-inspector-dialog").open,
+    title: document.querySelector("#node-inspector-title").textContent,
+    subtitle: document.querySelector("#node-inspector-subtitle").textContent,
+    state: document.querySelector("#node-inspector-state").textContent,
+    action: document.querySelector("#node-inspector-action-button").textContent,
+    portRows: document.querySelectorAll("#node-inspector-port-list .node-inspector-port-row").length,
+  }));
+  assert.deepEqual(outputDialog, {
+    open: true,
+    title: "LSL recorder",
+    subtitle: "Output",
+    state: "Awaiting input",
+    action: "Enable",
+    portRows: 1,
+  }, "clicking an output node did not open the node inspector popup");
+  await page.locator("#node-inspector-close").click();
   await page.locator("#node-add-visualizer-button").click();
   const visualizerMenu = await page.evaluate(() => ({
     entries: [...document.querySelectorAll("#node-menu-list button strong")].map((node) => node.textContent),
@@ -402,7 +460,25 @@ try {
     widgetCount: 3,
     codeBadgeCount: 0,
   }, "visualizer node menu did not render every visualizer option with a colored SVG widget");
-  await page.keyboard.press("Escape");
+  await page.locator("#node-menu-list button", { hasText: "ACC visualizer" }).click();
+  await page.locator(".patch-node", { hasText: "ACC visualizer" }).locator("p").click();
+  const visualizerDialog = await page.evaluate(() => ({
+    open: document.querySelector("#node-inspector-dialog").open,
+    title: document.querySelector("#node-inspector-title").textContent,
+    subtitle: document.querySelector("#node-inspector-subtitle").textContent,
+    state: document.querySelector("#node-inspector-state").textContent,
+    action: document.querySelector("#node-inspector-action-button").textContent,
+    portRows: document.querySelectorAll("#node-inspector-port-list .node-inspector-port-row").length,
+  }));
+  assert.deepEqual(visualizerDialog, {
+    open: true,
+    title: "ACC visualizer",
+    subtitle: "Visualizer",
+    state: "Awaiting input",
+    action: "Open Visual",
+    portRows: 1,
+  }, "clicking a visualizer node did not open the node inspector popup");
+  await page.locator("#node-inspector-close").click();
   await page.locator("#panel-view-toggle").click();
   const panelToggle = await page.evaluate(() => ({
     mode: document.body.dataset.viewMode,

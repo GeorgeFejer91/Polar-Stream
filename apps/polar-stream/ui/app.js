@@ -548,6 +548,10 @@
     "node-source-dialog", "node-source-dialog-title", "node-source-dialog-subtitle", "node-source-close",
     "node-source-preview-status", "node-source-preview-canvas", "node-source-stream-status",
     "node-source-signal-list", "node-source-dialog-status", "node-source-search-button", "node-source-preview-button",
+    "node-inspector-dialog", "node-inspector-title", "node-inspector-subtitle", "node-inspector-close",
+    "node-inspector-widget", "node-inspector-state", "node-inspector-detail", "node-inspector-facts",
+    "node-inspector-link-status", "node-inspector-port-list", "node-inspector-status",
+    "node-inspector-panel-button", "node-inspector-action-button",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
   const signalContext = elements["signal-canvas"].getContext("2d", {
@@ -620,6 +624,7 @@
     selectedNodeId: null,
     selectedLinkId: null,
     activeSourceDialogNodeId: null,
+    activeNodeDialogNodeId: null,
   };
 
   function loadViewMode() {
@@ -1428,14 +1433,28 @@
     const card = document.createElement("article");
     card.className = `patch-node${active ? " live" : ""}${app.selectedNodeId === node.id ? " selected" : ""}`;
     card.dataset.nodeId = node.id;
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", `${definition.label} node. Press Enter to inspect.`);
     card.style.left = `${node.x}px`;
     card.style.top = `${node.y}px`;
     card.style.setProperty("--node-accent", definition.accent);
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      app.selectedNodeId = node.id;
+      app.selectedLinkId = null;
+      renderNodeGraph();
+      openNodeDialog(node);
+    });
     const header = document.createElement("header");
     const label = document.createElement("strong");
     label.textContent = definition.label;
-    const mark = document.createElement("mark");
-    mark.textContent = definition.mark;
+    const mark = definition.type === "polar-acc-transformer"
+      ? createNodeMenuWidget(definition)
+      : document.createElement("mark");
+    if (mark instanceof SVGElement) mark.classList.add("node-card-widget");
+    else mark.textContent = definition.mark;
     header.append(label, mark);
     const body = document.createElement("p");
     body.textContent = nodeDetailFor(node.type);
@@ -1536,13 +1555,32 @@
 
   function addTransformerWidgetGlyph(svg, definition) {
     const isPolar = definition.type === "polar-acc-transformer";
+    if (isPolar) {
+      appendSvg(svg, "path", {
+        class: "node-widget-airway node-widget-ink",
+        d: "M18 11.3v5.1M18 16.4c-1.3.8-2.1 1.9-2.7 3.3M18 16.4c1.3.8 2.1 1.9 2.7 3.3",
+      });
+      appendSvg(svg, "path", {
+        class: "node-widget-lung ps-coral",
+        d: "M17.2 16.2c-1.6-1-4.2-.2-5.1 2.7-.9 2.8.1 5.8 2.1 6.7 1.9.8 3.1-.2 3.1-2.2v-5.9c0-.5-.1-.9-.1-1.3Z",
+      });
+      appendSvg(svg, "path", {
+        class: "node-widget-lung ps-cyan",
+        d: "M18.8 16.2c1.6-1 4.2-.2 5.1 2.7.9 2.8-.1 5.8-2.1 6.7-1.9.8-3.1-.2-3.1-2.2v-5.9c0-.5.1-.9.1-1.3Z",
+      });
+      appendSvg(svg, "path", {
+        class: "node-widget-breath-flow ps-mint",
+        d: "M12.7 22.8c1.1-1.4 2.2-1.4 3.3 0s2.3 1.4 3.4 0 2.2-1.4 3.3 0",
+      });
+      return;
+    }
     appendSvg(svg, "circle", { class: "node-widget-fill", cx: 18, cy: 18, r: 1.6 });
-    appendSvg(svg, "path", { class: isPolar ? "ps-coral" : "ps-orange", d: "M18 18 12 22.5" });
+    appendSvg(svg, "path", { class: "ps-orange", d: "M18 18 12 22.5" });
     appendSvg(svg, "path", { class: "ps-mint", d: "M18 18v-7" });
-    appendSvg(svg, "path", { class: isPolar ? "ps-cyan" : "ps-blue", d: "M18 18 24 22.5" });
-    appendSvg(svg, "path", { class: isPolar ? "ps-coral" : "ps-orange", d: "m12 22.5 2.4.1-1.2-2" });
+    appendSvg(svg, "path", { class: "ps-blue", d: "M18 18 24 22.5" });
+    appendSvg(svg, "path", { class: "ps-orange", d: "m12 22.5 2.4.1-1.2-2" });
     appendSvg(svg, "path", { class: "ps-mint", d: "m18 11-1.7 1.7M18 11l1.7 1.7" });
-    appendSvg(svg, "path", { class: isPolar ? "ps-cyan" : "ps-blue", d: "m24 22.5-2.4.1 1.2-2" });
+    appendSvg(svg, "path", { class: "ps-blue", d: "m24 22.5-2.4.1 1.2-2" });
   }
 
   function addOutputWidgetGlyph(svg, definition) {
@@ -1868,6 +1906,155 @@
     scheduleNodeSourcePreview();
   }
 
+  function nodePanelTargetFor(type) {
+    if (type === "polar-acc-transformer" || type === "vernier-transformer") return "output-section";
+    if (["lsl-recorder", "osc-out", "csv-out", "audio-out", "lab-recorder"].includes(type)) return "output-section";
+    if (type.endsWith("-visualizer")) return "visual-section";
+    return null;
+  }
+
+  function nodePortLinks(node, direction, portId) {
+    if (!node) return [];
+    return app.nodeGraph.links.filter((link) => {
+      if (direction === "input") return link.to.nodeId === node.id && link.to.port === portId;
+      return link.from.nodeId === node.id && link.from.port === portId;
+    });
+  }
+
+  function nodeConnectedLabel(node, direction, portId) {
+    const links = nodePortLinks(node, direction, portId);
+    if (!links.length) return direction === "input" ? "Not connected" : "No outgoing link";
+    const labels = links.map((link) => {
+      const otherNodeId = direction === "input" ? link.from.nodeId : link.to.nodeId;
+      const otherPortId = direction === "input" ? link.from.port : link.to.port;
+      const otherDirection = direction === "input" ? "output" : "input";
+      const otherNode = graphNodeById(otherNodeId);
+      const otherPort = otherNode ? graphPortById(otherNode, otherDirection, otherPortId) : null;
+      const nodeLabel = otherNode ? nodeTypeDefinition(otherNode.type).label : "Missing node";
+      return `${nodeLabel} · ${otherPort?.label || otherPortId}`;
+    });
+    return labels.join(" / ");
+  }
+
+  function nodeInspectorStateLabel(node) {
+    const definition = nodeTypeDefinition(node.type);
+    const active = nodeActive(node.type);
+    const incoming = app.nodeGraph.links.filter((link) => link.to.nodeId === node.id).length;
+    const outgoing = app.nodeGraph.links.filter((link) => link.from.nodeId === node.id).length;
+    if (active) return "Active";
+    if ((definition.inputs || []).length && !incoming) return "Awaiting input";
+    if ((definition.outputs || []).length && !outgoing) return "Ready to connect";
+    if (definition.menuGroup === "output") return "Ready";
+    return "Configured";
+  }
+
+  function nodeInspectorStatusText(node) {
+    const definition = nodeTypeDefinition(node.type);
+    const incoming = app.nodeGraph.links.filter((link) => link.to.nodeId === node.id).length;
+    const outgoing = app.nodeGraph.links.filter((link) => link.from.nodeId === node.id).length;
+    if (definition.menuGroup === "transformer") {
+      return incoming ? `${definition.label} is receiving input.` : "Connect a compatible source output to this transformer.";
+    }
+    if (definition.menuGroup === "output") {
+      if (!incoming) return "Connect a stream before enabling this output node.";
+      return nodeActive(node.type) ? `${definition.label} is enabled.` : `${definition.label} has an incoming stream.`;
+    }
+    if (definition.menuGroup === "visualizer") {
+      if (!incoming) return "Connect a compatible signal before using this visualizer.";
+      return `${definition.label} has ${incoming} incoming stream${incoming === 1 ? "" : "s"}.`;
+    }
+    return outgoing ? `${definition.label} exposes ${outgoing} outgoing link${outgoing === 1 ? "" : "s"}.` : definition.detail;
+  }
+
+  function appendNodeInspectorFact(children, term, description) {
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    dd.textContent = description;
+    children.push(dt, dd);
+  }
+
+  function renderNodeInspectorFacts(node) {
+    const definition = nodeTypeDefinition(node.type);
+    const inputCount = nodePortsFor(node, "input").length;
+    const outputCount = nodePortsFor(node, "output").length;
+    const incoming = app.nodeGraph.links.filter((link) => link.to.nodeId === node.id).length;
+    const outgoing = app.nodeGraph.links.filter((link) => link.from.nodeId === node.id).length;
+    const facts = [];
+    appendNodeInspectorFact(facts, "Type", definition.category);
+    appendNodeInspectorFact(facts, "Ports", `${inputCount} in / ${outputCount} out`);
+    appendNodeInspectorFact(facts, "Links", `${incoming} in / ${outgoing} out`);
+    appendNodeInspectorFact(facts, "Node", node.id);
+    elements["node-inspector-facts"].replaceChildren(...facts);
+  }
+
+  function createNodeInspectorPortRow(node, direction, port) {
+    const row = document.createElement("div");
+    row.className = "node-inspector-port-row";
+    row.style.setProperty("--node-inspector-accent", nodeTypeDefinition(node.type).accent);
+    const dot = document.createElement("span");
+    dot.className = "node-inspector-port-dot";
+    const copy = document.createElement("span");
+    copy.className = "node-inspector-port-copy";
+    const title = document.createElement("strong");
+    title.textContent = port.label;
+    const detail = document.createElement("small");
+    detail.textContent = direction === "input"
+      ? `Accepts ${port.accepts.length ? port.accepts.join(", ") : "signal"} · ${nodeConnectedLabel(node, direction, port.id)}`
+      : `${port.family || "signal"} output · ${nodeConnectedLabel(node, direction, port.id)}`;
+    copy.append(title, detail);
+    const type = document.createElement("span");
+    type.className = "node-inspector-port-type";
+    type.textContent = direction === "input" ? "IN" : "OUT";
+    row.append(dot, copy, type);
+    return row;
+  }
+
+  function renderNodeInspectorPorts(node) {
+    const rows = [];
+    for (const direction of ["input", "output"]) {
+      for (const port of nodePortsFor(node, direction)) {
+        rows.push(createNodeInspectorPortRow(node, direction, port));
+      }
+    }
+    if (!rows.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "This node has no exposed patch ports.";
+      rows.push(empty);
+    }
+    elements["node-inspector-port-list"].replaceChildren(...rows);
+  }
+
+  function renderNodeInspectorDialog(node) {
+    const definition = nodeTypeDefinition(node.type);
+    const links = app.nodeGraph.links.filter((link) => link.from.nodeId === node.id || link.to.nodeId === node.id);
+    elements["node-inspector-dialog"].style.setProperty("--node-inspector-accent", definition.accent);
+    elements["node-inspector-widget"].replaceChildren(createNodeMenuWidget(definition));
+    elements["node-inspector-title"].textContent = definition.label;
+    elements["node-inspector-subtitle"].textContent = definition.category;
+    elements["node-inspector-state"].textContent = nodeInspectorStateLabel(node);
+    elements["node-inspector-detail"].textContent = definition.detail;
+    elements["node-inspector-link-status"].textContent = links.length
+      ? `${links.length} link${links.length === 1 ? "" : "s"}`
+      : "No links";
+    elements["node-inspector-status"].textContent = nodeInspectorStatusText(node);
+    elements["node-inspector-action-button"].textContent = definition.action;
+    elements["node-inspector-panel-button"].hidden = !nodePanelTargetFor(node.type);
+    renderNodeInspectorFacts(node);
+    renderNodeInspectorPorts(node);
+  }
+
+  function openNodeInspectorDialog(node) {
+    app.activeNodeDialogNodeId = node.id;
+    renderNodeInspectorDialog(node);
+    if (!elements["node-inspector-dialog"].open) elements["node-inspector-dialog"].showModal();
+  }
+
+  function openNodeDialog(node) {
+    if (nodeTypeDefinition(node.type).sourceKind) openSourceNodeDialog(node);
+    else openNodeInspectorDialog(node);
+  }
+
   async function startRecordedPolarFromNode() {
     const mock = runtime.getInputModules().find((device) => device.kind === "mock");
     if (!mock) {
@@ -1919,6 +2106,30 @@
     }
   }
 
+  function refreshOpenNodeInspector() {
+    if (!elements["node-inspector-dialog"].open) return;
+    const node = graphNodeById(app.activeNodeDialogNodeId);
+    if (node) renderNodeInspectorDialog(node);
+    else elements["node-inspector-dialog"].close();
+  }
+
+  async function runNodeInspectorAction() {
+    const node = graphNodeById(app.activeNodeDialogNodeId);
+    if (!node) return;
+    const keepInspectorOpen = ["lsl-recorder", "osc-out", "csv-out", "audio-out"].includes(node.type);
+    if (!keepInspectorOpen) elements["node-inspector-dialog"].close();
+    await runNodeAction(node);
+    if (keepInspectorOpen) refreshOpenNodeInspector();
+  }
+
+  function openNodeInspectorPanel() {
+    const node = graphNodeById(app.activeNodeDialogNodeId);
+    const panel = node ? nodePanelTargetFor(node.type) : null;
+    if (!panel) return;
+    elements["node-inspector-dialog"].close();
+    openPanelFromNode(panel);
+  }
+
   function applyNodeLinkEffect(link) {
     const fromNode = app.nodeGraph.nodes.find((node) => node.id === link.from.nodeId);
     const toNode = app.nodeGraph.nodes.find((node) => node.id === link.to.nodeId);
@@ -1944,6 +2155,7 @@
     saveNodeGraph();
     renderNodeView();
     applyNodeLinkEffect(link);
+    refreshOpenNodeInspector();
   }
 
   function nodeElementFromEvent(event) {
@@ -1963,6 +2175,9 @@
       nodeId: node.id,
       offsetX: world.x - node.x,
       offsetY: world.y - node.y,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      moved: false,
     };
     app.selectedNodeId = node.id;
     app.selectedLinkId = null;
@@ -2005,8 +2220,13 @@
 
   function finishNodePointer(event) {
     if (nodeDrag?.pointerId === event.pointerId) {
+      const clickedNode = !nodeDrag.moved ? graphNodeById(nodeDrag.nodeId) : null;
       saveNodeGraph();
       nodeDrag = null;
+      if (clickedNode && event.button === 0) {
+        event.preventDefault();
+        openNodeDialog(clickedNode);
+      }
     }
     if (nodePan?.pointerId === event.pointerId) {
       saveNodeGraph();
@@ -2085,6 +2305,9 @@
       if (nodeDrag?.pointerId === event.pointerId) {
         const node = app.nodeGraph.nodes.find((candidate) => candidate.id === nodeDrag.nodeId);
         if (!node) return;
+        if (Math.hypot(event.clientX - nodeDrag.startClientX, event.clientY - nodeDrag.startClientY) > 4) {
+          nodeDrag.moved = true;
+        }
         const world = worldPointFromEvent(event);
         node.x = clamp(world.x - nodeDrag.offsetX, 20, NODE_STAGE_SIZE.width - NODE_SIZE.width);
         node.y = clamp(world.y - nodeDrag.offsetY, 20, NODE_STAGE_SIZE.height - NODE_SIZE.height);
@@ -2130,6 +2353,14 @@
       stopNodeSourcePreview();
       app.activeSourceDialogNodeId = null;
     });
+    elements["node-inspector-close"].addEventListener("click", () => elements["node-inspector-dialog"].close());
+    elements["node-inspector-dialog"].addEventListener("close", () => {
+      app.activeNodeDialogNodeId = null;
+    });
+    elements["node-inspector-action-button"].addEventListener("click", () => {
+      void runNodeInspectorAction();
+    });
+    elements["node-inspector-panel-button"].addEventListener("click", openNodeInspectorPanel);
     elements["node-source-search-button"].addEventListener("click", () => {
       elements["node-source-dialog"].close();
       openInputAndSearch();
