@@ -2,16 +2,25 @@
 
 ## 2026-09-13 — Keep node view as a second view over the same state
 
-The interface may switch between the normal three-panel workspace and a compact
-node-flow view inspired by Goofi Pipe, but both modes must read the same
-canonical `apps/polar-stream/ui/` state. The top-level view switch is a local
-presentation preference only; it must not create another acquisition path,
+The interface may switch between the normal three-panel workspace and an
+interactive patch field inspired by Goofi Pipe, but both modes must read the
+same canonical `apps/polar-stream/ui/` state. The top-level view switch is a
+local presentation preference only; it must not create another acquisition path,
 another output configuration owner, or a second browser-specific interface.
 
-Node view summarizes the live Input -> profile -> outputs -> transports ->
-visualization -> recorder flow and offers direct return actions to the
-corresponding panel. Switching modes must not reconnect hardware, restart
-outputs, clear selected metrics, or change LSL/OSC/CSV behavior.
+Node view uses draggable square boxes on a zoomable/pannable field, a
+double-click/Tab searchable node menu, visible input/output ports, and drawn
+connectors. The supported node catalog is deliberately narrower than Goofi
+Pipe: recorded Polar, planned Vernier mock, physical Polar/Vernier connection
+intents, output configuration, LSL, OSC, CSV, PCM audio, visualization, and
+LabRecorder. Graph layout and links persist only as local UI state.
+
+Connector and node actions may call existing safe UI actions, such as starting
+the recorded Polar preview, searching Input, opening Output/Visualization, or
+toggling LSL/OSC/CSV through the existing transactional output path. Switching
+modes or editing the graph must not silently reconnect hardware, restart active
+outputs, clear selected metrics, or change native LSL/OSC/CSV behavior outside
+those established controls.
 
 ## 2026-09-13 — Keep empty input surfaces empty until a source exists
 

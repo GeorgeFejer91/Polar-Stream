@@ -20,6 +20,14 @@ preview asset is derived from `ui/data/preview-recording.json`, an anonymized
 60-second real Polar H10 ECG/ACC recording; output settings recompute or
 transform that recording in the dialog before the output is saved.
 
+The top-level **Node view** is an interactive patch field over the same runtime
+state. It supports draggable square nodes, mouse-wheel zoom, panning,
+double-click/Tab node creation, and port-to-port connector drawing for the
+Polar/Vernier inputs and supported destinations. The graph is a local
+presentation surface: it can start the recorded Polar preview or route to the
+existing Input, Output, Visualization, LSL, OSC, CSV, and LabRecorder controls,
+but it does not create a second acquisition or transport owner.
+
 Formula Lab turns formula-compatible metric definitions into editable native
 custom outputs. It maps `ecg`, `x/y/z`, `hr`, and `rr`, retains sensor time as
 the automatic x-axis, provides template and calculator keys with explanations,

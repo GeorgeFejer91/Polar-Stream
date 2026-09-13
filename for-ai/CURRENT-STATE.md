@@ -11,8 +11,14 @@ Last verified: 2026-09-10
   away from interactive lists, dialogs cannot close through implicit form
   submission, and mobile metric selection transfers focus to visible detail.
   A top-level view switch now lets users move between the standard three-panel
-  workspace and a compact node-flow view over the same live state without
-  reconnecting devices, restarting outputs, or forking the browser interface.
+  workspace and a Goofi-Pipe-inspired patch field over the same live state
+  without reconnecting devices, restarting outputs, or forking the browser
+  interface. Node view has draggable square source/output/view boxes, curved
+  connector drawing from ports, wheel zoom, mouse panning, and a double-click/
+  Tab searchable node menu for Polar/Vernier inputs and LSL/OSC/CSV/visual
+  destinations. Graph layout and links are local presentation state; node
+  actions call existing Input/Output/Visualization controls instead of creating
+  another acquisition or output owner.
   Connected-device space remains empty until a real or mock source exists, and
   candidate devices use a single-row visual boundary instead of palette
   sidecars.

@@ -287,7 +287,10 @@ try {
     nodesHidden: document.querySelector("#node-workspace").hidden,
     nodePressed: document.querySelector("#node-view-toggle").getAttribute("aria-pressed"),
     panelPressed: document.querySelector("#panel-view-toggle").getAttribute("aria-pressed"),
-    nodeIds: [...document.querySelectorAll(".flow-node")].map((node) => node.dataset.nodeId),
+    editorVisible: !document.querySelector("#node-editor").hidden,
+    nodeIds: [...document.querySelectorAll(".patch-node")].map((node) => node.dataset.nodeId),
+    nodeTypes: [...document.querySelectorAll(".patch-node")].map((node) => window.getComputedStyle(node).cursor ? node.querySelector("strong")?.textContent : ""),
+    linkCount: document.querySelectorAll("#node-link-layer path").length,
     nodeSummary: document.querySelector("#node-view-summary").textContent,
   }));
   assert.deepEqual(nodeToggle, {
@@ -296,9 +299,45 @@ try {
     nodesHidden: false,
     nodePressed: "true",
     panelPressed: "false",
-    nodeIds: ["input", "profile", "outputs", "transports", "visual", "recorder"],
-    nodeSummary: "No connected sources",
-  }, "node view toggle did not expose the signal-flow node board");
+    editorVisible: true,
+    nodeIds: [
+      "node-recorded-polar",
+      "node-polar-connect",
+      "node-vernier-connect",
+      "node-output-router",
+      "node-lsl",
+      "node-osc",
+      "node-csv",
+      "node-visualizer",
+      "node-lab-recorder",
+    ],
+    nodeTypes: [
+      "Recorded Polar H10",
+      "Polar H10 connection",
+      "Vernier GDX-RB",
+      "Output configuration",
+      "LSL outlet",
+      "OSC sender",
+      "Local CSV recorder",
+      "Visualizer",
+      "LabRecorder",
+    ],
+    linkCount: 3,
+    nodeSummary: "Patch field ready · double-click or press Tab to add nodes",
+  }, "node view toggle did not expose the interactive signal-flow node editor");
+  await page.locator("#node-add-button").click();
+  await page.locator("#node-menu-search").fill("osc");
+  const nodeMenu = await page.evaluate(() => ({
+    hidden: document.querySelector("#node-menu").hidden,
+    focused: document.activeElement?.id,
+    entries: [...document.querySelectorAll("#node-menu-list button strong")].map((node) => node.textContent),
+  }));
+  assert.deepEqual(nodeMenu, {
+    hidden: false,
+    focused: "node-menu-search",
+    entries: ["OSC sender"],
+  }, "node menu did not expose searchable patch nodes");
+  await page.keyboard.press("Escape");
   await page.locator("#panel-view-toggle").click();
   const panelToggle = await page.evaluate(() => ({
     mode: document.body.dataset.viewMode,

@@ -374,9 +374,27 @@
           <h2 id="node-view-heading">Node view</h2>
           <p id="node-view-summary">No connected sources</p>
         </div>
-        <button class="secondary-button compact" id="node-open-panels" type="button">Open panels</button>
+        <div class="node-view-actions">
+          <button class="secondary-button compact" id="node-add-button" type="button">Add node</button>
+          <button class="secondary-button compact" id="node-reset-view" type="button">Reset view</button>
+          <button class="secondary-button compact" id="node-open-panels" type="button">Open panels</button>
+        </div>
       </header>
-      <div class="node-board" id="node-board" aria-label="Signal flow nodes"></div>
+      <div class="node-board" id="node-board" aria-label="Signal flow nodes">
+        <div class="node-editor" id="node-editor" role="application" aria-label="Interactive signal-flow node editor" tabindex="0">
+          <div class="node-grid" id="node-grid" aria-hidden="true"></div>
+          <div class="node-stage" id="node-stage">
+            <svg class="node-link-layer" id="node-link-layer" viewBox="0 0 3200 2200" aria-hidden="true"></svg>
+            <div class="node-layer" id="node-layer"></div>
+          </div>
+          <svg class="node-draft-layer" id="node-draft-layer" aria-hidden="true"></svg>
+          <div class="node-editor-help" id="node-editor-help">Double-click or press Tab to add nodes · drag boxes and ports · wheel to zoom · middle-drag to pan</div>
+        </div>
+        <div class="node-menu" id="node-menu" hidden>
+          <input id="node-menu-search" type="search" autocomplete="off" placeholder="Search nodes" aria-label="Search nodes" />
+          <div class="node-menu-list" id="node-menu-list"></div>
+        </div>
+      </div>
     </section>
 
     <footer class="status-bar" role="status" aria-live="polite">

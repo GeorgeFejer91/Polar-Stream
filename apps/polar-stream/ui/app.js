@@ -27,15 +27,22 @@
   let rendererOutputConfigFailure = null;
   const WORKSPACE_LAYOUT_STORAGE_KEY = "polar-stream.workspace-layout.v1";
   const VIEW_MODE_STORAGE_KEY = "polar-stream.workspace-view.v1";
+  const NODE_GRAPH_STORAGE_KEY = "polar-stream.node-graph.v1";
   const VIEW_MODES = Object.freeze(["panels", "nodes"]);
   const DEFAULT_WORKSPACE_PROPORTIONS = Object.freeze([0.84 / 3.16, 1 / 3.16, 1.32 / 3.16]);
   const WORKSPACE_MINIMUM_WIDTHS = Object.freeze([220, 245, 300]);
   const WORKSPACE_DESKTOP_MEDIA = window.matchMedia("(min-width: 901px)");
+  const NODE_STAGE_SIZE = Object.freeze({ width: 3200, height: 2200 });
+  const NODE_SIZE = Object.freeze({ width: 186, height: 132 });
+  const NODE_ZOOM_LIMITS = Object.freeze({ min: 0.45, max: 1.9 });
   const CONNECTION_READY_TIMEOUT_MS = 15_000;
   const CONNECTION_RETRY_DELAYS_MS = Object.freeze([1_500, 3_000, 6_000, 12_000, 24_000]);
   let workspaceProportions = loadWorkspaceProportions();
   let workspaceDrag = null;
   let workspaceResizeFrame = 0;
+  let nodeDrag = null;
+  let nodePan = null;
+  let nodeLinkDrag = null;
 
   const evidenceLinks = {
     hrv: ["Shaffer & Ginsberg (2017)", "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2017.00258/full"],
@@ -516,7 +523,7 @@
   let buffers = createBufferBank();
   const elements = {};
   const ids = [
-    "workspace", "node-workspace", "node-board", "node-view-summary", "node-open-panels", "panel-view-toggle", "node-view-toggle", "input-section", "output-section", "visual-section", "input-output-divider", "output-visual-divider",
+    "workspace", "node-workspace", "node-board", "node-view-summary", "node-add-button", "node-reset-view", "node-open-panels", "node-editor", "node-grid", "node-stage", "node-link-layer", "node-draft-layer", "node-layer", "node-menu", "node-menu-search", "node-menu-list", "node-editor-help", "panel-view-toggle", "node-view-toggle", "input-section", "output-section", "visual-section", "input-output-divider", "output-visual-divider",
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value", "connection-metric-1-label", "connection-metric-1-value", "connection-metric-2-label", "connection-metric-2-value", "active-source-strip",
     "scan-button", "scan-caption", "connect-selected-button", "selected-device-count", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "device-result-count", "connected-devices-block", "connected-device-list", "connected-device-count", "source-palette-status", "activity-list", "output-state", "raw-ecg-value",
@@ -605,6 +612,9 @@
       : rendererPreferences,
     activity: [{ time: "NOW", message: isNative ? "Bluetooth interface ready" : "Browser demo ready" }],
     viewMode: loadViewMode(),
+    nodeGraph: loadNodeGraph(),
+    selectedNodeId: null,
+    selectedLinkId: null,
   };
 
   function loadViewMode() {
@@ -918,51 +928,6 @@
     setViewMode("panels", { focusPanel: panelId });
   }
 
-  function nodeDetail(text) {
-    const detail = document.createElement("small");
-    detail.textContent = text;
-    return detail;
-  }
-
-  function nodeAction(label, panelId) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    button.addEventListener("click", () => openPanelFromNode(panelId));
-    return button;
-  }
-
-  function createNodeCard({ id, title, meta, detail, panelId, active = false, source = null }) {
-    const card = document.createElement("article");
-    card.className = `flow-node${active ? " active" : ""}`;
-    card.dataset.nodeId = id;
-    if (source) applyPaletteVariables(card, source);
-    const header = document.createElement("header");
-    const mark = document.createElement("span");
-    mark.className = "flow-node-mark";
-    mark.textContent = meta;
-    const label = document.createElement("strong");
-    label.textContent = title;
-    header.append(mark, label);
-    const body = document.createElement("p");
-    body.textContent = detail;
-    const footer = document.createElement("footer");
-    footer.append(nodeAction("Open panel", panelId));
-    card.append(header, body, footer);
-    return card;
-  }
-
-  function createNodeLink(label = "feeds") {
-    const link = document.createElement("div");
-    link.className = "flow-link";
-    link.setAttribute("aria-hidden", "true");
-    const line = document.createElement("span");
-    const text = document.createElement("small");
-    text.textContent = label;
-    link.append(line, text);
-    return link;
-  }
-
   function activeTransportLabels() {
     const labels = [];
     if (elements["lsl-toggle"].checked) labels.push("LSL");
@@ -972,80 +937,722 @@
     return labels;
   }
 
+  function nodeCatalog() {
+    return [
+      {
+        type: "recorded-polar",
+        category: "Input",
+        label: "Recorded Polar H10",
+        mark: "H10",
+        accent: "#b94b40",
+        detail: "Local ECG and ACC fixture. Starts the seamless recorded preview.",
+        action: "Start preview",
+        outputs: ["source"],
+      },
+      {
+        type: "vernier-mock",
+        category: "Input",
+        label: "Vernier mock source",
+        mark: "GDX",
+        accent: "#157a55",
+        detail: "Planning node for a belt-force source; live data still needs a GDX-RB connection.",
+        action: "Open Input",
+        outputs: ["source"],
+      },
+      {
+        type: "polar-connect",
+        category: "Input",
+        label: "Polar H10 connection",
+        mark: "BLE",
+        accent: "#d85151",
+        detail: "Search for a physical Polar H10 and promote it after streaming starts.",
+        action: "Search",
+        outputs: ["source"],
+      },
+      {
+        type: "vernier-connect",
+        category: "Input",
+        label: "Vernier GDX-RB",
+        mark: "GDX",
+        accent: "#0d6242",
+        detail: "Search for a Go Direct respiration belt and keep its raw path first.",
+        action: "Search",
+        outputs: ["source"],
+      },
+      {
+        type: "output-router",
+        category: "Processing",
+        label: "Output configuration",
+        mark: "OUT",
+        accent: "#a66d19",
+        detail: "Selected raw, metric, formula, and automatic protocol outputs.",
+        action: "Open Output",
+        inputs: ["source"],
+        outputs: ["signals"],
+      },
+      {
+        type: "lsl-out",
+        category: "Destination",
+        label: "LSL outlet",
+        mark: "LSL",
+        accent: "#3b78aa",
+        detail: "Native Lab Streaming Layer destination. Browser attempts fail closed.",
+        action: "Enable",
+        inputs: ["signals"],
+      },
+      {
+        type: "osc-out",
+        category: "Destination",
+        label: "OSC sender",
+        mark: "OSC",
+        accent: "#3b78aa",
+        detail: "Native Open Sound Control destination. Browser attempts fail closed.",
+        action: "Enable",
+        inputs: ["signals"],
+      },
+      {
+        type: "csv-out",
+        category: "Destination",
+        label: "Local CSV recorder",
+        mark: "CSV",
+        accent: "#157a55",
+        detail: "Bounded native or browser-local CSV capture.",
+        action: "Enable",
+        inputs: ["signals"],
+      },
+      {
+        type: "audio-out",
+        category: "Destination",
+        label: "PCM audio modem",
+        mark: "PCM",
+        accent: "#5f6d63",
+        detail: "Experimental stereo data modem with CRC32 framing.",
+        action: "Enable",
+        inputs: ["signals"],
+      },
+      {
+        type: "visualizer",
+        category: "View",
+        label: "Visualizer",
+        mark: "VIEW",
+        accent: "#0d6242",
+        detail: "Display-rate chart fed by bounded UI buffers.",
+        action: "Open Visual",
+        inputs: ["signals"],
+      },
+      {
+        type: "lab-recorder",
+        category: "Destination",
+        label: "LabRecorder",
+        mark: "XDF",
+        accent: "#5f6d63",
+        detail: "Launch the packaged recorder and choose discoverable native LSL streams.",
+        action: runtime.isBrowser ? "Open Output" : "Launch",
+        inputs: ["signals"],
+      },
+    ];
+  }
+
+  function nodeTypeDefinition(type) {
+    return nodeCatalog().find((definition) => definition.type === type) || nodeCatalog()[0];
+  }
+
+  function defaultNodeGraph() {
+    return {
+      viewport: { x: 76, y: 56, zoom: 0.92 },
+      nextNodeNumber: 1,
+      nodes: [
+        { id: "node-recorded-polar", type: "recorded-polar", x: 120, y: 150 },
+        { id: "node-polar-connect", type: "polar-connect", x: 120, y: 340 },
+        { id: "node-vernier-connect", type: "vernier-connect", x: 120, y: 530 },
+        { id: "node-output-router", type: "output-router", x: 465, y: 300 },
+        { id: "node-lsl", type: "lsl-out", x: 790, y: 140 },
+        { id: "node-osc", type: "osc-out", x: 790, y: 300 },
+        { id: "node-csv", type: "csv-out", x: 790, y: 460 },
+        { id: "node-visualizer", type: "visualizer", x: 1110, y: 250 },
+        { id: "node-lab-recorder", type: "lab-recorder", x: 1110, y: 450 },
+      ],
+      links: [
+        { id: "link-recorded-output", from: { nodeId: "node-recorded-polar", port: "source" }, to: { nodeId: "node-output-router", port: "source" } },
+        { id: "link-output-lsl", from: { nodeId: "node-output-router", port: "signals" }, to: { nodeId: "node-lsl", port: "signals" } },
+        { id: "link-output-visual", from: { nodeId: "node-output-router", port: "signals" }, to: { nodeId: "node-visualizer", port: "signals" } },
+      ],
+    };
+  }
+
+  function loadNodeGraph() {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(NODE_GRAPH_STORAGE_KEY));
+      if (!stored || !Array.isArray(stored.nodes) || !Array.isArray(stored.links)) return defaultNodeGraph();
+      const fallback = defaultNodeGraph();
+      const nodes = stored.nodes
+        .filter((node) => node?.id && node?.type)
+        .map((node) => ({
+          id: String(node.id),
+          type: String(node.type),
+          x: Math.max(20, Math.min(NODE_STAGE_SIZE.width - NODE_SIZE.width, Number(node.x) || 80)),
+          y: Math.max(20, Math.min(NODE_STAGE_SIZE.height - NODE_SIZE.height, Number(node.y) || 80)),
+        }));
+      const nodeIds = new Set(nodes.map((node) => node.id));
+      const links = stored.links
+        .filter((link) => link?.id && nodeIds.has(link.from?.nodeId) && nodeIds.has(link.to?.nodeId))
+        .map((link) => ({
+          id: String(link.id),
+          from: { nodeId: String(link.from.nodeId), port: String(link.from.port || "source") },
+          to: { nodeId: String(link.to.nodeId), port: String(link.to.port || "signals") },
+        }));
+      return {
+        viewport: {
+          x: Number.isFinite(stored.viewport?.x) ? stored.viewport.x : fallback.viewport.x,
+          y: Number.isFinite(stored.viewport?.y) ? stored.viewport.y : fallback.viewport.y,
+          zoom: clamp(Number(stored.viewport?.zoom) || fallback.viewport.zoom, NODE_ZOOM_LIMITS.min, NODE_ZOOM_LIMITS.max),
+        },
+        nextNodeNumber: Math.max(1, Number(stored.nextNodeNumber) || fallback.nextNodeNumber),
+        nodes: nodes.length ? nodes : fallback.nodes,
+        links,
+      };
+    } catch (_error) {
+      return defaultNodeGraph();
+    }
+  }
+
+  function saveNodeGraph() {
+    try {
+      window.localStorage.setItem(NODE_GRAPH_STORAGE_KEY, JSON.stringify(app.nodeGraph));
+    } catch (_error) {
+      // Node layout is presentation-only and may fall back to defaults.
+    }
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function nodeActive(type) {
+    if (type === "recorded-polar") return [...app.activeSources.values()].some((source) => source.inputKind === "mock");
+    if (type === "polar-connect") return [...app.activeSources.values()].some((source) => deviceProfileForSource(source).id === "polar");
+    if (type === "vernier-connect") return [...app.activeSources.values()].some((source) => deviceProfileForSource(source).id === "vernier");
+    if (type === "output-router") return selectedOutputCount() > 0;
+    if (type === "lsl-out") return elements["lsl-toggle"].checked;
+    if (type === "osc-out") return elements["osc-toggle"].checked;
+    if (type === "csv-out") return elements["csv-toggle"].checked;
+    if (type === "audio-out") return elements["audio-toggle"].checked;
+    if (type === "visualizer") return Boolean(visualDefinitions[app.selectedVisual] && app.activeSources.size);
+    if (type === "lab-recorder") return !runtime.isBrowser && elements["lsl-toggle"].checked;
+    return false;
+  }
+
+  function selectedOutputCount() {
+    const profile = selectedDeviceProfile();
+    return [...app.outputs].filter((id) => metricMatchesDeviceProfile(app.catalog.find((metric) => metric.id === id), profile)).length + profile.automaticOutputCount;
+  }
+
+  function nodeDetailFor(type) {
+    const definition = nodeTypeDefinition(type);
+    const sourceCount = app.activeSources.size;
+    if (type === "recorded-polar") {
+      return nodeActive(type) ? "Recorded preview is streaming through the shared UI event path." : definition.detail;
+    }
+    if (type === "vernier-mock") {
+      return "Layout-only mock node until a checked-in Vernier fixture exists.";
+    }
+    if (type === "polar-connect" || type === "vernier-connect") {
+      const profileId = type === "vernier-connect" ? "vernier" : "polar";
+      const count = [...app.activeSources.values()].filter((source) => deviceProfileForSource(source).id === profileId).length;
+      return count ? `${count} ${profileId === "vernier" ? "Vernier" : "Polar"} source${count === 1 ? "" : "s"} live.` : definition.detail;
+    }
+    if (type === "output-router") {
+      const count = selectedOutputCount();
+      return count ? `${count} active output${count === 1 ? "" : "s"} under ${app.streamName || "current stream"}.` : definition.detail;
+    }
+    if (type === "visualizer") return visualDefinitions[app.selectedVisual]?.label || definition.detail;
+    if (type === "lab-recorder" && runtime.isBrowser) return "XDF recording opens from the installed desktop app.";
+    return definition.detail;
+  }
+
+  function nodePortPoint(nodeId, direction) {
+    const node = app.nodeGraph.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node) return { x: 0, y: 0 };
+    return {
+      x: node.x + (direction === "output" ? NODE_SIZE.width : 0),
+      y: node.y + 98,
+    };
+  }
+
+  function nodeLinkPath(from, to) {
+    const dx = Math.max(72, Math.abs(to.x - from.x) * 0.46);
+    return `M ${from.x} ${from.y} C ${from.x + dx} ${from.y}, ${to.x - dx} ${to.y}, ${to.x} ${to.y}`;
+  }
+
+  function renderNodeLinks() {
+    if (!elements["node-link-layer"]) return;
+    const paths = app.nodeGraph.links.map((link) => {
+      const from = nodePortPoint(link.from.nodeId, "output");
+      const to = nodePortPoint(link.to.nodeId, "input");
+      const path = document.createElementNS(svgNamespace, "path");
+      path.dataset.linkId = link.id;
+      path.setAttribute("d", nodeLinkPath(from, to));
+      path.classList.toggle("selected", app.selectedLinkId === link.id);
+      return path;
+    });
+    elements["node-link-layer"].replaceChildren(...paths);
+  }
+
+  function applyNodeViewport() {
+    const viewport = app.nodeGraph.viewport;
+    elements["node-stage"].style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
+    const gridSize = 32 * viewport.zoom;
+    elements["node-grid"].style.backgroundSize = `${gridSize}px ${gridSize}px`;
+    elements["node-grid"].style.backgroundPosition = `${viewport.x % gridSize}px ${viewport.y % gridSize}px`;
+  }
+
+  function setNodeViewport(next, { persist = true } = {}) {
+    app.nodeGraph.viewport = {
+      x: Number(next.x) || 0,
+      y: Number(next.y) || 0,
+      zoom: clamp(Number(next.zoom) || 1, NODE_ZOOM_LIMITS.min, NODE_ZOOM_LIMITS.max),
+    };
+    applyNodeViewport();
+    if (persist) saveNodeGraph();
+  }
+
+  function editorPointFromEvent(event) {
+    const rect = elements["node-editor"].getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  function worldPointFromEvent(event) {
+    const point = editorPointFromEvent(event);
+    const viewport = app.nodeGraph.viewport;
+    return {
+      x: (point.x - viewport.x) / viewport.zoom,
+      y: (point.y - viewport.y) / viewport.zoom,
+    };
+  }
+
+  function worldToEditorPoint(point) {
+    const viewport = app.nodeGraph.viewport;
+    return {
+      x: point.x * viewport.zoom + viewport.x,
+      y: point.y * viewport.zoom + viewport.y,
+    };
+  }
+
+  function createPatchNode(node) {
+    const definition = nodeTypeDefinition(node.type);
+    const active = nodeActive(node.type);
+    const card = document.createElement("article");
+    card.className = `patch-node${active ? " live" : ""}${app.selectedNodeId === node.id ? " selected" : ""}`;
+    card.dataset.nodeId = node.id;
+    card.style.left = `${node.x}px`;
+    card.style.top = `${node.y}px`;
+    card.style.setProperty("--node-accent", definition.accent);
+    const header = document.createElement("header");
+    const label = document.createElement("strong");
+    label.textContent = definition.label;
+    const mark = document.createElement("mark");
+    mark.textContent = definition.mark;
+    header.append(label, mark);
+    const body = document.createElement("p");
+    body.textContent = nodeDetailFor(node.type);
+    const footer = document.createElement("footer");
+    const inputPorts = definition.inputs || [];
+    const outputPorts = definition.outputs || [];
+    const inputRow = document.createElement("span");
+    inputRow.className = "node-port-row";
+    if (inputPorts.length) {
+      const port = document.createElement("span");
+      port.className = "node-port input";
+      port.dataset.nodeId = node.id;
+      port.dataset.port = inputPorts[0];
+      port.dataset.portDirection = "input";
+      inputRow.append(port, document.createTextNode(inputPorts[0]));
+    }
+    const outputRow = document.createElement("span");
+    outputRow.className = "node-port-row";
+    if (outputPorts.length) {
+      const port = document.createElement("span");
+      port.className = "node-port output";
+      port.dataset.nodeId = node.id;
+      port.dataset.port = outputPorts[0];
+      port.dataset.portDirection = "output";
+      outputRow.append(document.createTextNode(outputPorts[0]), port);
+    }
+    const action = document.createElement("button");
+    action.type = "button";
+    action.textContent = definition.action;
+    action.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void runNodeAction(node);
+    });
+    footer.append(inputRow, action, outputRow);
+    card.append(header, body, footer);
+    return card;
+  }
+
+  function renderNodeGraph() {
+    if (!elements["node-layer"]) return;
+    const nodes = app.nodeGraph.nodes.map((node) => createPatchNode(node));
+    elements["node-layer"].replaceChildren(...nodes);
+    renderNodeLinks();
+    applyNodeViewport();
+  }
+
   function renderNodeView() {
     if (!elements["node-board"]) return;
-    const source = app.activeSources.get(app.selectedSourceId) || [...app.activeSources.values()][0] || null;
-    const profile = selectedDeviceProfile();
     const sourceCount = app.activeSources.size;
-    const outputCount = [...app.outputs].filter((id) => metricMatchesDeviceProfile(app.catalog.find((metric) => metric.id === id), profile)).length + profile.automaticOutputCount;
+    const outputCount = selectedOutputCount();
     const transports = activeTransportLabels();
-    const visual = visualDefinitions[app.selectedVisual];
     elements["node-view-summary"].textContent = sourceCount
       ? `${sourceCount} source${sourceCount === 1 ? "" : "s"} · ${outputCount} output${outputCount === 1 ? "" : "s"} · ${transports.length ? transports.join(" / ") : "no transport selected"}`
-      : "No connected sources";
-    const sourceName = source?.deviceName || source?.label || "No source";
-    const nodes = [
-      createNodeCard({
-        id: "input",
-        title: "Input",
-        meta: sourceCount ? `${sourceCount} live` : "idle",
-        detail: sourceCount ? sourceName : "Search devices or start the recorded preview.",
-        panelId: "input-section",
-        active: sourceCount > 0,
-        source,
-      }),
-      createNodeCard({
-        id: "profile",
-        title: "Device profile",
-        meta: profile.mark,
-        detail: profile.id === "none" ? "Profile loads after a supported source connects." : profile.deviceRole,
-        panelId: "input-section",
-        active: profile.id !== "none",
-        source,
-      }),
-      createNodeCard({
-        id: "outputs",
-        title: "Outputs",
-        meta: `${outputCount}`,
-        detail: profile.id === "none" ? "Outputs appear after connection." : `${outputCount} active signal${outputCount === 1 ? "" : "s"} for ${app.streamName || "current stream"}.`,
-        panelId: "output-section",
-        active: outputCount > 0,
-        source,
-      }),
-      createNodeCard({
-        id: "transports",
-        title: "Transports",
-        meta: transports.length ? transports.join("/") : "off",
-        detail: transports.length ? "Selected destinations receive accepted output configuration." : "Enable LSL, OSC, CSV, or PCM in Output.",
-        panelId: "output-section",
-        active: transports.length > 0,
-        source,
-      }),
-      createNodeCard({
-        id: "visual",
-        title: "Visualization",
-        meta: app.comparisonSourceIds.size ? `${app.comparisonSourceIds.size + 1} lanes` : "chart",
-        detail: visual?.label || "Select a connected output to draw.",
-        panelId: "visual-section",
-        active: Boolean(visual && profile.id !== "none"),
-        source,
-      }),
-      createNodeCard({
-        id: "recorder",
-        title: "LabRecorder",
-        meta: runtime.isBrowser ? "app" : "XDF",
-        detail: runtime.isBrowser ? "XDF recording opens from the installed app." : "Open the bundled recorder from Output.",
-        panelId: "output-section",
-        active: !runtime.isBrowser && elements["lsl-toggle"].checked,
-        source,
-      }),
-    ];
+      : "Patch field ready · double-click or press Tab to add nodes";
+    renderNodeGraph();
+  }
+
+  function openNodeMenu(clientX, clientY) {
+    const editorRect = elements["node-editor"].getBoundingClientRect();
+    const world = worldPointFromEvent({ clientX, clientY });
+    elements["node-menu"].hidden = false;
+    elements["node-menu"].dataset.worldX = String(clamp(world.x, 20, NODE_STAGE_SIZE.width - NODE_SIZE.width));
+    elements["node-menu"].dataset.worldY = String(clamp(world.y, 20, NODE_STAGE_SIZE.height - NODE_SIZE.height));
+    const width = Math.min(320, editorRect.width - 24);
+    const left = clamp(clientX - editorRect.left, 12, editorRect.width - width - 12);
+    const top = clamp(clientY - editorRect.top, 12, editorRect.height - 430);
+    elements["node-menu"].style.left = `${left}px`;
+    elements["node-menu"].style.top = `${Math.max(12, top)}px`;
+    elements["node-menu-search"].value = "";
+    renderNodeMenu("");
+    elements["node-menu-search"].focus({ preventScroll: true });
+  }
+
+  function closeNodeMenu() {
+    elements["node-menu"].hidden = true;
+  }
+
+  function renderNodeMenu(query) {
+    const normalized = query.trim().toLowerCase();
+    const groups = new Map();
+    for (const definition of nodeCatalog()) {
+      const haystack = `${definition.label} ${definition.category} ${definition.detail}`.toLowerCase();
+      if (normalized && !haystack.includes(normalized)) continue;
+      if (!groups.has(definition.category)) groups.set(definition.category, []);
+      groups.get(definition.category).push(definition);
+    }
     const children = [];
-    nodes.forEach((node, index) => {
-      if (index) children.push(createNodeLink(index === 4 ? "displays" : "feeds"));
-      children.push(node);
+    for (const [category, definitions] of groups) {
+      const heading = document.createElement("div");
+      heading.className = "node-menu-section";
+      heading.textContent = category;
+      children.push(heading);
+      for (const definition of definitions) {
+        const button = document.createElement("button");
+        button.type = "button";
+        const mark = document.createElement("code");
+        mark.textContent = definition.mark;
+        const copy = document.createElement("span");
+        const title = document.createElement("strong");
+        title.textContent = definition.label;
+        const detail = document.createElement("span");
+        detail.textContent = definition.detail;
+        copy.append(title, detail);
+        button.append(mark, copy);
+        button.addEventListener("click", () => {
+          addGraphNode(definition.type);
+          closeNodeMenu();
+        });
+        children.push(button);
+      }
+    }
+    if (!children.length) {
+      const empty = document.createElement("div");
+      empty.className = "node-menu-section";
+      empty.textContent = "No matching nodes";
+      children.push(empty);
+    }
+    elements["node-menu-list"].replaceChildren(...children);
+  }
+
+  function addGraphNode(type) {
+    const x = clamp(Number(elements["node-menu"].dataset.worldX) || 160, 20, NODE_STAGE_SIZE.width - NODE_SIZE.width);
+    const y = clamp(Number(elements["node-menu"].dataset.worldY) || 160, 20, NODE_STAGE_SIZE.height - NODE_SIZE.height);
+    const id = `node-custom-${app.nodeGraph.nextNodeNumber++}`;
+    app.nodeGraph.nodes.push({ id, type, x, y });
+    app.selectedNodeId = id;
+    app.selectedLinkId = null;
+    saveNodeGraph();
+    renderNodeView();
+  }
+
+  function removeSelectedNodeGraphItem() {
+    if (app.selectedNodeId) {
+      const nodeId = app.selectedNodeId;
+      app.nodeGraph.nodes = app.nodeGraph.nodes.filter((node) => node.id !== nodeId);
+      app.nodeGraph.links = app.nodeGraph.links.filter((link) => link.from.nodeId !== nodeId && link.to.nodeId !== nodeId);
+      app.selectedNodeId = null;
+      saveNodeGraph();
+      renderNodeView();
+      return;
+    }
+    if (app.selectedLinkId) {
+      app.nodeGraph.links = app.nodeGraph.links.filter((link) => link.id !== app.selectedLinkId);
+      app.selectedLinkId = null;
+      saveNodeGraph();
+      renderNodeLinks();
+    }
+  }
+
+  async function startRecordedPolarFromNode() {
+    const mock = runtime.getInputModules().find((device) => device.kind === "mock");
+    if (!mock) {
+      toast("Recorded Polar preview is not available in this runtime.", true);
+      return;
+    }
+    app.devices = mergeDevices([mock, ...app.devices]);
+    app.selectedDeviceIds.clear();
+    app.selectedDeviceIds.add(mock.id);
+    renderDevices(app.devices);
+    await connectSelectedDevices();
+  }
+
+  function openInputAndSearch() {
+    setViewMode("panels", { focusPanel: "input-section" });
+    if (!app.scanning) void scanDevices();
+  }
+
+  function openOutputFromNode() {
+    openPanelFromNode("output-section");
+  }
+
+  async function enableDestinationFromNode(type) {
+    const map = {
+      "lsl-out": ["lsl-toggle", "LSL"],
+      "osc-out": ["osc-toggle", "OSC"],
+      "csv-out": ["csv-toggle", "CSV"],
+      "audio-out": ["audio-toggle", "audio"],
+    };
+    const [toggleId, protocol] = map[type] || [];
+    if (!toggleId) return;
+    elements[toggleId].checked = true;
+    if (protocol === "LSL" || protocol === "OSC") {
+      handleNativeDestinationToggle(protocol);
+    } else {
+      await configureOutputs().catch(() => {});
+    }
+    renderNodeView();
+  }
+
+  async function runNodeAction(node) {
+    if (node.type === "recorded-polar") return startRecordedPolarFromNode();
+    if (node.type === "polar-connect" || node.type === "vernier-connect" || node.type === "vernier-mock") return openInputAndSearch();
+    if (node.type === "output-router") return openOutputFromNode();
+    if (["lsl-out", "osc-out", "csv-out", "audio-out"].includes(node.type)) return enableDestinationFromNode(node.type);
+    if (node.type === "visualizer") return openPanelFromNode("visual-section");
+    if (node.type === "lab-recorder") {
+      if (!runtime.isBrowser && !elements["open-lab-recorder"].disabled) elements["open-lab-recorder"].click();
+      else openOutputFromNode();
+    }
+  }
+
+  function applyNodeLinkEffect(link) {
+    const fromNode = app.nodeGraph.nodes.find((node) => node.id === link.from.nodeId);
+    const toNode = app.nodeGraph.nodes.find((node) => node.id === link.to.nodeId);
+    if (!fromNode || !toNode) return;
+    if (fromNode.type === "recorded-polar" && !nodeActive("recorded-polar")) {
+      void startRecordedPolarFromNode();
+    }
+    if (["lsl-out", "osc-out", "csv-out", "audio-out"].includes(toNode.type)) {
+      void enableDestinationFromNode(toNode.type);
+    }
+  }
+
+  function connectGraphPorts(fromNodeId, fromPort, toNodeId, toPort) {
+    if (fromNodeId === toNodeId) return;
+    const duplicate = app.nodeGraph.links.some((link) => (
+      link.from.nodeId === fromNodeId && link.from.port === fromPort
+      && link.to.nodeId === toNodeId && link.to.port === toPort
+    ));
+    if (duplicate) return;
+    const link = {
+      id: `link-${Date.now().toString(36)}-${app.nodeGraph.links.length}`,
+      from: { nodeId: fromNodeId, port: fromPort },
+      to: { nodeId: toNodeId, port: toPort },
+    };
+    app.nodeGraph.links.push(link);
+    app.selectedLinkId = link.id;
+    app.selectedNodeId = null;
+    saveNodeGraph();
+    renderNodeView();
+    applyNodeLinkEffect(link);
+  }
+
+  function nodeElementFromEvent(event) {
+    return event.target instanceof Element ? event.target.closest(".patch-node") : null;
+  }
+
+  function portElementFromEvent(event) {
+    return event.target instanceof Element ? event.target.closest(".node-port") : null;
+  }
+
+  function beginNodeDrag(event, nodeEl) {
+    const node = app.nodeGraph.nodes.find((candidate) => candidate.id === nodeEl.dataset.nodeId);
+    if (!node) return;
+    const world = worldPointFromEvent(event);
+    nodeDrag = {
+      pointerId: event.pointerId,
+      nodeId: node.id,
+      offsetX: world.x - node.x,
+      offsetY: world.y - node.y,
+    };
+    app.selectedNodeId = node.id;
+    app.selectedLinkId = null;
+    nodeEl.setPointerCapture(event.pointerId);
+    renderNodeGraph();
+  }
+
+  function beginNodePan(event) {
+    nodePan = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      x: app.nodeGraph.viewport.x,
+      y: app.nodeGraph.viewport.y,
+    };
+    elements["node-editor"].setPointerCapture(event.pointerId);
+  }
+
+  function beginNodeLinkDrag(event, port) {
+    if (port.dataset.portDirection !== "output") return;
+    event.stopPropagation();
+    const from = nodePortPoint(port.dataset.nodeId, "output");
+    const editorPoint = worldToEditorPoint(from);
+    nodeLinkDrag = {
+      pointerId: event.pointerId,
+      nodeId: port.dataset.nodeId,
+      port: port.dataset.port,
+      from,
+    };
+    elements["node-editor"].setPointerCapture(event.pointerId);
+    updateDraftNodeLink(editorPoint, editorPoint);
+  }
+
+  function updateDraftNodeLink(fromEditor, toEditor) {
+    const path = document.createElementNS(svgNamespace, "path");
+    const dx = Math.max(42, Math.abs(toEditor.x - fromEditor.x) * 0.42);
+    path.setAttribute("d", `M ${fromEditor.x} ${fromEditor.y} C ${fromEditor.x + dx} ${fromEditor.y}, ${toEditor.x - dx} ${toEditor.y}, ${toEditor.x} ${toEditor.y}`);
+    elements["node-draft-layer"].replaceChildren(path);
+  }
+
+  function finishNodePointer(event) {
+    if (nodeDrag?.pointerId === event.pointerId) {
+      saveNodeGraph();
+      nodeDrag = null;
+    }
+    if (nodePan?.pointerId === event.pointerId) {
+      saveNodeGraph();
+      nodePan = null;
+    }
+    if (nodeLinkDrag?.pointerId === event.pointerId) {
+      const target = document.elementFromPoint(event.clientX, event.clientY);
+      const port = target instanceof Element ? target.closest(".node-port.input") : null;
+      if (port) connectGraphPorts(nodeLinkDrag.nodeId, nodeLinkDrag.port, port.dataset.nodeId, port.dataset.port);
+      elements["node-draft-layer"].replaceChildren();
+      nodeLinkDrag = null;
+    }
+  }
+
+  function installNodeEditor() {
+    elements["node-add-button"].addEventListener("click", () => {
+      const rect = elements["node-editor"].getBoundingClientRect();
+      openNodeMenu(rect.left + rect.width / 2, rect.top + rect.height / 2);
     });
-    elements["node-board"].replaceChildren(...children);
+    elements["node-reset-view"].addEventListener("click", () => {
+      const fresh = defaultNodeGraph();
+      app.nodeGraph.viewport = fresh.viewport;
+      setNodeViewport(fresh.viewport);
+    });
+    elements["node-menu-search"].addEventListener("input", () => renderNodeMenu(elements["node-menu-search"].value));
+    elements["node-menu-search"].addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeNodeMenu();
+      elements["node-editor"].focus({ preventScroll: true });
+    });
+    elements["node-editor"].addEventListener("dblclick", (event) => {
+      if (nodeElementFromEvent(event) || portElementFromEvent(event)) return;
+      openNodeMenu(event.clientX, event.clientY);
+    });
+    elements["node-editor"].addEventListener("wheel", (event) => {
+      event.preventDefault();
+      closeNodeMenu();
+      const before = worldPointFromEvent(event);
+      const delta = event.deltaY < 0 ? 1.08 : 0.925;
+      const zoom = clamp(app.nodeGraph.viewport.zoom * delta, NODE_ZOOM_LIMITS.min, NODE_ZOOM_LIMITS.max);
+      const editorPoint = editorPointFromEvent(event);
+      setNodeViewport({
+        zoom,
+        x: editorPoint.x - before.x * zoom,
+        y: editorPoint.y - before.y * zoom,
+      });
+    }, { passive: false });
+    elements["node-editor"].addEventListener("pointerdown", (event) => {
+      closeNodeMenu();
+      const port = portElementFromEvent(event);
+      if (port) {
+        beginNodeLinkDrag(event, port);
+        return;
+      }
+      const nodeEl = nodeElementFromEvent(event);
+      if (nodeEl && event.button === 0) {
+        if (event.target instanceof Element && event.target.closest("button")) return;
+        beginNodeDrag(event, nodeEl);
+        return;
+      }
+      if (event.button === 1 || event.button === 0) beginNodePan(event);
+    });
+    elements["node-editor"].addEventListener("pointermove", (event) => {
+      if (nodeDrag?.pointerId === event.pointerId) {
+        const node = app.nodeGraph.nodes.find((candidate) => candidate.id === nodeDrag.nodeId);
+        if (!node) return;
+        const world = worldPointFromEvent(event);
+        node.x = clamp(world.x - nodeDrag.offsetX, 20, NODE_STAGE_SIZE.width - NODE_SIZE.width);
+        node.y = clamp(world.y - nodeDrag.offsetY, 20, NODE_STAGE_SIZE.height - NODE_SIZE.height);
+        const nodeEl = elements["node-layer"].querySelector(`[data-node-id="${CSS.escape(node.id)}"]`);
+        if (nodeEl) {
+          nodeEl.style.left = `${node.x}px`;
+          nodeEl.style.top = `${node.y}px`;
+        }
+        renderNodeLinks();
+      }
+      if (nodePan?.pointerId === event.pointerId) {
+        setNodeViewport({
+          ...app.nodeGraph.viewport,
+          x: nodePan.x + event.clientX - nodePan.clientX,
+          y: nodePan.y + event.clientY - nodePan.clientY,
+        }, { persist: false });
+      }
+      if (nodeLinkDrag?.pointerId === event.pointerId) {
+        updateDraftNodeLink(worldToEditorPoint(nodeLinkDrag.from), editorPointFromEvent(event));
+      }
+    });
+    elements["node-editor"].addEventListener("pointerup", finishNodePointer);
+    elements["node-editor"].addEventListener("pointercancel", finishNodePointer);
+    elements["node-editor"].addEventListener("contextmenu", (event) => event.preventDefault());
+    elements["node-editor"].addEventListener("keydown", (event) => {
+      if (event.key === "Tab") {
+        event.preventDefault();
+        const rect = elements["node-editor"].getBoundingClientRect();
+        openNodeMenu(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      } else if (event.key === "Escape") {
+        closeNodeMenu();
+      } else if (event.key === "Delete" || event.key === "Backspace") {
+        removeSelectedNodeGraphItem();
+      }
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (elements["node-menu"].hidden) return;
+      if (event.target instanceof Element && (elements["node-menu"].contains(event.target) || elements["node-editor"].contains(event.target))) return;
+      closeNodeMenu();
+    });
   }
 
   function finishWorkspaceDrag(divider, pointerId) {
@@ -1569,6 +2176,7 @@
     app.committedOutputState = captureOutputState();
     installInteractions();
     installWorkspaceSplitters();
+    installNodeEditor();
     setViewMode(app.viewMode, { persist: false });
     updateThemeUi();
     if (isNative) {
