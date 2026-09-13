@@ -280,6 +280,40 @@ try {
     connectedDeviceWidgets: 0,
     connectedDeviceToggles: 0,
   }, "outputs or visualizations were instantiated before a device connected");
+  await page.locator("#node-view-toggle").click();
+  const nodeToggle = await page.evaluate(() => ({
+    mode: document.body.dataset.viewMode,
+    panelsHidden: document.querySelector("#workspace").hidden,
+    nodesHidden: document.querySelector("#node-workspace").hidden,
+    nodePressed: document.querySelector("#node-view-toggle").getAttribute("aria-pressed"),
+    panelPressed: document.querySelector("#panel-view-toggle").getAttribute("aria-pressed"),
+    nodeIds: [...document.querySelectorAll(".flow-node")].map((node) => node.dataset.nodeId),
+    nodeSummary: document.querySelector("#node-view-summary").textContent,
+  }));
+  assert.deepEqual(nodeToggle, {
+    mode: "nodes",
+    panelsHidden: true,
+    nodesHidden: false,
+    nodePressed: "true",
+    panelPressed: "false",
+    nodeIds: ["input", "profile", "outputs", "transports", "visual", "recorder"],
+    nodeSummary: "No connected sources",
+  }, "node view toggle did not expose the signal-flow node board");
+  await page.locator("#panel-view-toggle").click();
+  const panelToggle = await page.evaluate(() => ({
+    mode: document.body.dataset.viewMode,
+    panelsHidden: document.querySelector("#workspace").hidden,
+    nodesHidden: document.querySelector("#node-workspace").hidden,
+    nodePressed: document.querySelector("#node-view-toggle").getAttribute("aria-pressed"),
+    panelPressed: document.querySelector("#panel-view-toggle").getAttribute("aria-pressed"),
+  }));
+  assert.deepEqual(panelToggle, {
+    mode: "panels",
+    panelsHidden: false,
+    nodesHidden: true,
+    nodePressed: "false",
+    panelPressed: "true",
+  }, "panel view toggle did not restore the three-panel workspace");
   const emptyScreenshot = join(output, "empty-device-protocols.png");
   await page.screenshot({ path: emptyScreenshot, fullPage: true });
   assert.ok((await stat(emptyScreenshot)).size > 20_000, "empty protocol screenshot was unexpectedly empty");

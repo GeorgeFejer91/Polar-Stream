@@ -1,5 +1,27 @@
 # Decision log
 
+## 2026-09-13 — Keep node view as a second view over the same state
+
+The interface may switch between the normal three-panel workspace and a compact
+node-flow view inspired by Goofi Pipe, but both modes must read the same
+canonical `apps/polar-stream/ui/` state. The top-level view switch is a local
+presentation preference only; it must not create another acquisition path,
+another output configuration owner, or a second browser-specific interface.
+
+Node view summarizes the live Input -> profile -> outputs -> transports ->
+visualization -> recorder flow and offers direct return actions to the
+corresponding panel. Switching modes must not reconnect hardware, restart
+outputs, clear selected metrics, or change LSL/OSC/CSV behavior.
+
+## 2026-09-13 — Keep empty input surfaces empty until a source exists
+
+The input panel should not render a bordered "no connected devices" widget
+before an actual source is created. Candidate devices and mock streams may
+appear in Available devices, but connected-device widgets only appear after a
+Polar, Vernier, or mock source has connected. Candidate rows should keep one
+visual row boundary; inline controls such as source color and select state
+should not become separate sidecar boxes.
+
 ## 2026-09-03 — Treat the interface as a quiet research workbench
 
 Preserve the Input, Output, and Visualization workflow, but express each area

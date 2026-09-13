@@ -26,6 +26,8 @@
   let formulaPreviewLastDrawAt = 0;
   let rendererOutputConfigFailure = null;
   const WORKSPACE_LAYOUT_STORAGE_KEY = "polar-stream.workspace-layout.v1";
+  const VIEW_MODE_STORAGE_KEY = "polar-stream.workspace-view.v1";
+  const VIEW_MODES = Object.freeze(["panels", "nodes"]);
   const DEFAULT_WORKSPACE_PROPORTIONS = Object.freeze([0.84 / 3.16, 1 / 3.16, 1.32 / 3.16]);
   const WORKSPACE_MINIMUM_WIDTHS = Object.freeze([220, 245, 300]);
   const WORKSPACE_DESKTOP_MEDIA = window.matchMedia("(min-width: 901px)");
@@ -514,10 +516,10 @@
   let buffers = createBufferBank();
   const elements = {};
   const ids = [
-    "workspace", "input-section", "output-section", "visual-section", "input-output-divider", "output-visual-divider",
+    "workspace", "node-workspace", "node-board", "node-view-summary", "node-open-panels", "panel-view-toggle", "node-view-toggle", "input-section", "output-section", "visual-section", "input-output-divider", "output-visual-divider",
     "app-state-dot", "app-state-text", "platform-label", "runtime-path-label", "input-state", "connection-card",
     "device-name", "connection-detail", "disconnect-button", "connection-meta", "battery-value", "connection-metric-1-label", "connection-metric-1-value", "connection-metric-2-label", "connection-metric-2-value", "active-source-strip",
-    "scan-button", "scan-caption", "connect-selected-button", "selected-device-count", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "device-result-count", "connected-device-list", "connected-device-count", "source-palette-status", "activity-list", "output-state", "raw-ecg-value",
+    "scan-button", "scan-caption", "connect-selected-button", "selected-device-count", "keep-awake-control", "keep-vernier-awake", "keep-awake-status", "device-list", "device-result-count", "connected-devices-block", "connected-device-list", "connected-device-count", "source-palette-status", "activity-list", "output-state", "raw-ecg-value",
     "output-empty-state", "output-workspace", "visual-empty-state", "visual-workspace", "device-profile-card", "device-profile-mark", "device-profile-title", "device-profile-description", "raw-ecg-card", "raw-acc-card", "raw-force-card", "vernier-breathing-card",
     "raw-acc-x", "raw-acc-y", "raw-acc-z", "raw-force-value", "vernier-breathing-value", "ecg-spark", "stream-name", "stream-name-label", "lsl-toggle", "osc-toggle", "csv-toggle", "audio-toggle",
     "lsl-detail", "osc-detail", "csv-detail", "audio-detail", "lsl-destination-row", "osc-destination-row", "destination-mode-label", "native-output-browser-error", "native-output-browser-error-text", "desktop-app-download", "browser-local-destination", "browser-recorder-actions", "lab-recorder-launch", "lab-recorder-detail", "open-lab-recorder", "device-protocol-block", "device-protocol-cards", "included-output-heading", "included-count", "output-chips", "open-output-dialog", "visual-device", "visual-source", "visual-compare-control", "visual-compare-details", "visual-compare-summary", "visual-compare-count", "visual-compare-all", "visual-compare-options", "visual-layout-overlay", "visual-layout-separate",
@@ -602,7 +604,25 @@
       ? { streamName: null, lastDevice: null, outputConfig: null, keepVernierAwake: rendererPreferences.keepVernierAwake !== false, devicePalettes: rendererPreferences.devicePalettes || {} }
       : rendererPreferences,
     activity: [{ time: "NOW", message: isNative ? "Bluetooth interface ready" : "Browser demo ready" }],
+    viewMode: loadViewMode(),
   };
+
+  function loadViewMode() {
+    try {
+      const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+      return VIEW_MODES.includes(stored) ? stored : "panels";
+    } catch (_error) {
+      return "panels";
+    }
+  }
+
+  function saveViewMode(mode) {
+    try {
+      window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
+    } catch (_error) {
+      // View mode is presentation-only and can safely fall back per session.
+    }
+  }
 
   function currentTheme() {
     return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
@@ -816,7 +836,7 @@
   }
 
   function syncWorkspaceDividerAvailability() {
-    const desktop = WORKSPACE_DESKTOP_MEDIA.matches;
+    const desktop = WORKSPACE_DESKTOP_MEDIA.matches && app.viewMode === "panels";
     for (const divider of workspaceDividers()) {
       divider.tabIndex = desktop ? 0 : -1;
       if (desktop) {
@@ -869,6 +889,163 @@
 
   function resetWorkspaceProportions() {
     setWorkspaceProportions(DEFAULT_WORKSPACE_PROPORTIONS, { persist: true });
+  }
+
+  function setViewMode(mode, { persist = true, focusPanel = null } = {}) {
+    app.viewMode = VIEW_MODES.includes(mode) ? mode : "panels";
+    document.body.dataset.viewMode = app.viewMode;
+    elements["workspace"].hidden = app.viewMode !== "panels";
+    elements["node-workspace"].hidden = app.viewMode !== "nodes";
+    elements["panel-view-toggle"].setAttribute("aria-pressed", String(app.viewMode === "panels"));
+    elements["node-view-toggle"].setAttribute("aria-pressed", String(app.viewMode === "nodes"));
+    syncWorkspaceDividerAvailability();
+    if (persist) saveViewMode(app.viewMode);
+    if (app.viewMode === "panels") {
+      applyWorkspaceProportions();
+      if (focusPanel) {
+        const panel = elements[focusPanel];
+        panel?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        panel?.focus?.({ preventScroll: true });
+      }
+      window.requestAnimationFrame(resizeCanvas);
+      requestRender();
+    } else {
+      renderNodeView();
+    }
+  }
+
+  function openPanelFromNode(panelId) {
+    setViewMode("panels", { focusPanel: panelId });
+  }
+
+  function nodeDetail(text) {
+    const detail = document.createElement("small");
+    detail.textContent = text;
+    return detail;
+  }
+
+  function nodeAction(label, panelId) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", () => openPanelFromNode(panelId));
+    return button;
+  }
+
+  function createNodeCard({ id, title, meta, detail, panelId, active = false, source = null }) {
+    const card = document.createElement("article");
+    card.className = `flow-node${active ? " active" : ""}`;
+    card.dataset.nodeId = id;
+    if (source) applyPaletteVariables(card, source);
+    const header = document.createElement("header");
+    const mark = document.createElement("span");
+    mark.className = "flow-node-mark";
+    mark.textContent = meta;
+    const label = document.createElement("strong");
+    label.textContent = title;
+    header.append(mark, label);
+    const body = document.createElement("p");
+    body.textContent = detail;
+    const footer = document.createElement("footer");
+    footer.append(nodeAction("Open panel", panelId));
+    card.append(header, body, footer);
+    return card;
+  }
+
+  function createNodeLink(label = "feeds") {
+    const link = document.createElement("div");
+    link.className = "flow-link";
+    link.setAttribute("aria-hidden", "true");
+    const line = document.createElement("span");
+    const text = document.createElement("small");
+    text.textContent = label;
+    link.append(line, text);
+    return link;
+  }
+
+  function activeTransportLabels() {
+    const labels = [];
+    if (elements["lsl-toggle"].checked) labels.push("LSL");
+    if (elements["osc-toggle"].checked) labels.push("OSC");
+    if (elements["csv-toggle"].checked) labels.push("CSV");
+    if (elements["audio-toggle"].checked) labels.push("PCM");
+    return labels;
+  }
+
+  function renderNodeView() {
+    if (!elements["node-board"]) return;
+    const source = app.activeSources.get(app.selectedSourceId) || [...app.activeSources.values()][0] || null;
+    const profile = selectedDeviceProfile();
+    const sourceCount = app.activeSources.size;
+    const outputCount = [...app.outputs].filter((id) => metricMatchesDeviceProfile(app.catalog.find((metric) => metric.id === id), profile)).length + profile.automaticOutputCount;
+    const transports = activeTransportLabels();
+    const visual = visualDefinitions[app.selectedVisual];
+    elements["node-view-summary"].textContent = sourceCount
+      ? `${sourceCount} source${sourceCount === 1 ? "" : "s"} · ${outputCount} output${outputCount === 1 ? "" : "s"} · ${transports.length ? transports.join(" / ") : "no transport selected"}`
+      : "No connected sources";
+    const sourceName = source?.deviceName || source?.label || "No source";
+    const nodes = [
+      createNodeCard({
+        id: "input",
+        title: "Input",
+        meta: sourceCount ? `${sourceCount} live` : "idle",
+        detail: sourceCount ? sourceName : "Search devices or start the recorded preview.",
+        panelId: "input-section",
+        active: sourceCount > 0,
+        source,
+      }),
+      createNodeCard({
+        id: "profile",
+        title: "Device profile",
+        meta: profile.mark,
+        detail: profile.id === "none" ? "Profile loads after a supported source connects." : profile.deviceRole,
+        panelId: "input-section",
+        active: profile.id !== "none",
+        source,
+      }),
+      createNodeCard({
+        id: "outputs",
+        title: "Outputs",
+        meta: `${outputCount}`,
+        detail: profile.id === "none" ? "Outputs appear after connection." : `${outputCount} active signal${outputCount === 1 ? "" : "s"} for ${app.streamName || "current stream"}.`,
+        panelId: "output-section",
+        active: outputCount > 0,
+        source,
+      }),
+      createNodeCard({
+        id: "transports",
+        title: "Transports",
+        meta: transports.length ? transports.join("/") : "off",
+        detail: transports.length ? "Selected destinations receive accepted output configuration." : "Enable LSL, OSC, CSV, or PCM in Output.",
+        panelId: "output-section",
+        active: transports.length > 0,
+        source,
+      }),
+      createNodeCard({
+        id: "visual",
+        title: "Visualization",
+        meta: app.comparisonSourceIds.size ? `${app.comparisonSourceIds.size + 1} lanes` : "chart",
+        detail: visual?.label || "Select a connected output to draw.",
+        panelId: "visual-section",
+        active: Boolean(visual && profile.id !== "none"),
+        source,
+      }),
+      createNodeCard({
+        id: "recorder",
+        title: "LabRecorder",
+        meta: runtime.isBrowser ? "app" : "XDF",
+        detail: runtime.isBrowser ? "XDF recording opens from the installed app." : "Open the bundled recorder from Output.",
+        panelId: "output-section",
+        active: !runtime.isBrowser && elements["lsl-toggle"].checked,
+        source,
+      }),
+    ];
+    const children = [];
+    nodes.forEach((node, index) => {
+      if (index) children.push(createNodeLink(index === 4 ? "displays" : "feeds"));
+      children.push(node);
+    });
+    elements["node-board"].replaceChildren(...children);
   }
 
   function finishWorkspaceDrag(divider, pointerId) {
@@ -1008,7 +1185,7 @@
   }
 
   function metricMatchesDeviceProfile(metric, profile = selectedDeviceProfile()) {
-    if (profile.id === "none") return false;
+    if (!metric || profile.id === "none") return false;
     return profile.id === "vernier" ? metric.id === "raw_force" : metric.id !== "raw_force";
   }
 
@@ -1282,6 +1459,7 @@
     if (!elements["csv-toggle"].checked && !runtime.isBrowser) elements["csv-detail"].textContent = idleDestinationDetail("csv");
     renderDeviceProtocolCards();
     if (hasSource) window.requestAnimationFrame(resizeCanvas);
+    if (app.viewMode === "nodes") renderNodeView();
   }
 
   async function initialize() {
@@ -1391,6 +1569,7 @@
     app.committedOutputState = captureOutputState();
     installInteractions();
     installWorkspaceSplitters();
+    setViewMode(app.viewMode, { persist: false });
     updateThemeUi();
     if (isNative) {
       try {
@@ -1413,6 +1592,9 @@
     elements["theme-toggle"].addEventListener("click", () => {
       setTheme(currentTheme() === "dark" ? "light" : "dark");
     });
+    elements["panel-view-toggle"].addEventListener("click", () => setViewMode("panels"));
+    elements["node-view-toggle"].addEventListener("click", () => setViewMode("nodes"));
+    elements["node-open-panels"].addEventListener("click", () => setViewMode("panels"));
     elements["scan-button"].addEventListener("click", () => {
       void scanDevices();
     });
@@ -2179,11 +2361,14 @@
       const isPending = app.pendingDevice?.id === device.id || contractState === "connecting";
       const isPreferred = app.preferences.lastDevice?.id === device.id;
       const profile = deviceProfileForDevice(device);
-      const row = document.createElement("label");
+      const row = document.createElement("div");
       row.className = `device-row${isMock ? " mock" : ""}${isWebBluetooth || isWebVernier ? " browser-bluetooth" : ""}${device.available === false ? " unavailable" : ""}${isPreferred ? " preferred" : ""}${contractState === "available" || contractState === "live" ? "" : ` contract-${contractState}`}`;
       row.dataset.inputKind = isMock ? "mock" : isWebVernier ? "web-bluetooth-vernier" : isWebBluetooth ? "web-bluetooth" : device.inputKind || "polar";
       row.dataset.deviceId = device.id;
       row.dataset.contractState = contractState;
+      row.tabIndex = device.available === false ? -1 : 0;
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-label", device.name);
 
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
@@ -2198,6 +2383,19 @@
           action.textContent = checkbox.checked ? "Selected" : isMock ? "Select demo" : "Select";
         }
         syncConnectSelectedAction();
+      });
+      row.addEventListener("click", (event) => {
+        if (event.target instanceof Element && event.target.closest("input, select, button, a")) return;
+        if (checkbox.disabled) return;
+        checkbox.checked = !checkbox.checked;
+        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      row.addEventListener("keydown", (event) => {
+        if (![" ", "Enter"].includes(event.key) || checkbox.disabled) return;
+        if (event.target instanceof Element && event.target.closest("input, select, button, a")) return;
+        event.preventDefault();
+        checkbox.checked = !checkbox.checked;
+        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
       });
 
       const icon = document.createElement("span");
@@ -2253,17 +2451,16 @@
         signal.textContent = `${device.rssi} dBm`;
         action.append(signal);
       }
-      row.append(checkbox, icon, copy, action);
+      row.append(checkbox, icon, copy);
       const group = document.createElement("div");
       group.className = "device-row-group";
-      group.append(row);
       if (device.available !== false && app.sourcePalettes.length) {
         const palette = paletteForDevice(device.id);
         if (palette) app.pendingDevicePalettes.set(device.id, palette.id);
-        const paletteLabel = document.createElement("label");
-        paletteLabel.className = "device-palette-choice";
+        const paletteLabel = document.createElement("span");
+        paletteLabel.className = "device-row-palette";
         const caption = document.createElement("span");
-        caption.textContent = "Source color";
+        caption.textContent = "Color";
         const select = document.createElement("select");
         select.setAttribute("aria-label", `Source color for ${device.name}`);
         const used = usedPaletteIds({ exceptDeviceId: device.id });
@@ -2282,8 +2479,10 @@
           void rememberDevicePalette(device.id, select.value);
         });
         paletteLabel.append(caption, select);
-        group.append(paletteLabel);
+        row.append(paletteLabel);
       }
+      row.append(action);
+      group.append(row);
       if (contract?.desired && ["connecting", "retrying", "attention"].includes(contractState)) {
         group.classList.add("has-contract-action");
         const cancel = document.createElement("button");
@@ -2649,17 +2848,9 @@
       ? ` · ${pendingContracts.length} ${pendingContracts.some((contract) => contract.state === "attention") ? "attention" : "retrying"}`
       : "";
     elements["connected-device-count"].textContent = `${sources.length} live${pendingSummary}`;
+    elements["connected-devices-block"].hidden = sources.length === 0;
     if (!sources.length) {
-      const empty = document.createElement("div");
-      empty.className = "connected-empty-state";
-      const title = document.createElement("strong");
-      title.textContent = "No connected devices";
-      const detail = document.createElement("small");
-      detail.textContent = pendingContracts.length
-        ? "Selected sensors stay listed above while Polar Stream reconnects or waits for attention."
-        : "A device becomes a configurable widget only after its connection succeeds.";
-      empty.append(title, detail);
-      elements["connected-device-list"].replaceChildren(empty);
+      elements["connected-device-list"].replaceChildren();
       return;
     }
 
@@ -4386,6 +4577,7 @@
     renderDeviceProtocolCards();
     rebuildVisualOptions();
     applySourceColor();
+    if (app.viewMode === "nodes") renderNodeView();
   }
 
   function metricOptionFor(id, { forSelection = false } = {}) {

@@ -10,6 +10,12 @@ Last verified: 2026-09-10
   and responsive workspace/dialog breakpoints. Status announcements are scoped
   away from interactive lists, dialogs cannot close through implicit form
   submission, and mobile metric selection transfers focus to visible detail.
+  A top-level view switch now lets users move between the standard three-panel
+  workspace and a compact node-flow view over the same live state without
+  reconnecting devices, restarting outputs, or forking the browser interface.
+  Connected-device space remains empty until a real or mock source exists, and
+  candidate devices use a single-row visual boundary instead of palette
+  sidecars.
   Automated renderer checks cover representative text contrast, landmarks,
   intermediate-width overflow, dark dialogs, and mobile footer flow. ECG, ACC,
   Vernier, processing, and transport contracts are unchanged.

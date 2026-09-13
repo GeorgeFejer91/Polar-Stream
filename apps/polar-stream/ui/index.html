@@ -40,6 +40,10 @@
           <span class="theme-moon" aria-hidden="true">☾</span>
         </button>
       </div>
+      <div class="view-switch" role="group" aria-label="Workspace view">
+        <button id="panel-view-toggle" type="button" aria-pressed="true">Panels</button>
+        <button id="node-view-toggle" type="button" aria-pressed="false">Node view</button>
+      </div>
       <div class="latency-note">
         <span id="platform-label">Local</span>
         <strong id="runtime-path-label">Native data path</strong>
@@ -82,16 +86,12 @@
           </div>
         </div>
 
-        <div class="connected-devices-block">
+        <div class="connected-devices-block" id="connected-devices-block" hidden>
           <div class="mini-heading">
             <strong>Connected devices</strong>
             <span id="connected-device-count" role="status" aria-live="polite">0 live</span>
           </div>
           <div class="connected-device-list" id="connected-device-list">
-            <div class="connected-empty-state">
-              <strong>No connected devices</strong>
-              <small>Select devices above and connect them as one session set.</small>
-            </div>
           </div>
           <div class="source-palette-status" id="source-palette-status" role="status" hidden></div>
         </div>
@@ -367,6 +367,17 @@
         </div>
       </section>
     </main>
+
+    <section class="node-workspace" id="node-workspace" aria-labelledby="node-view-heading" hidden>
+      <header class="node-view-header">
+        <div>
+          <h2 id="node-view-heading">Node view</h2>
+          <p id="node-view-summary">No connected sources</p>
+        </div>
+        <button class="secondary-button compact" id="node-open-panels" type="button">Open panels</button>
+      </header>
+      <div class="node-board" id="node-board" aria-label="Signal flow nodes"></div>
+    </section>
 
     <footer class="status-bar" role="status" aria-live="polite">
       <span><i class="footer-dot"></i><span id="footer-status">Engine ready</span></span>

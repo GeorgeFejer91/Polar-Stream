@@ -775,7 +775,7 @@ try {
   });
   await installFakeWebBluetooth(bluetooth);
   await bluetooth.goto(baseUrl, { waitUntil: "networkidle" });
-  const availablePaletteIds = await bluetooth.locator("#device-list .device-palette-choice select")
+  const availablePaletteIds = await bluetooth.locator("#device-list .device-row-palette select")
     .evaluateAll((selects) => selects.map((select) => select.value));
   assert.equal(availablePaletteIds.length, 3, "expected three selectable input candidates");
   assert.equal(new Set(availablePaletteIds).size, 3, "available devices did not receive unique default source colors");
@@ -962,7 +962,7 @@ try {
   assert.match(await vernierRow.textContent(), /Vernier Go Direct via browser/);
   assert.match(await vernierRow.textContent(), /Select/);
   const vernierExpectedPalette = await vernierRow.evaluate((row) => {
-    const paletteId = row.parentElement?.querySelector(".device-palette-choice select")?.value;
+    const paletteId = row.querySelector(".device-row-palette select")?.value;
     return {
       id: paletteId,
       color: window.PolarSourcePalettes.find((palette) => palette.id === paletteId)?.light.primary,
