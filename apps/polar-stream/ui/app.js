@@ -1502,6 +1502,120 @@
     elements["node-menu"].hidden = true;
   }
 
+  function appendSvg(parent, name, attributes = {}) {
+    const element = svgElement(name, attributes);
+    parent.append(element);
+    return element;
+  }
+
+  function addNodeWidgetFrame(svg, accent) {
+    svg.style.setProperty("--node-icon-accent", accent);
+    appendSvg(svg, "rect", { class: "node-widget-shell", x: 7, y: 8, width: 22, height: 20, rx: 5 });
+    appendSvg(svg, "circle", { class: "node-widget-port", cx: 5.5, cy: 18, r: 2.8 });
+    appendSvg(svg, "circle", { class: "node-widget-port active", cx: 30.5, cy: 18, r: 2.8 });
+  }
+
+  function addSourceWidgetGlyph(svg, definition) {
+    const isPolar = definition.sourceKind === "polar";
+    const isMock = Boolean(definition.mock);
+    appendSvg(svg, "path", { class: `node-widget-band ${isPolar ? "ps-coral" : "ps-mint"}`, d: "M9.5 24.5 24.2 10.2" });
+    appendSvg(svg, "path", { class: `node-widget-band ${isPolar ? "ps-orange" : "ps-cyan"}`, d: "M13.2 26 28 11.6" });
+    appendSvg(svg, "rect", { class: "node-widget-ink", x: 12, y: 16, width: 12, height: 7, rx: 2 });
+    if (isPolar) {
+      appendSvg(svg, "path", { class: "ps-coral", d: "M14 19.7h2.3l1-2.2 1.7 4.3 1-2.1h2.1" });
+    } else {
+      appendSvg(svg, "circle", { class: "ps-mint", cx: 16.3, cy: 19.6, r: 1 });
+      appendSvg(svg, "circle", { class: "ps-cyan", cx: 20.5, cy: 19.6, r: 1 });
+    }
+    appendSvg(svg, "path", {
+      class: isMock ? "ps-yellow" : "node-widget-ink",
+      d: "M14 13.2c2.2-1.7 5.8-1.7 8 0",
+      "stroke-dasharray": isMock ? "1.3 1.8" : "",
+    });
+  }
+
+  function addTransformerWidgetGlyph(svg, definition) {
+    const isPolar = definition.type === "polar-acc-transformer";
+    appendSvg(svg, "circle", { class: "node-widget-fill", cx: 18, cy: 18, r: 1.6 });
+    appendSvg(svg, "path", { class: isPolar ? "ps-coral" : "ps-orange", d: "M18 18 12 22.5" });
+    appendSvg(svg, "path", { class: "ps-mint", d: "M18 18v-7" });
+    appendSvg(svg, "path", { class: isPolar ? "ps-cyan" : "ps-blue", d: "M18 18 24 22.5" });
+    appendSvg(svg, "path", { class: isPolar ? "ps-coral" : "ps-orange", d: "m12 22.5 2.4.1-1.2-2" });
+    appendSvg(svg, "path", { class: "ps-mint", d: "m18 11-1.7 1.7M18 11l1.7 1.7" });
+    appendSvg(svg, "path", { class: isPolar ? "ps-cyan" : "ps-blue", d: "m24 22.5-2.4.1 1.2-2" });
+  }
+
+  function addOutputWidgetGlyph(svg, definition) {
+    if (definition.type === "csv-out") {
+      appendSvg(svg, "ellipse", { class: "node-widget-ink", cx: 18, cy: 13, rx: 6, ry: 2.4 });
+      appendSvg(svg, "path", { class: "node-widget-ink", d: "M12 13v8c0 1.3 2.7 2.4 6 2.4s6-1.1 6-2.4v-8" });
+      appendSvg(svg, "path", { class: "ps-yellow", d: "M12 17c0 1.3 2.7 2.4 6 2.4s6-1.1 6-2.4" });
+      return;
+    }
+    if (definition.type === "lab-recorder") {
+      appendSvg(svg, "rect", { class: "node-widget-ink", x: 12, y: 12, width: 12, height: 11, rx: 2 });
+      appendSvg(svg, "path", { class: "node-widget-ink", d: "M12 15h12" });
+      appendSvg(svg, "circle", { class: "ps-coral", cx: 14.3, cy: 13.8, r: .8 });
+      appendSvg(svg, "circle", { class: "ps-yellow", cx: 17.1, cy: 13.8, r: .8 });
+      appendSvg(svg, "circle", { class: "ps-mint", cx: 19.9, cy: 13.8, r: .8 });
+      appendSvg(svg, "path", { class: "ps-mint", d: "M14 20c1.4-2 2.8-2 4.2 0s2.7 2 4 0" });
+      return;
+    }
+    if (definition.type === "audio-out") {
+      appendSvg(svg, "path", { class: "ps-cyan", d: "M12 21c1.2-5 2.5-5 3.8 0s2.6 5 4 0 2.6-5 4 0" });
+      appendSvg(svg, "path", { class: "node-widget-ink", d: "M12 15h12" });
+      return;
+    }
+    if (definition.type === "osc-out") {
+      appendSvg(svg, "circle", { class: "node-widget-ink", cx: 14, cy: 20, r: 2.4 });
+      appendSvg(svg, "circle", { class: "node-widget-ink", cx: 21, cy: 15, r: 2.4 });
+      appendSvg(svg, "path", { class: "node-widget-ink", d: "M16 18.7 19 16.3M16.2 20.8l4.4 1.8" });
+      appendSvg(svg, "path", { class: "ps-cyan", d: "M23.5 12.2c2.1 2.8 2.1 8.8 0 11.6" });
+      appendSvg(svg, "path", { class: "ps-blue", d: "M26 10.4c3 4.2 3 11 0 15.2" });
+      return;
+    }
+    appendSvg(svg, "circle", { class: "node-widget-ink", cx: 14.5, cy: 20.5, r: 2.4 });
+    appendSvg(svg, "circle", { class: "node-widget-ink", cx: 21.5, cy: 15, r: 2.4 });
+    appendSvg(svg, "circle", { class: "node-widget-ink", cx: 22, cy: 24, r: 2.4 });
+    appendSvg(svg, "path", { class: "node-widget-ink", d: "M16.5 19.2 19.5 16.4M16.8 21.4 19.8 23" });
+    appendSvg(svg, "path", { class: "ps-cyan", d: "M24.7 13.5c1.5 2.3 1.7 6.6.5 9.2" });
+  }
+
+  function addVisualizerWidgetGlyph(svg, definition) {
+    if (definition.type === "ecg-visualizer") {
+      appendSvg(svg, "path", { class: "node-widget-ink", d: "M12 24V12M12 24h13" });
+      appendSvg(svg, "path", { class: "ps-coral", d: "M13 20h2.4l1.2-4.6 2.2 9 1.6-5.1 1.2.8H24" });
+      return;
+    }
+    if (definition.type === "acc-visualizer") {
+      appendSvg(svg, "path", { class: "node-widget-ink", d: "M12 13v11M12 24h13" });
+      appendSvg(svg, "path", { class: "ps-coral", d: "M14 16h9" });
+      appendSvg(svg, "path", { class: "ps-mint", d: "M14 19.5h9" });
+      appendSvg(svg, "path", { class: "ps-blue", d: "M14 23h9" });
+      appendSvg(svg, "circle", { class: "ps-coral", cx: 23.5, cy: 16, r: 1.4 });
+      appendSvg(svg, "circle", { class: "ps-mint", cx: 21.5, cy: 19.5, r: 1.4 });
+      appendSvg(svg, "circle", { class: "ps-blue", cx: 24.5, cy: 23, r: 1.4 });
+      return;
+    }
+    appendSvg(svg, "path", { class: "ps-cyan", d: "M11.5 21c1.3-5.3 2.8-5.3 4.3 0s3 5.3 4.5 0 3-5.3 4.4 0" });
+    appendSvg(svg, "path", { class: "node-widget-ink", d: "M12 25h2M17 25h2M22 25h2" });
+  }
+
+  function createNodeMenuWidget(definition) {
+    const svg = svgElement("svg", {
+      class: "node-menu-widget",
+      viewBox: "0 0 36 36",
+      "aria-hidden": "true",
+    });
+    svg.dataset.nodeIcon = definition.type;
+    addNodeWidgetFrame(svg, definition.accent || "#45d39a");
+    if (definition.menuGroup === "source") addSourceWidgetGlyph(svg, definition);
+    else if (definition.menuGroup === "transformer") addTransformerWidgetGlyph(svg, definition);
+    else if (definition.menuGroup === "output") addOutputWidgetGlyph(svg, definition);
+    else addVisualizerWidgetGlyph(svg, definition);
+    return svg;
+  }
+
   function renderNodeMenu(query) {
     const normalized = query.trim().toLowerCase();
     const activeGroup = elements["node-menu"].dataset.group || "all";
@@ -1522,9 +1636,9 @@
       for (const definition of definitions) {
         const button = document.createElement("button");
         button.type = "button";
-        const mark = document.createElement("code");
-        mark.textContent = definition.mark;
+        const mark = createNodeMenuWidget(definition);
         const copy = document.createElement("span");
+        copy.className = "node-menu-copy";
         const title = document.createElement("strong");
         title.textContent = definition.label;
         const detail = document.createElement("span");

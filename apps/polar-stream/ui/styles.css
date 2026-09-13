@@ -211,12 +211,44 @@ body.workspace-resizing * { cursor: col-resize !important; }
   height: 18px;
   flex: 0 0 18px;
   fill: none;
-  stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.55;
+  stroke-width: 1.45;
 }
-.node-action-icon .node-icon-box { fill: color-mix(in srgb, currentColor 8%, transparent); }
+.node-action-icon,
+.node-menu-widget {
+  --ps-coral: #ff5d58;
+  --ps-orange: #f2a52c;
+  --ps-yellow: #f7d24b;
+  --ps-mint: #45d39a;
+  --ps-cyan: #27c2e8;
+  --ps-blue: #2f78e5;
+  --ps-widget-bg: #0e1713;
+  --ps-widget-ink: #f5faf7;
+}
+.node-widget-core,
+.node-widget-shell { fill: var(--ps-widget-bg); stroke: var(--node-icon-accent, var(--ps-widget-ink)); }
+.node-widget-ink { fill: none; stroke: var(--ps-widget-ink); }
+.node-widget-fill { fill: var(--ps-widget-ink); stroke: none; }
+.node-widget-band { fill: none; stroke-linecap: round; stroke-width: 2.9; }
+.node-action-icon path.ps-coral,
+.node-action-icon path.ps-orange,
+.node-action-icon path.ps-yellow,
+.node-action-icon path.ps-mint,
+.node-action-icon path.ps-cyan,
+.node-action-icon path.ps-blue,
+.node-menu-widget path.ps-coral,
+.node-menu-widget path.ps-orange,
+.node-menu-widget path.ps-yellow,
+.node-menu-widget path.ps-mint,
+.node-menu-widget path.ps-cyan,
+.node-menu-widget path.ps-blue { fill: none; }
+.ps-coral { stroke: var(--ps-coral); fill: var(--ps-coral); }
+.ps-orange { stroke: var(--ps-orange); fill: var(--ps-orange); }
+.ps-yellow { stroke: var(--ps-yellow); fill: var(--ps-yellow); }
+.ps-mint { stroke: var(--ps-mint); fill: var(--ps-mint); }
+.ps-cyan { stroke: var(--ps-cyan); fill: var(--ps-cyan); }
+.ps-blue { stroke: var(--ps-blue); fill: var(--ps-blue); }
 .node-board {
   position: relative;
   overflow: hidden;
@@ -403,44 +435,45 @@ body.workspace-resizing * { cursor: col-resize !important; }
 }
 .node-menu input {
   width: 100%;
-  min-height: 38px;
+  min-height: 34px;
   border: 0;
   border-bottom: 1px solid var(--line);
   padding: 0 11px;
   background: var(--surface);
   color: var(--ink);
 }
-.node-menu-list { overflow: auto; padding: 6px; }
-.node-menu-section { padding: 7px 5px 3px; color: var(--muted); font: 800 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.node-menu-list { overflow: auto; padding: 5px; }
+.node-menu-section { padding: 5px 5px 2px; color: var(--muted); font: 800 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .node-menu button {
   width: 100%;
-  min-height: 44px;
+  min-height: 42px;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  gap: 9px;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
   border: 0;
   border-radius: 6px;
-  padding: 6px 7px;
+  padding: 5px 7px;
   background: transparent;
   color: var(--ink);
   text-align: left;
 }
 .node-menu button:hover,
 .node-menu button:focus-visible { background: var(--surface-2); }
-.node-menu code {
-  display: grid;
-  place-items: center;
-  width: 31px;
-  height: 31px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  color: var(--green-dark);
-  font: 800 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+.node-menu-widget {
+  width: 30px;
+  height: 30px;
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 18%));
 }
+.node-menu-widget .node-widget-shell { stroke-width: 1.8; }
+.node-menu-widget .node-widget-ink { stroke-width: 1.7; }
+.node-menu-widget .node-widget-port { fill: var(--ps-widget-bg); stroke: var(--ps-widget-ink); stroke-width: 1.8; }
+.node-menu-widget .node-widget-port.active { fill: var(--node-icon-accent, var(--ps-mint)); stroke: var(--node-icon-accent, var(--ps-mint)); }
+.node-menu-copy { min-width: 0; display: grid; gap: 1px; }
 .node-menu strong,
-.node-menu span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.node-menu span { color: var(--muted); font-size: 10px; }
+.node-menu-copy span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-menu strong { font-size: 11px; line-height: 1.12; }
+.node-menu-copy span { color: var(--muted); font-size: 9px; line-height: 1.25; }
 
 .node-source-dialog {
   width: min(760px, calc(100vw - 28px));

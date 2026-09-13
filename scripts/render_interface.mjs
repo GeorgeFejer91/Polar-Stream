@@ -321,17 +321,25 @@ try {
     actionIconCount: 6,
     actionIconsHidden: true,
   }, "node view toggle did not expose the interactive signal-flow node editor");
+  const nodeActionColorCount = await page.locator(".node-view-actions .ps-coral, .node-view-actions .ps-orange, .node-view-actions .ps-yellow, .node-view-actions .ps-mint, .node-view-actions .ps-cyan, .node-view-actions .ps-blue").count();
+  assert.ok(nodeActionColorCount >= 18, "node toolbar widgets did not retain the Polar Stream logo color set");
   await page.locator("#node-add-source-button").click();
   await page.locator("#node-menu-search").fill("polar");
   const nodeMenu = await page.evaluate(() => ({
     hidden: document.querySelector("#node-menu").hidden,
     focused: document.activeElement?.id,
     entries: [...document.querySelectorAll("#node-menu-list button strong")].map((node) => node.textContent),
+    widgetCount: document.querySelectorAll("#node-menu-list button .node-menu-widget").length,
+    codeBadgeCount: document.querySelectorAll("#node-menu-list button code").length,
+    coloredWidgetMarks: document.querySelectorAll("#node-menu-list button .ps-coral, #node-menu-list button .ps-orange, #node-menu-list button .ps-yellow, #node-menu-list button .ps-mint, #node-menu-list button .ps-cyan, #node-menu-list button .ps-blue").length,
   }));
   assert.deepEqual(nodeMenu, {
     hidden: false,
     focused: "node-menu-search",
     entries: ["Polar H10 source", "Mock Polar H10"],
+    widgetCount: 2,
+    codeBadgeCount: 0,
+    coloredWidgetMarks: 7,
   }, "node menu did not expose searchable patch nodes");
   await page.locator("#node-menu-list button", { hasText: "Mock Polar H10" }).click();
   const sourceNode = await page.evaluate(() => ({
@@ -362,10 +370,38 @@ try {
   await page.locator("#node-menu-search").fill("acc");
   const transformerMenu = await page.evaluate(() => ({
     entries: [...document.querySelectorAll("#node-menu-list button strong")].map((node) => node.textContent),
+    widgetCount: document.querySelectorAll("#node-menu-list button .node-menu-widget").length,
+    codeBadgeCount: document.querySelectorAll("#node-menu-list button code").length,
   }));
   assert.deepEqual(transformerMenu, {
     entries: ["Polar ACC transformer"],
+    widgetCount: 1,
+    codeBadgeCount: 0,
   }, "transformer menu did not expose the Polar ACC transformer node");
+  await page.keyboard.press("Escape");
+  await page.locator("#node-add-output-button").click();
+  const outputMenu = await page.evaluate(() => ({
+    entries: [...document.querySelectorAll("#node-menu-list button strong")].map((node) => node.textContent),
+    widgetCount: document.querySelectorAll("#node-menu-list button .node-menu-widget").length,
+    codeBadgeCount: document.querySelectorAll("#node-menu-list button code").length,
+  }));
+  assert.deepEqual(outputMenu, {
+    entries: ["LSL recorder", "OSC sender", "Local CSV recorder", "PCM audio modem", "LabRecorder"],
+    widgetCount: 5,
+    codeBadgeCount: 0,
+  }, "output node menu did not render every output option with a colored SVG widget");
+  await page.keyboard.press("Escape");
+  await page.locator("#node-add-visualizer-button").click();
+  const visualizerMenu = await page.evaluate(() => ({
+    entries: [...document.querySelectorAll("#node-menu-list button strong")].map((node) => node.textContent),
+    widgetCount: document.querySelectorAll("#node-menu-list button .node-menu-widget").length,
+    codeBadgeCount: document.querySelectorAll("#node-menu-list button code").length,
+  }));
+  assert.deepEqual(visualizerMenu, {
+    entries: ["ECG visualizer", "ACC visualizer", "Breathing visualizer"],
+    widgetCount: 3,
+    codeBadgeCount: 0,
+  }, "visualizer node menu did not render every visualizer option with a colored SVG widget");
   await page.keyboard.press("Escape");
   await page.locator("#panel-view-toggle").click();
   const panelToggle = await page.evaluate(() => ({
