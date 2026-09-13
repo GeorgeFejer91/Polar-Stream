@@ -293,6 +293,10 @@ try {
     linkCount: document.querySelectorAll("#node-link-layer path").length,
     nodeSummary: document.querySelector("#node-view-summary").textContent,
     emptyVisible: !document.querySelector("#node-empty-state").hidden,
+    actionLabels: [...document.querySelectorAll(".node-view-actions button span")].map((node) => node.textContent),
+    actionIconCount: document.querySelectorAll(".node-view-actions button .node-action-icon").length,
+    actionIconsHidden: [...document.querySelectorAll(".node-view-actions button .node-action-icon")]
+      .every((node) => node.getAttribute("aria-hidden") === "true"),
   }));
   assert.deepEqual(nodeToggle, {
     mode: "nodes",
@@ -306,6 +310,16 @@ try {
     linkCount: 0,
     nodeSummary: "Patch field ready · add an input/source to begin",
     emptyVisible: true,
+    actionLabels: [
+      "Add input/source",
+      "Add transformer",
+      "Add output",
+      "Visualizer nodes",
+      "Reset view",
+      "Open panels",
+    ],
+    actionIconCount: 6,
+    actionIconsHidden: true,
   }, "node view toggle did not expose the interactive signal-flow node editor");
   await page.locator("#node-add-source-button").click();
   await page.locator("#node-menu-search").fill("polar");

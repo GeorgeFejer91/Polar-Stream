@@ -189,7 +189,34 @@ body.workspace-resizing * { cursor: col-resize !important; }
 .node-view-header h2 { margin: 0; font-size: 17px; line-height: 1.2; }
 .node-view-header p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
 .node-view-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.node-view-actions button { white-space: nowrap; }
+.node-view-actions button {
+  min-width: 0;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  padding: 0 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.node-view-actions button:hover { border-color: var(--green); color: var(--green-dark); }
+.node-view-actions button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.node-action-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.55;
+}
+.node-action-icon .node-icon-box { fill: color-mix(in srgb, currentColor 8%, transparent); }
 .node-board {
   position: relative;
   overflow: hidden;
