@@ -69,6 +69,10 @@ jobs:
       - run: node --check apps/polar-stream/ui/preferences.js
       - run: node --check apps/polar-stream/ui/metric-previews.js
       - run: node --check apps/polar-stream/ui/app.js
+      - run: node --check apps/polar-stream-mini/ui/theme-bootstrap.js
+      - run: node --check apps/polar-stream-mini/ui/app.js
+      - run: node --check apps/vernier-stream-mini/ui/theme-bootstrap.js
+      - run: node --check apps/vernier-stream-mini/ui/app.js
       - run: node --check download/downloads.js
       - run: npm run test:browser-acceptance
       - run: python -m unittest scripts/test_verify_two_h10_rusty_lsl.py

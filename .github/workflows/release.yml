@@ -199,6 +199,25 @@ jobs:
           install_name_tool -id @rpath/liblsl.dylib apps/polar-stream/resources/liblsl.dylib
           codesign --force --sign - apps/polar-stream/resources/liblsl.dylib
           otool -L apps/polar-stream/resources/liblsl.dylib
+      - name: Prepare mini app liblsl resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.platform }}" in
+            linux) library=liblsl.so ;;
+            windows) library=lsl.dll ;;
+            macos) library=liblsl.dylib ;;
+          esac
+          for app in apps/polar-stream-mini apps/vernier-stream-mini; do
+            rm -rf "$app/resources"
+            mkdir -p "$app/resources"
+            cp "apps/polar-stream/resources/THIRD_PARTY_NOTICES.txt" "$app/resources/"
+            if [ "${{ matrix.platform }}" = windows ]; then
+              cp apps/polar-stream/resources/*.dll "$app/resources/"
+            else
+              cp "apps/polar-stream/resources/$library" "$app/resources/"
+            fi
+          done
       - name: Verify bundled liblsl can create independent mixed-device outlets
         shell: bash
         run: |
@@ -229,6 +248,38 @@ jobs:
         if: runner.os != 'Linux'
         working-directory: apps/polar-stream
         run: npx --no-install tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Build Linux mini installers with staged liblsl
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for app in apps/polar-stream-mini apps/vernier-stream-mini; do
+            (
+              cd "$app"
+              LD_LIBRARY_PATH="${{ github.workspace }}/$app/resources" \
+                npx --no-install tauri build --verbose --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+            )
+          done
+      - name: Build Windows mini installers with staged liblsl
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($app in @('apps/polar-stream-mini', 'apps/vernier-stream-mini')) {
+            Push-Location $app
+            npx --no-install tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+            Pop-Location
+          }
+      - name: Build macOS mini installers with staged liblsl
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for app in apps/polar-stream-mini apps/vernier-stream-mini; do
+            (
+              cd "$app"
+              npx --no-install tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+            )
+          done
       - name: Stage deterministic release assets
         run: >-
           python scripts/stage_release_assets.py
@@ -241,8 +292,9 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          appimage=$(find release-assets -iname '*.AppImage' -print -quit)
-          deb=$(find release-assets -iname '*.deb' -print -quit)
+          version="${GITHUB_REF_NAME#v}"
+          appimage=$(find release-assets -name "Polar-Stream_${version}_${{ matrix.platform }}_${{ matrix.arch }}.AppImage" -print -quit)
+          deb=$(find release-assets -name "Polar-Stream_${version}_${{ matrix.platform }}_${{ matrix.arch }}.deb" -print -quit)
           test -n "$appimage" && test -n "$deb"
           appimage=$(realpath "$appimage")
           deb=$(realpath "$deb")
@@ -252,6 +304,17 @@ jobs:
           appimage_status=$?
           set -e
           if [ "$appimage_status" -ne 124 ]; then cat appimage-smoke.log; exit 1; fi
+          for prefix in Polar-Stream-Mini Vernier-Stream-Mini; do
+            mini_appimage=$(find release-assets -name "${prefix}_${version}_${{ matrix.platform }}_${{ matrix.arch }}.AppImage" -print -quit)
+            test -n "$mini_appimage"
+            mini_appimage=$(realpath "$mini_appimage")
+            chmod +x "$mini_appimage"
+            set +e
+            APPIMAGE_EXTRACT_AND_RUN=1 timeout 12s xvfb-run -a "$mini_appimage" > "${prefix}-appimage-smoke.log" 2>&1
+            mini_appimage_status=$?
+            set -e
+            if [ "$mini_appimage_status" -ne 124 ]; then cat "${prefix}-appimage-smoke.log"; exit 1; fi
+          done
           appimage_extract=$(mktemp -d)
           deb_package=''
           cleanup() {
@@ -314,6 +377,40 @@ jobs:
             exit 1
           fi
           deb_package=''
+          for spec in "Polar-Stream-Mini:polar-stream-mini" "Vernier-Stream-Mini:vernier-stream-mini"; do
+            prefix=${spec%%:*}
+            binary=${spec#*:}
+            mini_deb=$(find release-assets -name "${prefix}_${version}_${{ matrix.platform }}_${{ matrix.arch }}.deb" -print -quit)
+            test -n "$mini_deb"
+            candidate_package=$(dpkg-deb --field "$mini_deb" Package)
+            if [[ ! "$candidate_package" =~ ^[a-z0-9][a-z0-9+.-]+$ ]]; then
+              echo "The mini DEB reported an unsafe package name: $candidate_package" >&2
+              exit 1
+            fi
+            deb_package=$candidate_package
+            sudo dpkg --install "$mini_deb"
+            mapfile -t mini_binaries < <(dpkg-query -L "$deb_package" | grep -E "/bin/${binary}$")
+            mapfile -t mini_recorders < <(dpkg-query -L "$deb_package" | grep -E '/lab-recorder/LabRecorder$' || true)
+            if [ "${#mini_binaries[@]}" -ne 1 ]; then
+              echo "The $prefix DEB must install exactly one $binary executable." >&2
+              exit 1
+            fi
+            if [ "${#mini_recorders[@]}" -ne 0 ]; then
+              echo "The $prefix DEB must not install bundled LabRecorder." >&2
+              exit 1
+            fi
+            set +e
+            timeout 12s xvfb-run -a "${mini_binaries[0]}" > "${prefix}-deb-smoke.log" 2>&1
+            mini_deb_status=$?
+            set -e
+            if [ "$mini_deb_status" -ne 124 ]; then cat "${prefix}-deb-smoke.log"; exit 1; fi
+            sudo dpkg --purge "$deb_package"
+            if dpkg-query -W "$deb_package" >/dev/null 2>&1; then
+              echo "The $prefix DEB package remained installed after purge: $deb_package" >&2
+              exit 1
+            fi
+            deb_package=''
+          done
       - name: Smoke-test exact macOS DMG
         if: runner.os == 'macOS'
         shell: bash
@@ -322,12 +419,24 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $msiCandidates = @(Get-ChildItem release-assets -Filter *.msi -File -ErrorAction Stop)
-          $nsisCandidates = @(Get-ChildItem release-assets -Filter *.exe -File -ErrorAction Stop)
-          if ($msiCandidates.Count -ne 1) { throw "Expected one MSI, found $($msiCandidates.Count)" }
-          if ($nsisCandidates.Count -ne 1) { throw "Expected one NSIS installer, found $($nsisCandidates.Count)" }
-          $msi = $msiCandidates[0].FullName
-          $nsis = $nsisCandidates[0].FullName
+          $version = "${{ github.ref_name }}"
+          if ($version.StartsWith("v")) { $version = $version.Substring(1) }
+          $products = @(
+            [pscustomobject]@{ Prefix = "Polar-Stream"; Binary = "polar-stream.exe"; HasLabRecorder = $true },
+            [pscustomobject]@{ Prefix = "Polar-Stream-Mini"; Binary = "polar-stream-mini.exe"; HasLabRecorder = $false },
+            [pscustomobject]@{ Prefix = "Vernier-Stream-Mini"; Binary = "vernier-stream-mini.exe"; HasLabRecorder = $false }
+          )
+
+          function Get-SingleReleaseAsset {
+            param(
+              [Parameter(Mandatory = $true)][string]$Pattern
+            )
+            $candidates = @(Get-ChildItem release-assets -Filter $Pattern -File -ErrorAction Stop)
+            if ($candidates.Count -ne 1) {
+              throw "Expected one release asset matching $Pattern, found $($candidates.Count)"
+            }
+            return $candidates[0]
+          }
 
           function Assert-ProcessStaysRunning {
             param(
@@ -355,48 +464,65 @@ jobs:
             }
           }
 
-          $extract = Join-Path $env:RUNNER_TEMP "polar-stream-msi-${{ matrix.arch }}-${{ github.run_attempt }}"
-          if (Test-Path -LiteralPath $extract) { throw "Refusing to reuse MSI extraction directory $extract" }
-          $installer = Start-Process msiexec.exe -ArgumentList @("/a", "`"$msi`"", "/qn", "TARGETDIR=`"$extract`"") -Wait -PassThru
-          if ($installer.ExitCode -ne 0) { throw "MSI administrative extraction failed with code $($installer.ExitCode)" }
-          $executables = @(Get-ChildItem $extract -Recurse -File -Filter polar-stream.exe)
-          $recorders = @(Get-ChildItem $extract -Recurse -File -Filter LabRecorder.exe)
-          if ($executables.Count -ne 1) { throw "The MSI contained $($executables.Count) polar-stream executables" }
-          if ($recorders.Count -ne 1) { throw "The MSI contained $($recorders.Count) LabRecorder executables" }
-          $executable = $executables[0]
-          $recorder = $recorders[0]
-          $recorderConfig = Join-Path $recorder.Directory.FullName "PolarStream-LabRecorder.cfg"
-          if (-not (Test-Path -LiteralPath $recorderConfig -PathType Leaf)) { throw "The MSI did not contain the safe LabRecorder config" }
-          Assert-ProcessStaysRunning -Path $executable.FullName -Seconds 8
-          Assert-ProcessStaysRunning -Path $recorder.FullName -Arguments @("-c", $recorderConfig)
+          foreach ($product in $products) {
+            $msi = Get-SingleReleaseAsset -Pattern "$($product.Prefix)_${version}_windows_${{ matrix.arch }}.msi"
+            $nsis = Get-SingleReleaseAsset -Pattern "$($product.Prefix)_${version}_windows_${{ matrix.arch }}_setup.exe"
 
-          $nsisRoot = Join-Path $env:RUNNER_TEMP "polar-stream-nsis-${{ matrix.arch }}-${{ github.run_attempt }}"
-          if (Test-Path -LiteralPath $nsisRoot) { throw "Refusing to reuse NSIS install directory $nsisRoot" }
-          $installedExecutable = $null
-          try {
-            $nsisInstall = Start-Process -FilePath $nsis -ArgumentList @("/S", "/D=$nsisRoot") -Wait -PassThru
-            if ($nsisInstall.ExitCode -ne 0) { throw "NSIS installation failed with code $($nsisInstall.ExitCode)" }
-            $installedExecutables = @(Get-ChildItem $nsisRoot -Recurse -File -Filter polar-stream.exe)
-            $installedRecorders = @(Get-ChildItem $nsisRoot -Recurse -File -Filter LabRecorder.exe)
-            if ($installedExecutables.Count -ne 1) { throw "The NSIS install contained $($installedExecutables.Count) polar-stream executables" }
-            if ($installedRecorders.Count -ne 1) { throw "The NSIS install contained $($installedRecorders.Count) LabRecorder executables" }
-            $installedExecutable = $installedExecutables[0]
-            $installedRecorder = $installedRecorders[0]
-            $installedRecorderConfig = Join-Path $installedRecorder.Directory.FullName "PolarStream-LabRecorder.cfg"
-            if (-not (Test-Path -LiteralPath $installedRecorderConfig -PathType Leaf)) { throw "The NSIS install omitted the safe LabRecorder config" }
-            Assert-ProcessStaysRunning -Path $installedExecutable.FullName -Seconds 8
-            Assert-ProcessStaysRunning -Path $installedRecorder.FullName -Arguments @("-c", $installedRecorderConfig)
-          } finally {
-            $uninstallers = @(Get-ChildItem $nsisRoot -Recurse -File -Filter "uninstall*.exe" -ErrorAction SilentlyContinue)
-            if ($uninstallers.Count -eq 1) {
-              $uninstall = Start-Process -FilePath $uninstallers[0].FullName -ArgumentList "/S" -Wait -PassThru
-              if ($uninstall.ExitCode -ne 0) { throw "NSIS uninstall failed with code $($uninstall.ExitCode)" }
-            } elseif (Test-Path -LiteralPath $nsisRoot) {
-              throw "Expected one NSIS uninstaller, found $($uninstallers.Count)"
+            $extract = Join-Path $env:RUNNER_TEMP "$($product.Prefix)-msi-${{ matrix.arch }}-${{ github.run_attempt }}"
+            if (Test-Path -LiteralPath $extract) { throw "Refusing to reuse MSI extraction directory $extract" }
+            $installer = Start-Process msiexec.exe -ArgumentList @("/a", "`"$($msi.FullName)`"", "/qn", "TARGETDIR=`"$extract`"") -Wait -PassThru
+            if ($installer.ExitCode -ne 0) { throw "$($product.Prefix) MSI administrative extraction failed with code $($installer.ExitCode)" }
+            $executables = @(Get-ChildItem $extract -Recurse -File -Filter $product.Binary)
+            $recorders = @(Get-ChildItem $extract -Recurse -File -Filter LabRecorder.exe)
+            if ($executables.Count -ne 1) { throw "$($product.Prefix) MSI contained $($executables.Count) $($product.Binary) executables" }
+            if ($product.HasLabRecorder) {
+              if ($recorders.Count -ne 1) { throw "$($product.Prefix) MSI contained $($recorders.Count) LabRecorder executables" }
+            } elseif ($recorders.Count -ne 0) {
+              throw "$($product.Prefix) MSI unexpectedly contained bundled LabRecorder"
             }
-          }
-          if ($null -eq $installedExecutable -or (Test-Path -LiteralPath $installedExecutable.FullName)) {
-            throw "NSIS uninstall left the installed application executable behind"
+            $executable = $executables[0]
+            Assert-ProcessStaysRunning -Path $executable.FullName -Seconds 8
+            if ($product.HasLabRecorder) {
+              $recorder = $recorders[0]
+              $recorderConfig = Join-Path $recorder.Directory.FullName "PolarStream-LabRecorder.cfg"
+              if (-not (Test-Path -LiteralPath $recorderConfig -PathType Leaf)) { throw "$($product.Prefix) MSI did not contain the safe LabRecorder config" }
+              Assert-ProcessStaysRunning -Path $recorder.FullName -Arguments @("-c", $recorderConfig)
+            }
+
+            $nsisRoot = Join-Path $env:RUNNER_TEMP "$($product.Prefix)-nsis-${{ matrix.arch }}-${{ github.run_attempt }}"
+            if (Test-Path -LiteralPath $nsisRoot) { throw "Refusing to reuse NSIS install directory $nsisRoot" }
+            $installedExecutable = $null
+            try {
+              $nsisInstall = Start-Process -FilePath $nsis.FullName -ArgumentList @("/S", "/D=$nsisRoot") -Wait -PassThru
+              if ($nsisInstall.ExitCode -ne 0) { throw "$($product.Prefix) NSIS installation failed with code $($nsisInstall.ExitCode)" }
+              $installedExecutables = @(Get-ChildItem $nsisRoot -Recurse -File -Filter $product.Binary)
+              $installedRecorders = @(Get-ChildItem $nsisRoot -Recurse -File -Filter LabRecorder.exe)
+              if ($installedExecutables.Count -ne 1) { throw "$($product.Prefix) NSIS install contained $($installedExecutables.Count) $($product.Binary) executables" }
+              if ($product.HasLabRecorder) {
+                if ($installedRecorders.Count -ne 1) { throw "$($product.Prefix) NSIS install contained $($installedRecorders.Count) LabRecorder executables" }
+              } elseif ($installedRecorders.Count -ne 0) {
+                throw "$($product.Prefix) NSIS unexpectedly contained bundled LabRecorder"
+              }
+              $installedExecutable = $installedExecutables[0]
+              Assert-ProcessStaysRunning -Path $installedExecutable.FullName -Seconds 8
+              if ($product.HasLabRecorder) {
+                $installedRecorder = $installedRecorders[0]
+                $installedRecorderConfig = Join-Path $installedRecorder.Directory.FullName "PolarStream-LabRecorder.cfg"
+                if (-not (Test-Path -LiteralPath $installedRecorderConfig -PathType Leaf)) { throw "$($product.Prefix) NSIS install omitted the safe LabRecorder config" }
+                Assert-ProcessStaysRunning -Path $installedRecorder.FullName -Arguments @("-c", $installedRecorderConfig)
+              }
+            } finally {
+              $uninstallers = @(Get-ChildItem $nsisRoot -Recurse -File -Filter "uninstall*.exe" -ErrorAction SilentlyContinue)
+              if ($uninstallers.Count -eq 1) {
+                $uninstall = Start-Process -FilePath $uninstallers[0].FullName -ArgumentList "/S" -Wait -PassThru
+                if ($uninstall.ExitCode -ne 0) { throw "$($product.Prefix) NSIS uninstall failed with code $($uninstall.ExitCode)" }
+              } elseif (Test-Path -LiteralPath $nsisRoot) {
+                throw "Expected one $($product.Prefix) NSIS uninstaller, found $($uninstallers.Count)"
+              }
+            }
+            if ($null -eq $installedExecutable -or (Test-Path -LiteralPath $installedExecutable.FullName)) {
+              throw "$($product.Prefix) NSIS uninstall left the installed application executable behind"
+            }
           }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -437,7 +563,7 @@ jobs:
           merge-multiple: true
       - name: Generate checksums and verify the exact local asset manifest
         run: |
-          (cd release-assets && sha256sum Polar-Stream_* > SHA256SUMS.txt)
+          (cd release-assets && find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS.txt)
           python scripts/verify_release_assets.py release-assets \
             --version "${{ github.ref_name }}" \
             --checksums release-assets/SHA256SUMS.txt
@@ -465,7 +591,7 @@ jobs:
             gh release create "$tag" release-assets/* \
               "${release_flags[@]}" \
               --title "Polar Stream $tag" \
-              --notes "Native Polar Stream packages for Windows, macOS, and Linux. Choose the installer matching your operating system and CPU. These packages are unsigned until platform signing credentials are configured."
+              --notes "Native Polar Stream packages for Windows, macOS, and Linux, including standalone Polar Stream Mini and Vernier Stream Mini BLE-to-LSL installers. Choose the installer matching your operating system, CPU, and app. These packages are unsigned until platform signing credentials are configured."
           else
             cat release-view-error.log >&2
             echo "Could not establish the publication state for $tag." >&2
