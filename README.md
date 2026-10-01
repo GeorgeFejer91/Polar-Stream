@@ -100,6 +100,34 @@ from interaction and the same panels return to the single-column layout.
 > Unofficial research software. Not affiliated with or endorsed by Polar
 > Electro. This is not a medical device.
 
+## Standalone mini nodes
+
+Polar Stream also ships two independent desktop mini applets for low-latency
+BLE-to-LSL publishing without the main controller workspace. **Polar Stream
+Mini** connects one Polar H10 per app instance, remembers the last sensor and
+stream name, and publishes raw ECG, raw accelerometer, heart rate, RR intervals,
+and selected release-facing metrics such as Excite-O-Meter and the current
+breathing trio. Its picker also exposes the existing ACC breathing waveform,
+phase, rate, and dynamics compatibility outputs, [Phan-method breath events and
+rolling count rate](docs/phan-acc-breathing.md), and the four-state
+[Flowborne ACC adaptation](docs/acc-breathing-methods.md). These are opt-in
+experimental motion estimates, not validated H10 respiratory measurements.
+**Vernier Stream Mini** connects one Vernier Go Direct sensor
+per app instance and publishes all compatible raw device channels plus the
+derived breathing waveform. Both mini UIs are compact transparent-shell windows
+where the detached Polar Stream node card is the visible program outline, and
+they can output either canonical separate LSL streams or one sparse
+fixed-channel LSL stream. Each mini has its own SVG icon source and generated
+desktop widget assets based on the original circular stream mark, recolored
+red/black/white for Polar and teal/orange/white for Vernier. The remembered
+device is preferred in the full device list, and the app automatically retries
+an unexpected Bluetooth loss while keeping its current LSL outlets open. A
+loss/restoration marker is embedded in the single stream; separate mode adds
+`<base>-signalStatus` (1 = lost, 2 = restored). No measurements are fabricated
+to fill a Bluetooth gap. Changing the stream name, mode, or channel schema
+opens replacement outlets before retiring the old contract without restarting
+Bluetooth; LSL consumers must discover the replacement stream identity.
+
 ## Browser demo
 
 The [live Polar Stream browser demo](https://georgefejer91.github.io/Polar-Stream/)

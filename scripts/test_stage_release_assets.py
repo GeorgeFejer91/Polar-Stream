@@ -14,17 +14,30 @@ import stage_release_assets as staging
 class StageReleaseAssetsTests(unittest.TestCase):
     @staticmethod
     def write_version_surfaces(root: Path, version: str) -> None:
-        (root / "apps/polar-stream").mkdir(parents=True)
+        app_names = ("polar-stream", "polar-stream-mini", "vernier-stream-mini")
+        for app_name in app_names:
+            (root / f"apps/{app_name}").mkdir(parents=True)
         (root / "Cargo.toml").write_text(
             f'[workspace.package]\nversion = "{version}"\n', encoding="utf-8"
         )
+        local_packages = (
+            "polar-stream",
+            "polar-stream-mini",
+            "vernier-stream-mini",
+            "stream-mini-runtime",
+        )
         (root / "Cargo.lock").write_text(
-            f'version = 3\n\n[[package]]\nname = "polar-stream"\nversion = "{version}"\n',
+            "version = 3\n\n"
+            + "\n".join(
+                f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
+                for name in local_packages
+            ),
             encoding="utf-8",
         )
-        (root / "apps/polar-stream/tauri.conf.json").write_text(
-            json.dumps({"version": version}), encoding="utf-8"
-        )
+        for app_name in app_names:
+            (root / f"apps/{app_name}/tauri.conf.json").write_text(
+                json.dumps({"version": version}), encoding="utf-8"
+            )
         (root / "package.json").write_text(
             json.dumps({"version": version}), encoding="utf-8"
         )
@@ -139,6 +152,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             with self.subTest(tag=tag):
                 with self.assertRaises(SystemExit):
                     staging.release_version(tag)
+
+    def test_stages_each_standalone_product_for_windows(self) -> None:
+        version = "1.2.3"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle_root = root / "bundle"
+            output = root / "release-assets"
+            for product in staging.PRODUCTS:
+                (bundle_root / "nsis").mkdir(parents=True, exist_ok=True)
+                (bundle_root / "msi").mkdir(parents=True, exist_ok=True)
+                (
+                    bundle_root
+                    / "nsis"
+                    / f"{product.display_name}_{version}_x64-setup.exe"
+                ).write_bytes(product.asset_prefix.encode())
+                (
+                    bundle_root
+                    / "msi"
+                    / f"{product.display_name}_{version}_x64_en-US.msi"
+                ).write_bytes(product.asset_prefix.encode())
+
+            staging.stage_release_assets(
+                bundle_root,
+                output,
+                "windows",
+                "x86_64",
+                version,
+            )
+
+            self.assertEqual(
+                sorted(path.name for path in output.iterdir()),
+                sorted(
+                    name
+                    for product in staging.PRODUCTS
+                    for name in (
+                        f"{product.asset_prefix}_{version}_windows_x86_64.msi",
+                        f"{product.asset_prefix}_{version}_windows_x86_64_setup.exe",
+                    )
+                ),
+            )
 
 
 if __name__ == "__main__":

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 assets_dir="${1:-release-assets}"
-dmg=$(find "$assets_dir" -name '*.dmg' -print -quit)
+main_dmg=$(find "$assets_dir" -name 'Polar-Stream_*_macos_universal.dmg' -print -quit)
+dmg=${main_dmg:-$(find "$assets_dir" -name '*.dmg' -print -quit)}
 test -n "$dmg"
 
 require_universal() {

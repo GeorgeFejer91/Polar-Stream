@@ -22,7 +22,7 @@
       <section class="hero">
         <p class="eyebrow">Native desktop downloads</p>
         <h1>Stream Polar and Vernier signals together.</h1>
-        <p class="intro">Polar Stream 0.6 packages support simultaneous Polar H10 ECG/accelerometer and Vernier GDX-RB force/breathing capture, CSV, LSL, OSC, live visualization, and bundled LabRecorder.</p>
+        <p class="intro">Polar Stream 0.6 packages support simultaneous Polar H10 ECG/accelerometer and Vernier GDX-RB force/breathing capture, CSV, LSL, OSC, live visualization, and bundled LabRecorder. Separate Polar Stream Mini and Vernier Stream Mini installers ship as lightweight BLE-to-LSL node applets.</p>
         <div class="hero-actions">
           <a class="primary" id="recommended-download" href="https://github.com/GeorgeFejer91/Polar-Stream/releases">Browse all releases</a>
           <a class="secondary" href="https://github.com/GeorgeFejer91/Polar-Stream/releases/latest">Latest stable</a>
@@ -57,6 +57,45 @@
             <ul><li>Portable AppImage</li><li>Debian/Ubuntu package (.deb)</li><li>BlueZ Bluetooth backend</li></ul>
             <a href="https://github.com/GeorgeFejer91/Polar-Stream/releases">Choose x64 or ARM64 →</a>
           </article>
+        </div>
+      </section>
+
+      <section class="mini-downloads" aria-labelledby="mini-heading">
+        <div class="section-title">
+          <div><p class="eyebrow">Mini node applets</p><h2 id="mini-heading">Standalone BLE-to-LSL packages</h2></div>
+          <span class="complete">separate installers</span>
+        </div>
+
+        <div class="cards mini-cards">
+          <article class="download-card mini">
+            <span class="os-mark">H10</span>
+            <div><h3>Polar Stream Mini</h3><p>One Polar H10 per app instance</p></div>
+            <ul><li>Raw ECG, raw accelerometer, HR, and RR</li><li>Optional release metrics including Excite-O-Meter and breathing</li><li>Separate streams or one sparse LSL stream</li></ul>
+            <a href="https://github.com/GeorgeFejer91/Polar-Stream/releases">Choose Polar Mini installer -></a>
+          </article>
+
+          <article class="download-card mini">
+            <span class="os-mark">GDX</span>
+            <div><h3>Vernier Stream Mini</h3><p>One Vernier Go Direct sensor per app instance</p></div>
+            <ul><li>Metadata-defined raw Go Direct channels</li><li>Derived Vernier breathing waveform</li><li>Separate streams or one sparse LSL stream</li></ul>
+            <a href="https://github.com/GeorgeFejer91/Polar-Stream/releases">Choose Vernier Mini installer -></a>
+          </article>
+        </div>
+        <div id="vernier-signals" class="mini-signal-reference" aria-labelledby="vernier-signals-heading">
+          <h3 id="vernier-signals-heading">Vernier Mini signal reference</h3>
+          <p>The Go Direct Respiration Belt (GDX-RB) measures tension in its short strap with a force sensor inside the box. Its documented channels are Force, Respiration Rate, Steps, and Step Rate. No raw X/Y/Z accelerometer channel is documented for this belt. <a href="https://www.vernier.com/manuals/GDX-RB">Vernier device manual</a></p>
+          <div class="signal-table-scroll">
+            <table>
+              <thead><tr><th scope="col">Mini output</th><th scope="col">Contents</th><th scope="col">Origin</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">rawVernier</th><td>All numeric channels advertised by the connected belt, plus receipt, sequence, drop, and decode diagnostics. Typically Force (N), Respiration Rate (breaths/min), Steps, and Step Rate (steps/min). Values absent from a packet remain NaN.</td><td>Device channels; diagnostics added by the Mini.</td></tr>
+                <tr><th scope="row">rawForce</th><td>Force (N) alone, copied from the belt's Force channel. This is respiration effort, not pressure or lung volume.</td><td>Device Force value; no extra filtering.</td></tr>
+                <tr><th scope="row">vernierBreathing</th><td>A continuous 0-1 waveform normalized from Force over a rolling 30-second history using the 5th and 95th percentiles after startup. It represents relative belt expansion, not breaths/min.</td><td>Calculated by Vernier Mini.</td></tr>
+                <tr><th scope="row">signalStatus</th><td>Event code 1 when Bluetooth signal is lost; 2 when it is restored. No fake sensor samples are inserted during a gap.</td><td>Calculated by Vernier Mini.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>All four outputs are selected initially. Use <strong>Outputs</strong> in Vernier Mini to keep any nonempty subset. Separate mode advertises one LSL outlet per selection; Single mode places selected columns in one sparse LSL stream, with NaN where a row does not carry that signal. Changes are saved and applied to active outlets without restarting Bluetooth. The belt's Respiration Rate uses a 30-second window and updates every 10 seconds; Step Rate uses a 10-second window and also updates every 10 seconds. These device values are not the Mini's normalized waveform.</p>
         </div>
       </section>
 

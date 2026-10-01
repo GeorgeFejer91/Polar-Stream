@@ -18,7 +18,7 @@ mod windows_backend;
 mod windows_session_lifecycle;
 
 #[cfg(not(target_os = "windows"))]
-use btleplug::api::WriteType;
+use btleplug::api::{ConnectionParameterPreset, WriteType};
 #[cfg(not(target_os = "windows"))]
 use btleplug::{
     api::{Central, Manager as _, Peripheral as _, ScanFilter},
@@ -226,6 +226,17 @@ impl InputSessionPool {
     /// owners. The ordinary add-device workflow seeks one new H10, so Windows
     /// can stop as soon as one non-active exact-name candidate is observed.
     pub async fn scan(&self) -> Result<Vec<DeviceSummary>, String> {
+        self.scan_with_limit(1).await
+    }
+
+    /// Discover all nearby H10s for the standalone mini device picker.
+    pub async fn scan_all(&self) -> Result<Vec<DeviceSummary>, String> {
+        self.scan_with_limit(256).await
+    }
+
+    async fn scan_with_limit(&self, limit: usize) -> Result<Vec<DeviceSummary>, String> {
+        #[cfg(not(target_os = "windows"))]
+        let _ = limit;
         #[cfg(target_os = "windows")]
         let _discovery_activity = self.begin_discovery();
         let _operation = self.operation_gate.lock().await;
@@ -240,7 +251,7 @@ impl InputSessionPool {
         #[cfg(target_os = "windows")]
         let found = self
             .discovery
-            .scan_for_exact_h10s(1, &active_device_ids)
+            .scan_for_exact_h10s(limit, &active_device_ids)
             .await?;
         #[cfg(not(target_os = "windows"))]
         let found = self.discovery.scan().await?;
@@ -277,6 +288,26 @@ impl InputSessionPool {
         &self,
         slot: &str,
         device_id: &str,
+    ) -> Result<mpsc::Receiver<InputEvent>, String> {
+        self.connect_with_link_policy(slot, device_id, false).await
+    }
+
+    /// Connect one H10 with the mini app's fail-soft low-latency link policy.
+    /// Windows retains its physically proven system-managed timing; backends
+    /// that expose a connection-parameter request receive a throughput hint.
+    pub async fn connect_low_latency(
+        &self,
+        slot: &str,
+        device_id: &str,
+    ) -> Result<mpsc::Receiver<InputEvent>, String> {
+        self.connect_with_link_policy(slot, device_id, true).await
+    }
+
+    async fn connect_with_link_policy(
+        &self,
+        slot: &str,
+        device_id: &str,
+        prefer_low_latency: bool,
     ) -> Result<mpsc::Receiver<InputEvent>, String> {
         validate_session_slot(slot)?;
         let _operation = self.operation_gate.lock().await;
@@ -317,7 +348,10 @@ impl InputSessionPool {
             );
         }
 
-        match manager.connect(device_id).await {
+        match manager
+            .connect_with_link_policy(device_id, prefer_low_latency)
+            .await
+        {
             Ok(events) => Ok(events),
             Err(error) => {
                 let mut sessions = self.sessions.lock().await;
@@ -590,6 +624,14 @@ impl InputManager {
         self: &Arc<Self>,
         device_id: &str,
     ) -> Result<mpsc::Receiver<InputEvent>, String> {
+        self.connect_with_link_policy(device_id, false).await
+    }
+
+    async fn connect_with_link_policy(
+        self: &Arc<Self>,
+        device_id: &str,
+        prefer_low_latency: bool,
+    ) -> Result<mpsc::Receiver<InputEvent>, String> {
         self.disconnect().await?;
         #[cfg(target_os = "windows")]
         let device_name = self
@@ -623,6 +665,7 @@ impl InputManager {
 
         #[cfg(target_os = "windows")]
         {
+            let _ = prefer_low_latency;
             let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
             let (cancel, cancelled) = watch::channel(false);
             let (finished_tx, finished) = watch::channel(false);
@@ -665,11 +708,21 @@ impl InputManager {
                     .map_err(|error| format!("Polar H10 connection failed: {error}"))?;
             }
 
+            let link_summary = low_latency_link_summary(&peripheral, prefer_low_latency).await;
+
+            send(
+                &event_tx,
+                InputEvent::Status {
+                    phase: "optimizing",
+                    message: link_summary,
+                },
+            )
+            .await?;
             send(
                 &event_tx,
                 InputEvent::Status {
                     phase: "discovering",
-                    message: "Connected. Discovering ECG and accelerometer services…".into(),
+                    message: "Discovering ECG and accelerometer services…".into(),
                 },
             )
             .await?;
@@ -910,6 +963,25 @@ fn parse_bluetooth_address(device_id: &str) -> Option<u64> {
         return None;
     }
     u64::from_str_radix(&compact, 16).ok()
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn low_latency_link_summary(peripheral: &Peripheral, prefer_low_latency: bool) -> String {
+    let scheduling = if prefer_low_latency {
+        match peripheral
+            .request_connection_parameters(ConnectionParameterPreset::ThroughputOptimized)
+            .await
+        {
+            Ok(()) => "throughput-optimized scheduling requested",
+            Err(_) => "connection scheduling remains system-managed",
+        }
+    } else {
+        "connection scheduling remains system-managed"
+    };
+    format!(
+        "Low-latency link: {scheduling}; negotiated MTU {} B is observed read-only",
+        peripheral.mtu()
+    )
 }
 
 async fn send(sender: &mpsc::Sender<InputEvent>, event: InputEvent) -> Result<(), String> {

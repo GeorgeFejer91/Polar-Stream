@@ -1,5 +1,331 @@
 # Decision log
 
+## 2026-09-24 — Vernier Mini requests radio control at the point of use
+
+The Vernier device picker reads the Windows Bluetooth radio state and offers
+a system-wide switch. It asks Windows for radio-control access only after the
+user changes that switch, verifies the resulting state, and reports denial or
+hardware/policy blocks. The standalone NSIS package has no MSIX capability
+manifest and cannot silently pregrant this permission. A BLE scan failure by
+itself does not prove that the radio is off. Radio control must not stop an
+active Vernier session through the app.
+
+## 2026-09-24 — Polar Mini exposes ACC methods and a separate Flowborne phase
+
+Restore every built-in ACC breathing and dynamics metric to Polar Mini's
+picker without widening the main controller's release catalog. Flowborne
+uses the existing calibrated signed H10 projection as its input and applies
+the Viscereality controller classifier's two-window signed comparison with
+time-scaled 24/90-second and 180/90-second windows. It publishes the score
+and a four-code phase with a distinct bad-signal code. Its dimensionless
+thresholds preserve the questionnaire scene's 1:3 direction asymmetry but
+are experimental H10 choices, not copied metre thresholds. The Unity
+controller's pose, rotation, and particle-radius retention logic cannot be
+claimed for an H10. Keep the proposed hybrid unimplemented until paired
+respiratory-reference data support design and tuning; see
+`docs/acc-breathing-methods.md`.
+
+## 2026-09-24 — Polar Mini selections are persistent defaults until reset
+
+The Polar Mini metric picker saves each checkbox change immediately through
+the existing app-local preference store and live LSL reconfiguration path.
+Closing the picker no longer leaves a session-only selection that appears
+saved. **Reset metrics** clears optional metrics in one action while retaining
+the four mandatory raw/HR/RR outputs and unrelated stream/device settings.
+Selected metrics are restored on launch; the mock process still uses its
+in-memory preference snapshot and cannot rewrite physical-app defaults.
+
+## 2026-09-24 — Mini latency work preserves source timing and acquisition order
+
+The Polar and Vernier Mini mock publishers now wake at 10 ms and 50 ms,
+respectively, while retaining their 130/200 Hz and 20 Hz sample rates. This
+removes the mocks' avoidable 100 ms delivery batch; it does not change the
+physical BLE acquisition paths or establish physical-device latency.
+
+The shared single sparse LSL outlet publishes raw and derived rows in arrival
+order. Rows for different signals may carry overlapping source times. Clamp a
+conflicting row only to the next microsecond after the preceding row; advancing
+by another complete sample period made Vernier's LSL clock run about twice as
+fast as elapsed time. Separate outlets remain the choice for exact per-signal
+sample spacing. The sparse outlet advertises this timestamp policy in metadata.
+
+Keep the Mini BLE workers event-driven and publish raw notifications before
+derived work. Do not elevate the entire process to Windows real-time priority
+or force BLE throughput connection settings without a physical loss and latency
+comparison; a prior H10 throughput request stopped sustained PMD delivery.
+
+## 2026-09-24 — Polar Mini mock ECG is a bundled NeuroKit prerecording
+
+The explicit Polar Mini Mock window replays a fixed 60-minute, 130 Hz
+NeuroKit2 ECGSYN recording instead of constructing ECG sample-by-sample at
+runtime. The 468,000 signed 16-bit little-endian samples are generated
+offline with a fixed seed and shipped only with the Polar Mini installer.
+Playback loops after one hour and still uses the production LSL output router
+and metric processor. ACC and HR/RR remain synthetic; the physical Polar path
+is unchanged. A missing or malformed fixture is an explicit mock-start error,
+not a reason to publish a different waveform. The packaged app needs no
+Python or NeuroKit installation.
+
+## 2026-09-23 — Phan ACC detector is an opt-in Polar Mini adaptation
+
+The user-requested Mobile Phone Breathing Detection protocol is implemented
+as a second, independent ACC processor in `polar-h10-metrics`. Polar Mini
+alone offers its two derived LSL outputs. The catalog classifies them as
+non-release for the main controller, which keeps the established PCA
+respiration selection unchanged; its generated browser catalog excludes the
+mini-only IDs. Source durations and threshold slope are
+expressed in source time so 200 Hz H10 acquisition does not accelerate the
+phone's 60 Hz algorithm. An onset quiet gate replaces the upstream peak-buffer
+`goingDown` behavior that can skip alternating sustained peaks. Separate LSL
+outlets and the combined mini schema use the same metric catalog IDs. Physical
+breath-count validation with an H10 and independent reference is outstanding;
+see `docs/phan-acc-breathing.md`.
+
+## 2026-09-23 — Mini BLE gaps preserve LSL outlet identity
+
+The mini acquisition task now supervises unexpected Bluetooth loss and retries
+the remembered device after a bounded two-second delay. It first attempts the
+cached device identity, then uses a fresh provider scan if that path fails.
+It retains the same LSL output handle while Bluetooth is absent, so an attached
+recorder sees a timestamp gap rather than outlet teardown or synthetic samples.
+The single-stream schema carries numeric event codes 20/21 for Polar and a
+sparse `signal_state` channel (1/2) for Vernier. Separate mode owns a companion
+`<base>-signalStatus` Markers outlet with 1=lost, 2=restored; it exists before
+the first loss and survives recovery. Manual Disconnect cancels retries.
+
+Stream-name, mode, and channel-schema changes are different: LSL channel counts
+and stream identities cannot be mutated in place. A healthy replacement outlet
+set is opened before the old set is retired. Bluetooth acquisition continues,
+but consumers must discover the new LSL contract. Deliberately selecting a
+different sensor while recovery is pending starts a new source session instead
+of silently retaining the old target. The frame beacon follows
+advancing samples, not outlet advertisement or Bluetooth connection state.
+
+## 2026-09-23 — Mini stream contracts change live
+
+The separate/single switch, stream name, and Polar optional-output selection
+replace only the active LSL outlet set; they do not disconnect Bluetooth or
+pause the acquisition worker. A new outlet set is prepared and checked before
+it replaces a healthy one. The workers read the current output handle on each
+received batch, so their next publication uses the new contract. Preference
+writes and Vernier schema setup are serialized to preserve remembered-device
+state and dynamic channel metadata. Quick UI saves are ordered, and a failed
+save restores the switch display. The three-line beacon requires both a
+publishing outlet and recently advancing sample counters; it stops on a stall.
+Without a connected sensor, the regular mini does not invent physiological
+measurements. The separate, clearly labeled Mock window is the synthetic path.
+
+## 2026-09-23 — Mock mini streams reuse the production publication path
+
+Each mini's **Mock** action launches another copy of that product executable
+with `--mock`; it does not create a second simulation subsystem or borrow state
+from the other mini. The child snapshots the current stream contract into an
+in-memory preference store, clears remembered-device/autoconnect data, and adds
+its PID to the stream base. It then publishes deterministic samples at the
+product's fixed acquisition rates through the same metric processors, Vernier
+schema, separate/single stream implementation, and LSL output router used by a
+physical connection.
+
+Polar mock data covers 130 Hz ECG, 200 Hz ACC, HR/RR, and selected derived
+metrics. Vernier mock data covers 20 Hz Force and derived breathing. No mock
+process may write the physical product's preference file. The shell receives a
+small product-palette tint to make synthetic data unmistakable without creating
+a different layout.
+
+The three-line frame becomes a breathing beacon only when the app is connected,
+LSL health begins with `Publishing`, and an emitted sample event has nonzero
+counters. A connection event alone cannot start the animation. Reduced-motion
+preference replaces the cycle with a static live glow.
+
+## 2026-09-23 — Mini icons are palette variants of the original mark
+
+Both mini products preserve the original Polar Stream circular stream/keyhole
+geometry. Their app-local SVGs change colors only: Polar uses red, black, and
+white; Vernier uses teal, orange, and white. The previous ECG and force-wave
+corner badges are removed so taskbar, shortcut, and installer artwork stay
+visibly part of the same product family without changing the source silhouette.
+Generated PNG, ICO, ICNS, mobile, and Store assets remain derived from those
+two SVG sources.
+This supersedes the 2026-09-15 badge-specific icon decision below.
+
+The compact window frames remain three crisp parallel 1 px lines ordered
+outside-in as red/black/white for Polar and teal/orange/white for Vernier.
+
+## 2026-09-22 — Keep Polar Mini metric discovery concise but explicit
+
+Polar Stream Mini labels its optional-output control **+ Realtime metrics**.
+Opening it temporarily expands the same frameless app window into a larger
+picker, rather than creating a second runtime or window-state owner. Optional
+metrics are grouped as ECG/heart-derived or ACC-derived and show the canonical
+catalog label, stable ID, and one-line detail. Raw ECG, ACC, heart rate, and RR
+remain permanently included, and the breathing waveform/confidence/readiness
+trio retains its coupled selection behavior.
+
+The picker links through a no-argument native command to the fixed public Polar
+Stream Pages URL for the full metric library. Renderer input cannot supply an
+arbitrary URL. The mini UI stays a selection surface; Rust remains authoritative
+for metric metadata, processing, persistence, and LSL publication.
+
+## 2026-09-22 — Autostart is opt-in and remembered reconnection is product-local
+
+Each mini exposes its own **Start with PC** switch through Tauri's desktop
+autostart plugin. The operating system remains authoritative for that switch;
+autostart is never silently enabled and no duplicate preference flag shadows
+the OS registration. Distinct bundle identifiers and executables produce
+independent Polar and Vernier startup entries.
+
+The existing schema-versioned native preferences remain authoritative for
+stream name, output mode, reconnect choice, Polar metric selection, and the
+last successfully connected device. Reconnect defaults on, runs after the
+frontend attaches its event channel, and resolves the remembered device by its
+saved identifier with a case-insensitive name fallback. Autostart merely opens
+the app; it does not create a second settings owner or bypass the normal
+bounded scan and connection path.
+
+## 2026-09-22 — Minimize mini sample age without lowering raw resolution
+
+Both mini products keep their maximum native acquisition rates while treating
+BLE delivery latency as a separate concern. Their internal low-latency policy
+captures monotonic host receipt time at the notification boundary, decodes once,
+and forwards each received notification directly to LSL with reconstructed
+per-sample timing; it adds no second application timer batch and exposes no
+sampling or MTU preference in the UI.
+
+MTU and connection scheduling remain negotiated platform/device behavior.
+Mini-only sessions request throughput-oriented scheduling on non-Windows
+backends that implement the request and report the negotiated MTU rather than
+assuming the hint succeeded. On Windows, `GattSession.MaxPduSize` and btleplug's
+MTU are read-only observations. H10 connection timing remains system-managed
+because repository physical evidence showed that the earlier Windows
+`ThroughputOptimized` request stopped sustained PMD notifications. No code may
+fake a smaller MTU by mutating private state. Vernier's 50 ms sensor period is
+not treated as proof of one BLE notification per sample; packet cadence still
+requires a physical benchmark.
+
+## 2026-09-22 — Each mini owns a product-specific color identity
+
+Polar Stream Mini uses black, white, and signal red across both UI modes,
+stream-mode diagrams, and generated desktop assets. Vernier Stream Mini uses
+the product-site teal, orange, and white palette across the same surfaces in
+both modes. The layouts and interaction model remain aligned, but shared
+runtime code must not collapse their app-local visual identities into one
+generic theme. This supersedes the shared multicolor-palette requirement in the
+2026-09-15 and 2026-09-14 icon decisions while retaining the family geometry
+and each mini's distinct ECG or force-wave badge.
+
+## 2026-09-22 — Mini bridges default to maximum native acquisition rates
+
+Sampling rate is an internal acquisition policy, not a mini-app preference.
+Polar Stream Mini keeps the H10's documented maximum native streams: 130 Hz ECG
+and 200 Hz accelerometer, with HR/RR left at the device's event-driven service
+cadence. Vernier Stream Mini requests the GDX-RB's 50,000 us period, or 20 Hz,
+instead of its earlier 100,000 us / 10 Hz request.
+
+Manufacturer specifications are preferred evidence; reviewed community
+protocol evidence may fill gaps. Runtime device metadata remains authoritative:
+the Vernier session must accept a slower common period when the connected
+channel schema cannot support the requested maximum. Stream grouping never
+changes acquisition cadence, and no path may upsample raw data to imply greater
+resolution.
+
+## 2026-09-22 — Use rounded mini shells and one illustrated stream switch
+
+Both mini products use a fully rounded node shell as the complete visible app
+outline. Side Bluetooth/LSL port knobs and labels are removed. Separate versus
+single LSL output is one persisted, keyboard-accessible switch flanked by two
+small app-local SVG diagrams, so the compact control communicates topology
+without a second button pair or runtime dependency.
+
+This supersedes only the app-specific pulse-step and V-notch silhouette choice
+in the earlier 2026-09-22 product-routing decision. Frameless transparent
+windows, custom minimize/graceful-close controls, independent packages, and
+product-scoped delivery remain unchanged.
+
+## 2026-09-22 — Route and release three autonomous products independently
+
+Polar Stream, Polar Stream Mini, and Vernier Stream Mini are three products,
+not three modes of one installed program. Each owns a distinct bundle
+identifier, executable, install/config directory, preferences, process state,
+icon, and installer family. Shared Rust crates remain code reuse only: no app
+may require another product process, read another product's preferences, or
+overwrite another product's install path. Both minis must run concurrently and
+multiple instances of either mini remain independent processes.
+
+Future agents read the common `for-ai/` control plane, then exactly the selected
+contract under `for-ai/apps/`; shared mini-runtime work selects both mini
+contracts. Delivery gates are product-scoped. Main UI/download work retains its
+installed-app and Pages sync, while mini-only work builds, installs, and
+launch-tests the selected mini without coupling completion to the main Pages
+surface. This supersedes the 2026-08-15 blanket three-surface rule for mini-only
+changes.
+
+The minis use frameless transparent Tauri windows with no native rectangular
+shadow. Each draws a distinct app-local silhouette and accessible custom
+minimize/graceful-close controls. Polar uses an offset pulse-step profile;
+Vernier uses a centered V-notch profile. Tauri's native window API and exact
+`allow-minimize` capability are sufficient; no title-bar dependency is added.
+The now-installed `ponytail` skill remains mandatory for coding and keeps these
+contracts and implementations minimal.
+
+## 2026-09-19 — Require Pony Tail for coding and keep every change YAGNI
+
+The exact installed `tauri-rust-developer` skill remains the first repository
+skill for every task. Every task that creates or edits source code, tests,
+build/release scripts, CI, or executable tooling must additionally invoke the
+user-requested Pony Tail skill before substantive coding. The current
+environment has no Pony Tail/Ponny Tail skill, so an agent must disclose that
+fact and stop coding until the user installs it or explicitly changes the
+requirement; it must never impersonate the missing skill.
+
+YAGNI is a standing implementation constraint. Add only behavior required by
+the current request, an active goal, or an accepted contract; prefer the
+smallest owning layer and reuse existing seams. YAGNI does not weaken signal
+integrity, security, bounded-resource behavior, cleanup, validation, or
+cross-platform obligations for the behavior actually changed. `SKILLS.md` is
+the canonical detailed router.
+
+## 2026-09-15 — Mini app widget logos are distinct family marks
+
+Polar Stream Mini and Vernier Stream Mini keep separate SVG icon sources under
+their app-local `icons/app-icon.svg` files. Generated desktop icon assets must
+come from those sources rather than copying the main controller icon. The Polar
+mini keeps the original Polar Stream disc-and-stream color language with an ECG
+pulse badge; the Vernier mini keeps the same family language with a
+V/force-wave badge.
+
+Windows taskbar and shortcut widgets consume packaged executable icon
+resources, not the raw SVG. The mini apps therefore generate PNG/ICO/ICNS
+assets from the app-local SVG sources, package those assets, and explicitly set
+the runtime window icon from Tauri's generated default app icon during startup.
+
+## 2026-09-14 — Ship mini applets as standalone node products
+
+Polar Stream Mini and Vernier Stream Mini are independent Tauri packages beside
+the main controller, not views inside `apps/polar-stream`. The mini apps own
+separate bundle identifiers, app-local node-style UIs, app-local preferences,
+and installer artifacts. Their shared implementation lives in
+`crates/stream-mini-runtime`, which may coordinate one BLE session, preference
+memory, LSL publication, and a no-argument new-instance launch command, but it
+must reuse the existing input, metrics, and output crates.
+
+The mini UI is a compact transparent-shell window: the node card itself is the
+visible program outline, with no surrounding patch-board background. Keep that
+shape space efficient and app-local rather than expanding it into the main
+controller's workspace. Non-control node surfaces should remain draggable
+Tauri drag regions, while controls use quiet filled states and focus rings
+instead of decorative border stacks.
+Their app widget logos must also remain app-local and distinct while preserving
+the original Polar Stream disc-and-stream color language.
+
+The main controller remains the multi-source visualization, browser demo, and
+bundled-LabRecorder product. The minis deliberately omit those surfaces unless
+a future user request explicitly changes their scope. For multi-sensor mini
+workflows, users launch multiple process instances. Separate mode uses the
+canonical per-output LSL suffixes; single mode uses one sparse fixed-channel LSL
+outlet with `NaN` for absent row channels rather than hiding timing boundaries.
+GitHub release assets must keep the packages distinct with `Polar-Stream_*`,
+`Polar-Stream-Mini_*`, and `Vernier-Stream-Mini_*` prefixes.
+
 ## 2026-09-13 — Keep node view as a second view over the same state
 
 The interface may switch between the normal three-panel workspace and an

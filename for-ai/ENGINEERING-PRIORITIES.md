@@ -14,6 +14,32 @@ A visually smoother interface or a new metric never justifies hidden sample
 loss, changed units, reordered timestamps, transport backpressure, or reduced
 platform support.
 
+## Acquisition-rate defaults
+
+- Standalone mini bridges request the highest native sampling rate documented
+  for the supported device and signal. This is an internal product policy, not
+  a user preference.
+- Prefer manufacturer specifications. When official material omits a protocol
+  detail, reviewed community evidence may establish the requested value, but
+  device-advertised metadata remains the runtime acceptance boundary.
+- A device-reported slower minimum period, incompatible shared period, or
+  rejected request must fall back safely and visibly. Never upsample or label a
+  BLE notification cadence as the sensor sampling rate.
+- Polar H10 Mini therefore requests 130 Hz ECG and 200 Hz accelerometer data.
+  Vernier GDX-RB Mini requests a 50,000 us period, or 20 Hz, for periodic raw
+  channels while retaining metadata-governed fallback.
+- Sampling rate and delivery latency are separate. Mini sessions timestamp at
+  notification receipt, decode once, and immediately publish each received BLE
+  notification as one correctly timestamped LSL chunk without a second timer
+  batch. The lowest sample age is the goal; raw resolution remains maximal.
+- MTU and connection parameters are negotiated hints, never assumed outcomes.
+  Request faster connection scheduling only where the active backend supports
+  it without contradicting physical reliability evidence, and always report
+  the observed MTU/interval when available. The current Windows APIs expose MTU
+  read-only, and the proven H10 path retains system-managed connection timing
+  because a prior `ThroughputOptimized` request stopped sustained PMD delivery.
+  Never mutate a library-private MTU field or claim that doing so changed BLE.
+
 ## Ownership and dependency direction
 
 - `polar-h10-core` owns byte decoding, protocol units, and platform-neutral
@@ -27,6 +53,10 @@ platform support.
 - `polar-h10-output` owns canonical discovery names, fail-soft LSL/OSC
   transport behavior, and bounded native CSV persistence. Transport code must
   not know about the WebView.
+- `stream-mini-runtime` owns the standalone mini app lifecycle: one BLE sensor
+  session per process, saved mini preferences, immediate LSL publication, and
+  the no-argument new-instance launcher. It must reuse the input, metrics, and
+  output crates rather than reimplementing protocol or metric logic.
 - LSL backend experiments remain mutually exclusive compile-time features.
   liblsl is the packaged default. Any Rusty LSL candidate must pin an exact
   reviewed commit, preserve canonical descriptors, qualify through official
@@ -34,6 +64,14 @@ platform support.
   physical-device and licensing/release gates.
 - `apps/polar-stream` coordinates lifecycle and IPC. It must not become a second
   protocol decoder, metric engine, catalog, or transport implementation.
+- `apps/polar-stream-mini` and `apps/vernier-stream-mini` are independent Tauri
+  packages. Keep their UIs compact, transparent, node-shaped, and app-local;
+  keep LabRecorder/browser demo features out of them unless requested, and
+  preserve their separate bundle identifiers and installer artifacts.
+- Product independence is a runtime contract: each shipped app owns its own
+  executable, install/config paths, preferences, process memory, BLE owner, and
+  output lifecycle. Shared crates may contain reusable code but no cross-product
+  singleton, preference file, required helper launch, or process coupling.
 - JavaScript consumes bounded display data. It may decimate or skip visual
   frames, but it must never publish authoritative research data.
 - Browser-demo behavior belongs behind the shared frontend runtime API. Keep

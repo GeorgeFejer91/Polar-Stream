@@ -1,0 +1,26 @@
+[package]
+name = "stream-mini-runtime"
+description = "Shared native runtime for standalone Polar Stream mini LSL applets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["liblsl-backend"]
+liblsl-backend = ["polar-h10-output/liblsl-backend"]
+rusty-lsl-backend = ["polar-h10-output/rusty-lsl-backend"]
+
+[dependencies]
+polar-h10-core = { path = "../polar-h10-core" }
+polar-h10-input = { path = "../polar-h10-input" }
+polar-h10-metrics = { path = "../polar-h10-metrics" }
+polar-h10-output = { path = "../polar-h10-output", default-features = false }
+polar-stream-time = { path = "../polar-stream-time" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.11", features = [] }
+tokio.workspace = true
+vernier-gdx-core = { path = "../vernier-gdx-core" }
+vernier-gdx-input = { path = "../vernier-gdx-input" }

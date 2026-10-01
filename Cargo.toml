@@ -1,12 +1,15 @@
 [workspace]
 members = [
     "apps/polar-stream",
+    "apps/polar-stream-mini",
+    "apps/vernier-stream-mini",
     "crates/polar-stream-time",
     "crates/polar-h10-core",
     "crates/polar-h10-input",
     "crates/polar-h10-math",
     "crates/polar-h10-metrics",
     "crates/polar-h10-output",
+    "crates/stream-mini-runtime",
     "crates/vernier-gdx-core",
     "crates/vernier-gdx-input",
 ]

@@ -30,6 +30,12 @@
   per-formula fault bounds.
 - Keep LSL/OSC naming and transport in `polar-h10-output`.
 - Keep `apps/polar-stream` a thin coordinator and presentation layer.
+- Keep `crates/stream-mini-runtime` as the shared one-session coordinator for
+  standalone mini applets. It may use input, metrics, output, and Tauri types,
+  but it must not become a second protocol decoder or metric catalog.
+- Keep `apps/polar-stream-mini` and `apps/vernier-stream-mini` independent
+  Tauri packages with app-local node-style UIs. They are not the main
+  controller and are not part of the Pages frontend parity surface.
 - Cross the Rust/WebView boundary in bounded batches or channels, never by
   invoking the frontend once per high-rate sample.
 - Do not add a second source of truth for metric definitions or stream suffixes.
@@ -41,6 +47,12 @@
 - `apps/polar-stream/ui/` is the only frontend source for both the installed
   Tauri app and the GitHub Pages app. Never maintain, patch, or style a second
   browser-only interface copy.
+- The mini app UIs under `apps/polar-stream-mini/ui/` and
+  `apps/vernier-stream-mini/ui/` are intentional standalone desktop surfaces.
+  Keep them as compact transparent-shell apps whose node card is the visible
+  program outline, visually aligned with the main node view but without a
+  surrounding board. Do not publish them as the Pages demo or require them to
+  share the main controller's browser runtime adapter.
 - HTML, CSS, interaction behavior, metric-library flows, visualizations, and
   responsive formatting must remain identical across installed and Pages
   builds. Stage Pages from the canonical UI and keep asset-hash plus desktop,
@@ -61,31 +73,31 @@
   an honest capability difference, not permission to let the two frontends
   drift.
 
-## Mandatory three-surface synchronization
+## Mandatory product-scoped synchronization
 
-Every completed edit must end with all three user-visible surfaces on the same
-accepted source state:
+Treat the repository as three separately installed products. Select the
+contract or contracts in `for-ai/apps/` from the user's wording before editing.
 
-1. the canonical local checkout;
-2. the resolved per-user installed Polar Stream desktop app; and
-3. the public GitHub Pages application at
-   `https://georgefejer91.github.io/Polar-Stream/`.
+- Main multi-streamer work synchronizes the checkout, installed Polar Stream
+  app, and, when the canonical UI or download surface changes, the public Pages
+  app at `https://georgefejer91.github.io/Polar-Stream/`.
+- Polar Mini work builds, installs, and launch-tests only Polar Stream Mini.
+- Vernier Mini work builds, installs, and launch-tests only Vernier Stream Mini.
+- Shared mini-runtime work builds, installs, and launch-tests both minis side by
+  side. It does not trigger a main-app or Pages release by itself.
 
-After applicable tests pass, build a production desktop artifact, preserve the
-previous installed executable as a rollback copy, install the new artifact into
-the existing resolved per-user location, and launch or smoke-test that installed
-copy. Stage Pages from `apps/polar-stream/ui/`, publish the completed change to
-`main` through the repository's normal reviewed Git workflow, wait for the Pages
-deployment, and run the live manifest/hash verifier against the public site.
-Do not call an edit complete when it exists only locally, only in a branch/PR,
-only in an installed binary, or only in the staged Pages artifact.
+Each product keeps its own bundle identifier, executable, application/config
+directory, preferences, runtime state, icon, process, and installer. No product
+may overwrite another product's install or preference path, require another
+product to be running, or use another product as a helper process.
 
-The final response after every edit must state the installed path, commit/PR or
-main delivery state, concrete checks, live deployment verification, and the
-clickable Pages URL above. If build, install, publish, or live verification is
-blocked, investigate safe in-scope alternatives, report the exact blocker, and
-describe the work as incomplete. Never publish unrelated dirty files merely to
-satisfy synchronization.
+After applicable tests pass, build the selected production artifact, preserve
+the previous installed executable as a rollback copy, install into that
+product's resolved location, and launch or smoke-test the installed copy. Never
+publish unrelated dirty files to satisfy a delivery gate. The final response
+must state each selected product's installed path, package path, checks, and
+delivery state. Include the clickable Pages URL and live hash result only when
+the selected scope includes the main or download surface.
 
 ## Change discipline
 
@@ -101,7 +113,9 @@ satisfy synchronization.
 
 ## Required validation
 
-Run the narrowest relevant check during iteration and the applicable final set:
+Run the narrowest relevant check during iteration, then the selected app
+contract's final set. Shared Rust changes retain workspace gates; app-local UI
+changes do not need unrelated browser-demo validation.
 
 ```bash
 cargo fmt --all -- --check
@@ -114,7 +128,8 @@ for-ai/scripts/check-context.sh
 ```
 
 Preview generation changes also require `npm run check:previews`. Release or
-packaging changes require the checks documented in `RELEASING.md`. Before the
-handoff for any completed edit, also run the applicable production desktop
-build/install smoke test, `npm run build:browser-demo`, and after publication
-`npm run verify:live-pages`; include the verified URL in the response.
+packaging changes require the applicable checks documented in `RELEASING.md`.
+Main UI/download work also requires `npm run build:browser-demo` and, after
+publication, `npm run verify:live-pages`. Mini-only UI/package work requires
+the two mini JS syntax checks, focused Rust gates, and the selected mini's exact
+installer build/install/parallel-launch smoke test.

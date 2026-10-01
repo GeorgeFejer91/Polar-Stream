@@ -2889,18 +2889,18 @@ impl WinrtSession {
                     parameters.ConnectionLatency().ok()?,
                 ))
             });
-        let requested = "system-managed";
+        let requested = "system-managed for sustained notification reliability; MTU read-only";
 
         match (observed, mtu) {
             (Some((interval, latency)), Some(mtu)) => format!(
-                "Direct Windows WinRT GATT · persistent session · throughput request {requested} · observed interval {:.2} ms · latency {latency} · negotiated MTU {mtu} B",
+                "Direct Windows WinRT GATT · persistent session · connection timing {requested} · observed interval {:.2} ms · latency {latency} · negotiated MTU {mtu} B",
                 interval as f64 * 1.25
             ),
             (None, Some(mtu)) => format!(
-                "Direct Windows WinRT GATT · persistent session · throughput request {requested} · negotiated MTU {mtu} B"
+                "Direct Windows WinRT GATT · persistent session · connection timing {requested} · negotiated MTU {mtu} B"
             ),
             _ => format!(
-                "Direct Windows WinRT GATT · persistent session · throughput request {requested}"
+                "Direct Windows WinRT GATT · persistent session · connection timing {requested}"
             ),
         }
     }

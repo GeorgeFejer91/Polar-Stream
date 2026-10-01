@@ -107,6 +107,8 @@ pub struct OutputConfig {
     #[serde(default)]
     pub source_palette: Option<SourcePalette>,
     pub outputs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vernier_outputs: Option<Vec<String>>,
     #[serde(default)]
     pub metric_options: HashMap<String, MetricOutputOptions>,
     #[serde(default)]
@@ -123,6 +125,7 @@ impl Default for OutputConfig {
             audio_enabled: false,
             source_palette: None,
             outputs: vec!["raw_ecg".into(), "raw_acc".into()],
+            vernier_outputs: None,
             metric_options: HashMap::new(),
             custom_formulas: Vec::new(),
         }
@@ -192,6 +195,15 @@ impl OutputConfig {
     /// preferences written by an older application version.
     pub fn validated(self) -> Result<Self, String> {
         self.validate_collection_bounds()?;
+        if let Some(ids) = &self.vernier_outputs {
+            if ids.is_empty() || ids.len() > 4 || ids.iter().any(|id| !matches!(id.as_str(), "rawVernier" | "rawForce" | "vernierBreathing" | "signalStatus")) {
+                return Err("Vernier outputs must contain one to four known stream IDs.".into());
+            }
+            let mut unique = std::collections::HashSet::new();
+            if ids.iter().any(|id| !unique.insert(id)) {
+                return Err("Vernier output IDs must be unique.".into());
+            }
+        }
         if let Some(unknown) = self
             .outputs
             .iter()
@@ -684,9 +696,13 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_metrics_survive_normalization_and_migration_with_exact_suffixes() {
-        const EXPECTED: [(&str, &str); 22] = [
+    fn non_release_metrics_survive_normalization_and_migration_with_exact_suffixes() {
+        const EXPECTED: [(&str, &str); 26] = [
             ("acc_breathing_magnitude", "accBreathingMagnitude"),
+            ("phan_breath_event", "phanBreathEvent"),
+            ("phan_breath_rate", "phanBreathRate"),
+            ("flowborne_phase", "flowbornePhase"),
+            ("flowborne_motion_score", "flowborneMotionScore"),
             ("breathing_phase", "breathingPhase"),
             ("breathing_calibration", "breathingCalibration"),
             ("breathing_axis_range", "breathingAxisRange"),

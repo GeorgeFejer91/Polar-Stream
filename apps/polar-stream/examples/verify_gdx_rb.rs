@@ -513,6 +513,7 @@ async fn qualify_session(
             &device.id,
             SessionConfig {
                 period_us: DEFAULT_PERIOD_US,
+                prefer_low_latency_link: false,
             },
         )
         .await?;

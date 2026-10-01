@@ -18,16 +18,21 @@ VERSION_PATTERN = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 )
 CHECKSUM_LINE = re.compile(r"([0-9a-fA-F]{64}) [ *]([^/\\]+)")
-PACKAGE_TEMPLATES = (
-    "Polar-Stream_{version}_linux_aarch64.AppImage",
-    "Polar-Stream_{version}_linux_aarch64.deb",
-    "Polar-Stream_{version}_linux_x86_64.AppImage",
-    "Polar-Stream_{version}_linux_x86_64.deb",
-    "Polar-Stream_{version}_macos_universal.dmg",
-    "Polar-Stream_{version}_windows_aarch64.msi",
-    "Polar-Stream_{version}_windows_aarch64_setup.exe",
-    "Polar-Stream_{version}_windows_x86_64.msi",
-    "Polar-Stream_{version}_windows_x86_64_setup.exe",
+PRODUCT_PREFIXES = (
+    "Polar-Stream",
+    "Polar-Stream-Mini",
+    "Vernier-Stream-Mini",
+)
+PACKAGE_TARGETS = (
+    ("linux", "aarch64", ".AppImage", ""),
+    ("linux", "aarch64", ".deb", ""),
+    ("linux", "x86_64", ".AppImage", ""),
+    ("linux", "x86_64", ".deb", ""),
+    ("macos", "universal", ".dmg", ""),
+    ("windows", "aarch64", ".msi", ""),
+    ("windows", "aarch64", ".exe", "_setup"),
+    ("windows", "x86_64", ".msi", ""),
+    ("windows", "x86_64", ".exe", "_setup"),
 )
 CHECKSUM_NAME = "SHA256SUMS.txt"
 
@@ -52,7 +57,11 @@ def normalize_version(raw_version: str) -> str:
 
 def expected_package_names(raw_version: str) -> tuple[str, ...]:
     version = normalize_version(raw_version)
-    return tuple(template.format(version=version) for template in PACKAGE_TEMPLATES)
+    return tuple(
+        f"{product}_{version}_{platform}_{arch}{setup}{extension}"
+        for product in PRODUCT_PREFIXES
+        for platform, arch, extension, setup in PACKAGE_TARGETS
+    )
 
 
 def file_sha256(path: Path) -> str:

@@ -1,9 +1,192 @@
 # Current state
 
-Last verified: 2026-09-13
+Vernier Mini's device-search dialog now reports the Windows system Bluetooth
+radio state and offers an on/off switch. A user action requests radio-control
+access through Windows, confirms the resulting state, and resumes scanning
+after Bluetooth turns on. Denial, hardware blocks, and scan-not-ready errors
+are distinct states; raw HRESULT detail is tucked behind a disclosure. The
+NSIS installer cannot pregrant Windows radio access. On 2026-09-24, focused
+Rust check/test/Clippy, Mini Playwright validation, and the Vernier NSIS build
+passed. The installer at
+`target/release/bundle/nsis/Vernier Stream Mini_0.6.0_x64-setup.exe` was
+installed into `%LOCALAPPDATA%/Vernier Stream Mini/` and launched beside Polar
+Mini. The previous executable is under
+`target/install-backups/2026-09-24-vernier-bluetooth-radio/`. The actual
+radio-control permission path was not exercised, to avoid disrupting other
+Bluetooth devices on this PC.
+
+Polar Mini's picker now offers all catalogued ACC breathing compatibility
+outputs, including the PCA waveform/quality/phase, cycle rate and dynamics,
+and Phan event/rate. Flowborne adds a signed short-versus-long ACC contrast
+and a four-code phase (+1 inhale, -1 exhale, 0 hold, -2 bad signal) adapted
+from Viscereality's controller classifier. The main controller's release
+respiration selection is unchanged. See `docs/acc-breathing-methods.md` for
+the algorithm comparison and adaptation limits. On 2026-09-24, workspace
+tests, Clippy, formatting, Mini JS syntax/Playwright validation, and context
+checks passed. The x64 NSIS installer at
+`target/release/bundle/nsis/Polar Stream Mini_0.6.0_x64-setup.exe` was built
+and installed into `%LOCALAPPDATA%/Polar Stream Mini/`; the previous executable
+is under `target/install-backups/2026-09-24-flowborne/`. The installed normal
+Polar Mini and auto-started Polar mock run beside the existing Vernier Mini.
+This is a host smoke test, not a physical H10/reference-respiration validation.
+
+Polar Mini now saves optional metric selections immediately as app-local
+defaults. Its picker can reset all optional metrics without altering direct
+raw/HR/RR outputs, stream mode/name, or remembered device; live LSL outlets
+are reconfigured through the existing preference-save path.
+On 2026-09-24, the Polar Mini UI validator covered immediate save, restored
+selection after a simulated restart, reset to mandatory outputs, restored reset
+state, and picker fit at 320 px. Focused Rust tests, Clippy, both Mini JS syntax
+checks, and context validation passed. The Polar x64 NSIS installer was rebuilt
+and installed in `%LOCALAPPDATA%\Polar Stream Mini\` after backing up the old
+executable under `target/install-backups/2026-09-24-metric-defaults/`. Normal
+Polar, Polar mock, and the existing Vernier Mini ran concurrently; the mock
+advertised its LSL streams. Physical H10 acquisition was not retested.
+
+Last verified: 2026-09-24
+
+On 2026-09-24, the installed Polar and Vernier Mini mock outlets were sampled
+for 12 seconds on this Windows host. Polar ECG published 1,565 samples with
+about 11.1 ms p95 interarrival; its local-clock timestamp age was about 1.9 ms
+at p95 (some reconstructed sample times were a few milliseconds ahead of the
+probe clock). Polar ACC published 2,404 samples with about 5.2 ms p95 age.
+Vernier single sparse mode published 480 raw/derived rows with about 3.0 ms
+p95 age and an 11.95-second timestamp span, correcting the previous roughly
+24-second span for 12 seconds of real time. The recorder's independent XDF
+reader found 846 ECG samples, 1,302 ACC samples, 242 Vernier rows, two input
+markers, and a 6.0-second shared interval in a seven-second joint mock run.
+Workspace tests, Clippy, Mini UI validation, formatting, both NSIS builds,
+installation, parallel launch, and the recorder's joint integration test passed.
+The installed Mini executables differ from the final build-directory binaries
+only in Tauri's embedded `BUNDLE_TYPE_VAR` value (`NSS` versus `UNK`).
+Physical H10 and Vernier BLE latency, drop rates, and reconnect behavior still
+need a simultaneous hardware run; mock timestamp age is not radio latency.
+
+Polar Mini's explicit Mock window now replays a bundled 60-minute NeuroKit2
+ECGSYN ECG recording (468,000 samples at 130 Hz, 936,000 bytes) and loops
+after one hour. The fixture is Polar-only and has no runtime NeuroKit/Python
+dependency. Mock ACC and HR/RR remain synthetic, and the physical acquisition
+path is unchanged. Missing or malformed fixture data prevents mock startup.
+On 2026-09-24, workspace tests, Clippy, mini validation, and the context
+check passed. Both x64 NSIS installers were rebuilt and installed in their
+separate `%LOCALAPPDATA%` roots after backing up the previous executables
+under `target/install-backups/2026-09-24-neurokit-ecg/`. The installed Polar
+fixture matched the source SHA-256; Vernier's installation had no Polar ECG
+fixture. Both normal minis launched in parallel, and an installed Polar mock
+LSL ECG inlet yielded 130 consecutive samples matching the bundled fixture.
+
+Polar Mini now has opt-in Phan-method ACC breath-event and rolling-count-rate
+LSL outputs. The method uses H10 source-time 0.2/200-second axis averages,
+adaptive threshold, quiet/refractory gates, and a 60-second event count. Both
+separate and single LSL schemas accept the selections and preserve them in
+mini preferences. Host synthetic tests pass; a physical H10/reference-belt
+comparison remains open. The original study used a phone on the abdomen, so
+the H10 chest-strap adaptation is not physiologically validated.
+On 2026-09-23 the updated Polar Mini x64 NSIS installer was built and installed
+in its independent `%LOCALAPPDATA%` root, and the installed Polar and existing
+Vernier processes ran in parallel. The old Polar executable was retained under
+`target/install-backups/polar-stream-mini/`. The generated main browser metric
+catalog hash stayed unchanged because these metrics are mini-only.
+
+Both minis now apply separate/single mode, stream-name, and selected-output
+changes to active LSL outlets without restarting their Bluetooth or mock
+acquisition session. A live replacement is staged and health-checked before
+the worker switches handles. The frame beacon pulses only while fresh sample
+counters advance on a publishing outlet and fades after a short stall.
+On 2026-09-23, the native mini worker also gained bounded automatic Bluetooth
+recovery. It keeps the existing LSL outlet handles open across an unexpected
+device loss, emits a numeric loss marker (1), retries the cached saved identity
+first and then scans by ID/name, and emits a restoration marker (2) on
+reconnection. Retry attempts have a two-second floor; scan/connect duration
+still depends on the OS and hardware.
+Single mode carries these sparse marker rows in its one stream; separate mode
+adds a persistent `<base>-signalStatus` outlet. No sensor values are filled in
+while Bluetooth is absent. An explicit Disconnect still closes the session.
+The UI device list now keeps all scan results while preferring the remembered
+sensor. Physical-device latency/reconnect reliability remains unqualified.
 
 ## Implemented
 
+- Two standalone mini applets now sit beside the main controller:
+  `apps/polar-stream-mini` (`dev.georgefejer.polarstreammini`) and
+  `apps/vernier-stream-mini` (`dev.georgefejer.vernierstreammini`). Both share
+  `crates/stream-mini-runtime`, own one BLE session per process, persist their
+  own stream name/output mode/auto-reconnect/last-device preferences, and offer
+  a no-argument **Open new mini node** action that launches another process
+  instance. Their app-local UIs intentionally look like compact detached
+  node-view patch nodes on a transparent app background: the node card itself
+  is the visible fully rounded program outline, with no side port knobs or
+  surrounding board. Their non-control node surfaces are Tauri drag regions,
+  while text entry, buttons, selects, dialogs, and menus remain ordinary
+  controls. One accessible switch selects separate versus single LSL output,
+  flanked by app-local SVG miniatures that depict the two stream layouts. The
+  mini controls use compact filled states and focus rings instead of repeated
+  decorative borders. Both windows disable native decorations and rectangular
+  native shadow, draw their own accessible minimize/graceful-close controls,
+  and leave the WebView transparent outside the rounded app shell.
+  Each mini owns its own SVG icon source and generated desktop widget assets.
+  Both preserve the original Polar Stream circular stream/keyhole geometry
+  without an added badge; Polar recolors it red/black/white and Vernier recolors
+  it teal/orange/white.
+  Polar's light/dark UI, mode diagrams, and app assets use black, white, and
+  signal red; Vernier's use the product-site teal, orange, and white identity.
+  Their rounded shells carry three 1 px parallel frame lines: Polar uses red,
+  black, and white outside-in, while Vernier uses teal, orange, and white.
+  Each mini also exposes a **Mock** action that starts the same product as an
+  independent `--mock` process. Mock settings are in-memory snapshots with a
+  PID-suffixed stream base, so they neither overwrite the remembered physical
+  sensor nor collide with parallel LSL outlets. Polar mock windows immediately
+  replay bundled deterministic 130 Hz ECG and generate synthetic 200 Hz ACC,
+  HR/RR, and selected derived metrics; Vernier mock windows generate
+  deterministic 20 Hz Force and derived
+  breathing. Both use the production output router and LSL schemas. Mock
+  windows receive a lighter product-palette tint. For real and mock sources,
+  the three outline rings begin a 2.4-second breathing beacon only after sample
+  counters advance while LSL health reports `Publishing`; connected-only and
+  failed-output states remain still, and reduced-motion mode uses a static glow.
+  Each mini now has an independent opt-in **Start with PC** switch backed by
+  the desktop operating system's autostart registry. The separate **Reconnect**
+  preference defaults on; launch restores that product's last stream name,
+  output mode, metric choices, and last successfully connected sensor before a
+  targeted remembered-device scan. Closing through the custom control flushes
+  the current preferences first. Autostart state and saved sensor settings do
+  not cross between the Polar and Vernier bundle identifiers.
+  Installed Windows builds set the runtime window icon from the generated
+  default app icon so taskbar and shortcut widgets resolve the app-specific
+  marks rather than a generic WebView icon.
+  Polar Stream Mini defaults to raw ECG, raw accelerometer, heart rate, and RR
+  interval LSL output, with release-facing optional metrics including the
+  Excite-O-Meter and the complete current breathing trio. Its compact
+  **+ Realtime metrics** action expands into a larger picker that separates
+  ECG/heart-derived from ACC-derived metrics and shows each catalog name, ID,
+  and one-line definition; the public Pages app remains the full metric
+  library. Vernier Stream Mini
+  publishes all compatible Vernier raw channels plus derived breathing. Polar
+  Mini requests the H10 maxima of 130 Hz ECG and 200 Hz accelerometer data;
+  Vernier Mini requests the GDX-RB's 50,000 us period, or 20 Hz, and retains
+  the existing metadata-governed slower fallback. These are fixed acquisition
+  policies rather than user preferences. Both minis also select their internal
+  low-latency link policy automatically: notification receipt is monotonic-
+  timestamped, each received BLE batch is published immediately without a
+  second app timer batch, supported non-Windows backends receive a fail-soft
+  throughput-oriented scheduling request, and negotiated link values remain
+  observed evidence. Windows keeps connection timing system-managed and MTU
+  read-only because a prior H10 `ThroughputOptimized` request stopped sustained
+  PMD delivery. Each mini can use the established
+  separate suffix streams or one sparse fixed-channel single LSL stream. Host
+  build/install evidence does not replace physical Polar H10 or Vernier
+  hardware qualification.
+  On 2026-09-23, both x64 NSIS packages were rebuilt and silently installed in
+  their independent `%LOCALAPPDATA%` roots while preserving both autostart
+  entries. On the final rebuild, both normal mini processes remained responsive
+  in parallel from their independent install roots. Temporary mock instances
+  were externally smoke-tested with pylsl 1.18.2, then closed: Polar ECG and
+  Vernier's ten-channel combined mini outlet both delivered samples, and the
+  Polar companion signal-status outlet was discoverable.
+  The main multi-streamer and both minis are separately installed products with
+  distinct identifiers, executables, app-config roots, preferences, processes,
+  icons, and installer families. They can run side by side without a required
+  parent process or cross-product runtime state.
 - The shared desktop/browser interface is a quiet three-part research workbench
   with direct Input, Output, and Visualization headings, readable control copy,
   semantic light/dark surfaces, restrained depth, 44px coarse-pointer targets,
@@ -251,8 +434,9 @@ Last verified: 2026-09-13
   channel-1 periodic Force in N, then enables the complete compatible numeric
   periodic/aperiodic channel set. It rejects malformed, unsupported, duplicate,
   or mutually exclusive schemas instead of silently omitting raw values. It
-  requests a common 10 Hz base period when metadata permits and otherwise uses
-  a common plausible reported fallback. The initialization status response also reports the
+  main controller requests a common 10 Hz base period when metadata permits,
+  while Vernier Mini requests 20 Hz; both otherwise use a common plausible
+  reported fallback. The initialization status response also reports the
   main firmware major/minor and battery percentage in native and Chromium
   connection metadata. A bounded native verifier exercises sustained samples,
   continuity/rate/health thresholds, explicit disconnect, and reconnect while
@@ -543,7 +727,7 @@ Last verified: 2026-09-13
 - The release-facing ACC-derived waveform and its two quality indicators are
   unvalidated and require comparison with a reference respiratory sensor before
   physiological interpretation. Compatibility respiration outputs are not new
-  selection options.
+  selection options in the main controller; Polar Mini offers them explicitly.
 - Windows and macOS public packages are currently unsigned/ad-hoc unless release
   infrastructure states otherwise.
 - Physical-device latency percentiles, queue high-water marks, and transport

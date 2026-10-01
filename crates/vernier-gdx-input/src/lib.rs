@@ -54,12 +54,14 @@ pub struct DeviceSummary {
 #[derive(Clone, Copy, Debug)]
 pub struct SessionConfig {
     pub period_us: u32,
+    pub prefer_low_latency_link: bool,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             period_us: DEFAULT_PERIOD_US,
+            prefer_low_latency_link: false,
         }
     }
 }
@@ -376,6 +378,12 @@ async fn run_connected_session(
 ) -> Result<(), String> {
     control(events, "connecting", format!("Opening {device_name}")).await?;
     timed("Go Direct connection", peripheral.connect()).await?;
+    control(
+        events,
+        "optimizing",
+        low_latency_link_summary(peripheral, config.prefer_low_latency_link).await,
+    )
+    .await?;
     timed(
         "Go Direct service discovery",
         peripheral.discover_services(),
@@ -739,6 +747,46 @@ async fn write_command(
         .await?;
     }
     Ok(())
+}
+
+async fn low_latency_link_summary(peripheral: &Peripheral, prefer_low_latency: bool) -> String {
+    #[cfg(target_os = "windows")]
+    let scheduling = if prefer_low_latency {
+        "Windows connection timing retained system-managed for sustained notification reliability"
+    } else {
+        "connection timing system-managed"
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let scheduling = if prefer_low_latency {
+        match peripheral
+            .request_connection_parameters(
+                btleplug::api::ConnectionParameterPreset::ThroughputOptimized,
+            )
+            .await
+        {
+            Ok(()) => "throughput-optimized scheduling requested",
+            Err(_) => "connection scheduling remains system-managed",
+        }
+    } else {
+        "connection scheduling remains system-managed"
+    };
+
+    let connection = peripheral.connection_parameters().await.ok().flatten();
+    let observed = connection.map_or_else(
+        || "connection interval unavailable".to_string(),
+        |parameters| {
+            format!(
+                "observed interval {:.2} ms, peripheral latency {}",
+                f64::from(parameters.interval_us) / 1_000.0,
+                parameters.latency
+            )
+        },
+    );
+    format!(
+        "Low-latency link: {scheduling}; negotiated MTU {} B is observed read-only; {observed}",
+        peripheral.mtu()
+    )
 }
 
 fn command_write_type(properties: CharPropFlags) -> Result<WriteType, String> {

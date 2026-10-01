@@ -135,6 +135,38 @@ items into the dated history instead of silently deleting them.
    - Preserve one fixed no-argument native launcher boundary, the packaged
      remote-control-disabled profile, upstream notices, and exact-package launch
      gates. Never move XDF recording onto the acquisition/display hot path.
+8. Keep Polar Stream Mini and Vernier Stream Mini standalone.
+   - Route Polar Mini work to `apps/polar-stream-mini` and Vernier Mini work to
+     `apps/vernier-stream-mini`; route shared one-session mini behavior to
+     `crates/stream-mini-runtime`.
+   - Keep the main `apps/polar-stream` controller as the multi-source
+     visualization, browser demo, and bundled-LabRecorder product. Do not add
+     those surfaces to the minis unless the user explicitly requests it.
+   - Preserve separate bundle identifiers, app-local preferences, independent
+     installer artifacts, and the node-view visual language in both mini UIs.
+   - Keep each mini's **Start with PC** registration opt-in and OS-authoritative;
+     reconnect defaults on and restores that product's last successful device
+     plus its saved stream/output settings without crossing app identifiers.
+   - Keep both minis frameless and transparent outside their fully rounded app
+     shells, with no side port knobs and with their own keyboard-accessible
+     minimize and graceful-close controls instead of an operating-system title
+     bar.
+   - Represent separate versus single LSL output with one accessible switch and
+     app-local SVG stream-layout miniatures rather than two competing buttons.
+   - Keep Polar Stream, Polar Stream Mini, and Vernier Stream Mini autonomous:
+     separate executables, install/config roots, preferences, processes, icons,
+     and installer families that can run concurrently without interference.
+   - Keep raw BLE notification publication ahead of optional derived metrics and
+     UI counters. Multiple mini sensors should be represented by multiple
+     running app instances, not by turning a mini into another main controller.
+   - Keep **Mock** as a separate process using ephemeral preferences, a
+     collision-free PID-suffixed stream base, and the production LSL/metric
+     path at each product's fixed sample rates. The three-line live beacon must
+     require both advancing sample counters and healthy `Publishing` LSL state.
+   - Keep mini acquisition rates fixed at each supported device's documented
+     native maximum rather than exposing a rate preference: H10 ECG at 130 Hz,
+     H10 ACC at 200 Hz, and GDX-RB periodic raw channels requested at 20 Hz with
+     metadata-governed fallback.
 
 ## Next
 

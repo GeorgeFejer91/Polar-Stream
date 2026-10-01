@@ -1,8 +1,8 @@
 use std::{env, fs, path::PathBuf};
 
 use polar_h10_metrics::{
-    METRIC_CATALOG, MetricCitation, MetricDefinition, MetricSelectionTier, metric_citations,
-    metric_formula_definition, metric_selection_tier,
+    METRIC_CATALOG, MetricCitation, MetricDefinition, MetricSelectionTier, POLAR_MINI_ONLY_IDS,
+    metric_citations, metric_formula_definition, metric_selection_tier,
 };
 use serde::Serialize;
 
@@ -26,6 +26,7 @@ fn main() {
     let catalog: Vec<_> = METRIC_CATALOG
         .iter()
         .copied()
+        .filter(|metric| !POLAR_MINI_ONLY_IDS.contains(&metric.id))
         .map(|metric| {
             let formula = metric_formula_definition(metric.id);
             BrowserMetric {

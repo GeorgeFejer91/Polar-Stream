@@ -6,6 +6,7 @@ required_files="
 AGENTS.md
 for-ai/README.md
 for-ai/START-HERE.md
+for-ai/SKILLS.md
 for-ai/GLOBAL-INSTRUCTIONS.md
 for-ai/PROJECT-CONTEXT.md
 for-ai/ENGINEERING-PRIORITIES.md
@@ -14,6 +15,9 @@ for-ai/GOALS.md
 for-ai/ORCHESTRATION.md
 for-ai/SELF-UPDATE.md
 for-ai/DECISIONS.md
+for-ai/apps/MULTI-STREAMER.md
+for-ai/apps/POLAR-STREAM-MINI.md
+for-ai/apps/VERNIER-STREAM-MINI.md
 for-ai/templates/HANDOFF.md
 "
 
@@ -26,6 +30,13 @@ for relative_path in $required_files; do
 done
 
 for relative_path in START-HERE.md GLOBAL-INSTRUCTIONS.md PROJECT-CONTEXT.md ENGINEERING-PRIORITIES.md CURRENT-STATE.md GOALS.md ORCHESTRATION.md SELF-UPDATE.md DECISIONS.md; do
+  if ! grep -Fq "for-ai/$relative_path" "$repo_root/AGENTS.md"; then
+    printf 'AGENTS.md does not route to for-ai/%s\n' "$relative_path" >&2
+    missing=1
+  fi
+done
+
+for relative_path in apps/MULTI-STREAMER.md apps/POLAR-STREAM-MINI.md apps/VERNIER-STREAM-MINI.md; do
   if ! grep -Fq "for-ai/$relative_path" "$repo_root/AGENTS.md"; then
     printf 'AGENTS.md does not route to for-ai/%s\n' "$relative_path" >&2
     missing=1

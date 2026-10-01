@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#17221d" />
+    <title>Polar Stream Mini</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="theme-bootstrap.js"></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body data-kind="polar">
+    <main class="mini-shell" aria-labelledby="product-name" data-tauri-drag-region>
+      <article id="mini-node" class="patch-node live mini-node" tabindex="0" data-tauri-drag-region>
+        <div class="node-surface" data-tauri-drag-region>
+          <header data-tauri-drag-region>
+            <div class="node-title" data-tauri-drag-region>
+              <strong id="product-name" data-tauri-drag-region>Polar Stream Mini</strong>
+              <span id="node-phase" data-tauri-drag-region>Initializing</span>
+            </div>
+            <mark id="node-kind" data-tauri-drag-region>MINI</mark>
+            <div class="node-window-actions" data-tauri-drag-region>
+              <button id="theme-toggle" type="button" aria-label="Toggle theme" title="Toggle theme"><span class="window-icon theme" aria-hidden="true"></span></button>
+              <button id="new-node-top" type="button" aria-label="Open new mini node" title="Open new mini node"><span class="window-icon add" aria-hidden="true"></span></button>
+              <button id="minimize-button" type="button" aria-label="Minimize" title="Minimize"><span class="window-icon minimize" aria-hidden="true"></span></button>
+              <button id="close-button" class="close" type="button" aria-label="Close" title="Close"><span class="window-icon close" aria-hidden="true"></span></button>
+            </div>
+          </header>
+          <section class="node-body" data-tauri-drag-region>
+            <label class="field-label" for="stream-name">Stream name</label>
+            <input id="stream-name" class="text-entry" autocomplete="off" spellcheck="false" />
+
+            <div class="stream-mode-row" data-tauri-drag-region>
+              <span class="stream-mode-option" data-tauri-drag-region>
+                <img src="icons/separate-streams.svg" alt="" aria-hidden="true" data-tauri-drag-region />
+                <span data-tauri-drag-region>Separate</span>
+              </span>
+              <label class="stream-mode-toggle" for="stream-mode-toggle">
+                <input id="stream-mode-toggle" type="checkbox" role="switch" aria-label="Output as one LSL stream" />
+                <span class="stream-mode-track" aria-hidden="true"><span class="stream-mode-thumb"></span></span>
+              </label>
+              <span class="stream-mode-option single" data-tauri-drag-region>
+                <img src="icons/single-stream.svg" alt="" aria-hidden="true" data-tauri-drag-region />
+                <span data-tauri-drag-region>Single</span>
+              </span>
+            </div>
+
+            <div id="device-row" class="device-row" data-tauri-drag-region>
+              <select id="device-select" aria-label="Device"></select>
+              <button id="scan-button" type="button">Scan</button>
+            </div>
+            <div id="mock-source" class="mock-source-row" hidden data-tauri-drag-region>Synthetic Polar H10 · 130 Hz ECG · 200 Hz ACC</div>
+
+            <div class="mini-option-row" data-tauri-drag-region>
+              <label class="check-row hardware-only">
+                <input id="autostart" type="checkbox" role="switch" disabled />
+                <span>Start with PC</span>
+              </label>
+              <label class="check-row hardware-only">
+                <input id="auto-connect" type="checkbox" />
+                <span>Reconnect</span>
+              </label>
+              <div class="metric-row polar-only" data-tauri-drag-region>
+                <button id="metrics-button" type="button">+ Realtime metrics</button>
+              </div>
+            </div>
+
+            <div id="signal-list" class="signal-list" aria-label="Included streams" data-tauri-drag-region></div>
+
+            <dl class="readout" data-tauri-drag-region>
+              <div data-tauri-drag-region><dt data-tauri-drag-region>Device</dt><dd id="device-status" data-tauri-drag-region>No device</dd></div>
+              <div data-tauri-drag-region><dt data-tauri-drag-region>LSL</dt><dd id="lsl-status" data-tauri-drag-region>Off</dd></div>
+              <div data-tauri-drag-region><dt data-tauri-drag-region>Samples</dt><dd id="sample-status" data-tauri-drag-region>0</dd></div>
+            </dl>
+          </section>
+          <footer data-tauri-drag-region>
+            <button id="connect-button" type="button">Connect</button>
+            <button id="disconnect-button" type="button" disabled>Disconnect</button>
+            <button id="mock-button" type="button" title="Open a separate synthetic Polar Stream Mini window">Open mock</button>
+          </footer>
+        </div>
+      </article>
+
+      <div id="context-menu" class="node-menu" role="menu" hidden>
+        <button id="new-node-menu" type="button" role="menuitem">Open new mini node</button>
+        <button id="mock-node-menu" type="button" role="menuitem">Create mock stream</button>
+      </div>
+    </main>
+
+    <dialog id="metrics-dialog" class="node-source-dialog">
+      <form method="dialog">
+        <header class="dialog-header" data-tauri-drag-region>
+          <div data-tauri-drag-region>
+            <strong data-tauri-drag-region>Realtime metrics</strong>
+            <span data-tauri-drag-region>Add derived LSL outputs. Raw ECG, ACC, heart rate, and RR stay included.</span>
+          </div>
+          <button id="metrics-close" value="cancel" type="submit" aria-label="Close">x</button>
+        </header>
+        <div id="metric-options" class="metric-options"></div>
+        <footer>
+          <button id="metrics-guide" class="metrics-guide" type="button">Full metric library</button>
+          <div class="dialog-actions">
+            <button value="cancel" type="submit">Close</button>
+            <button id="reset-metrics" type="button">Reset metrics</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+  </body>
+</html>

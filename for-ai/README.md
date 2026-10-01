@@ -11,6 +11,7 @@ orientation.
 ## Contents
 
 - `START-HERE.md`: required reading order and first actions.
+- `SKILLS.md`: mandatory skill routing and the standing YAGNI rule.
 - `GLOBAL-INSTRUCTIONS.md`: repository-wide engineering and safety rules.
 - `PROJECT-CONTEXT.md`: durable product and architecture context.
 - `ENGINEERING-PRIORITIES.md`: signal-quality, latency, reliability, and
@@ -20,6 +21,11 @@ orientation.
 - `ORCHESTRATION.md`: work planning, delegation, ownership, and handoff rules.
 - `SELF-UPDATE.md`: triggers and procedure for keeping this folder current.
 - `DECISIONS.md`: compact architectural decision log.
+- `apps/`: product-specific ownership, identity, and release gates for the
+  multi-streamer, Polar Mini, and Vernier Mini. Read only the contract or
+  contracts selected by the user request.
+- `AUDIT-2026-09-19.md`: dated code and instruction audit snapshot; findings
+  must be revalidated against the live tree before implementation.
 - `scripts/`: read-only context and consistency helpers.
 - `templates/`: reusable handoff material.
 

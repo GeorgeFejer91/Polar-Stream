@@ -31,6 +31,18 @@ Vernier GDX-RB
 Bundled LabRecorder (separate process)
   <- discovers any native LSL outlets selected by the user
   -> records the selected stream set to XDF
+
+Polar Stream Mini / Vernier Stream Mini (standalone applets)
+  -> stream-mini-runtime owns one recoverable BLE session per process
+  -> current LSL outlets stay open through unexpected BLE loss/retry
+  -> single outlet embeds numeric signal-loss/restoration marker rows;
+     separate mode adds a persistent <base>-signalStatus marker outlet
+  -> optional `--mock` child bypasses BLE but reuses the production output path
+     with in-memory settings and a PID-suffixed stream base
+  -> raw notification publication to LSL precedes derived metric/UI work
+  -> separate mode uses canonical per-output LSL suffixes
+  -> single mode uses one sparse fixed-channel LSL outlet with NaN for absent
+     row channels and explicit event/diagnostic channels
 ```
 
 Native publication is the authoritative real-time path. The WebView is a
@@ -65,6 +77,34 @@ authoritative replacement for native CSV/LSL/OSC.
 The Pages artifact must be built from the canonical UI tree; a
 separately maintained browser-interface copy is not allowed.
 
+Two standalone mini applets live next to the controller. `Polar Stream Mini`
+(`dev.georgefejer.polarstreammini`) connects one Polar H10 and publishes raw
+ECG, raw accelerometer, heart rate, RR intervals, and selected release-facing
+derived metrics over LSL. `Vernier Stream Mini`
+(`dev.georgefejer.vernierstreammini`) connects one Vernier Go Direct sensor and
+publishes the metadata-defined raw channel set plus the derived breathing
+waveform over LSL. Each mini stores its own stream name, output mode, auto
+reconnect preference, and last device under its app identifier. Opening
+multiple sensors means launching multiple mini app instances, including through
+the mini node context action; **Mock** launches a separately tinted synthetic
+instance whose settings are never persisted into the physical app. The main
+controller remains the multi-source visualization and LabRecorder workflow.
+Both minis have app-local SVG icon sources and generated desktop widget icons.
+They preserve the original Polar Stream circular stream/keyhole geometry and
+change only the palette: red/black/white for Polar and teal/orange/white for
+Vernier.
+
+Release assets are staged as separate package families: `Polar-Stream_*`,
+`Polar-Stream-Mini_*`, and `Vernier-Stream-Mini_*`.
+
+These are three autonomous installed products. The main multi-streamer uses
+`dev.georgefejer.polarstream`; Polar Mini uses
+`dev.georgefejer.polarstreammini`; Vernier Mini uses
+`dev.georgefejer.vernierstreammini`. Their executable names, Windows product
+directories, app-config roots, preferences, process state, taskbar identities,
+and installers are separate. Sharing Rust crates is a build-time implementation
+choice and does not create a runtime parent/child or shared-preference contract.
+
 The project optimizes first for raw signal integrity, then continuous observable
 publication, low latency/jitter, cross-platform correctness, derived metric
 quality, and finally presentation. `ENGINEERING-PRIORITIES.md` defines the
@@ -91,6 +131,10 @@ operational contract for that ordering.
 
 - One normalized base name produces stable per-output suffixes such as
   `participant_07_rawECG` and `participant_07_rawACC`.
+- Standalone minis use the same normalized base-name contract. In separate
+  mode they produce the existing suffixes; in single mode they produce exactly
+  one sparse fixed-channel LSL outlet whose unrelated row channels are `NaN`
+  and never carried forward.
 - A native GDX-RB automatically adds per-source `rawVernier` and
   `vernierBreathing` suffixes. The raw outlet is a metadata-driven sparse
   Double64 recording contract; the derived outlet is an explicitly labeled
@@ -180,9 +224,10 @@ operational contract for that ordering.
 - GitHub Pages must deploy the canonical UI after successful changes to `main`.
   Desktop and browser parity, plus narrow touch layouts down to 320 CSS pixels,
   are CI contracts rather than manual synchronization tasks.
-- Every completed edit must also production-build/install the same source into
-  the resolved per-user desktop location, verify the public Pages manifest
-  against the checkout, and return the live Pages URL to the user.
+- Every completed edit must production-build/install the selected product set.
+  Main UI/download work also verifies the public Pages manifest and returns the
+  live URL; mini-only work installs and launch-tests only the selected mini or
+  both minis when their shared runtime changed.
 - Chrome on Android may use the foreground Web Bluetooth path, with a
   best-effort visible-document screen wake lock. Pure Pages/PWA code cannot
   guarantee capture after a tab is hidden, the app is switched, or the screen

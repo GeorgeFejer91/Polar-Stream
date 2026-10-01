@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Polar Stream Mini icon</title>
+  <desc id="desc">The original Polar Stream mark recolored in Polar red, black, and white.</desc>
+  <defs>
+    <mask id="stream-shape">
+      <rect width="1024" height="1024" fill="#000000" />
+      <circle cx="512" cy="512" r="434" fill="#ffffff" />
+      <path d="M0 450H512A62 62 0 0 1 512 574H0Z" fill="#000000" />
+    </mask>
+  </defs>
+
+  <g mask="url(#stream-shape)">
+    <circle cx="512" cy="512" r="434" fill="#09090b" />
+    <g transform="rotate(45 512 512)">
+      <rect x="-128" y="264" width="1280" height="80" fill="#d5001c" />
+      <rect x="-128" y="344" width="1280" height="80" fill="#ffffff" />
+      <rect x="-128" y="424" width="1280" height="80" fill="#d5001c" />
+      <rect x="-128" y="504" width="1280" height="80" fill="#ffffff" />
+      <rect x="-128" y="584" width="1280" height="80" fill="#d5001c" />
+    </g>
+    <circle cx="512" cy="512" r="433" fill="none" stroke="#000000" stroke-width="3" />
+  </g>
+  <path d="M82 450H512A62 62 0 0 1 512 574H82" fill="none" stroke="#000000" stroke-width="3" />
+</svg>

@@ -10,6 +10,7 @@
     "build:browser-demo": "python scripts/build_browser_demo.py",
     "check:browser-demo": "python scripts/build_browser_demo.py --check",
     "validate:browser-demo": "python scripts/build_browser_demo.py && node scripts/validate_browser_demo.mjs",
+    "validate:minis": "node scripts/validate_mini_apps.mjs",
     "verify:live-pages": "python scripts/verify_live_browser_demo.py",
     "test:browser-acceptance": "python -m unittest discover -s scripts -p 'test_analyze_browser_recording.py'",
     "test:lab-recorder-packaging": "python -m unittest discover -s scripts -p 'test_prepare_lab_recorder.py'",
@@ -24,5 +25,8 @@
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
     "playwright": "1.63.0"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "0.0.9"
   }
 }

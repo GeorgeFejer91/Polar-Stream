@@ -29,8 +29,8 @@ pub struct MetricCitation {
 }
 
 /// Controls which built-in metrics may be selected in a new release-facing
-/// configuration. Compatibility metrics remain in the catalog and runtime so
-/// saved configurations keep their IDs, processors, and stream names.
+/// configuration. Compatibility also covers mini-only metrics: both remain
+/// executable without entering the main controller's release picker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MetricSelectionTier {
@@ -47,11 +47,23 @@ pub const RELEASE_POLAR_RESPIRATION_IDS: &[&str] = &[
     "breathing_signal_ready",
 ];
 
+/// Selectable only by Polar Mini; the main/browser release catalog is unchanged.
+pub const POLAR_MINI_ONLY_IDS: &[&str] = &[
+    "phan_breath_event",
+    "phan_breath_rate",
+    "flowborne_phase",
+    "flowborne_motion_score",
+];
+
 /// Returns the release-facing selection tier without retiring any public ID.
 pub fn metric_selection_tier(id: &str) -> MetricSelectionTier {
     if matches!(
         id,
         "acc_breathing_magnitude"
+            | "phan_breath_event"
+            | "phan_breath_rate"
+            | "flowborne_phase"
+            | "flowborne_motion_score"
             | "breathing_phase"
             | "breathing_calibration"
             | "breathing_axis_range"
@@ -104,6 +116,10 @@ const RESONANCE_URL: &str =
     "https://www.sciencedirect.com/science/article/abs/pii/S0149763422000653";
 const BREATH_ACC: &str = "Schipper et al. (2021)";
 const BREATH_ACC_URL: &str = "https://pubmed.ncbi.nlm.nih.gov/33739305/";
+const PHAN_SOURCE: &str = "Phan, Mobile Phone Breathing Detection source";
+const PHAN_SOURCE_URL: &str = "https://github.com/lynphan/Mobile-Phone-Breathing-Detection/blob/main/BreathingDetection/Assets/MobilePhoneBreathingDetection.cs";
+const FLOWBORNE_SOURCE: &str = "Viscereality BreathDetection.cs (MesmerPrism)";
+const FLOWBORNE_SOURCE_URL: &str = "https://github.com/MesmerPrism/Viscereality/blob/927beb17a1d6f90b5f1b3efdcd3d4eab656dfb71/Viscereality/Assets/Scripts/Breathing/BreathDetection.cs";
 const BREATH_COMPLEXITY: &str = "Bará et al. (2024)";
 const BREATH_COMPLEXITY_URL: &str = "https://doi.org/10.1016/j.bbe.2024.04.004";
 const STRESS_REVIEW: &str = "Immanuel et al. (2023)";
@@ -261,6 +277,16 @@ fn formula_for(id: &str) -> &'static str {
         }
         "breathing_signal_ready" => "ready = calibrated ∧ notLost ∧ motionQuality ≥ 0.35",
         "breathing_rate" => "rate = 60 / mean(same-polarity extremum intervals)",
+        "phan_breath_event" => {
+            "event = onset[Σ |mean₀.₂s(axis) − mean₂₀₀s(axis)| > adaptive threshold, 1 s quiet, 0.25 s refractory]"
+        }
+        "phan_breath_rate" => "rate = count(breath events in trailing 60 s) breaths/min",
+        "flowborne_motion_score" => {
+            "score = [mean(last 24/90 s, signed ACC projection) − mean(last 180/90 s, signed ACC projection)] / calibrated axis span"
+        }
+        "flowborne_phase" => {
+            "phase = −2 if unready/gap/outlier, +1 if score > 0.025, −1 if score < −0.075, else 0"
+        }
         "breathing_dynamics_confidence" => {
             "confidence = clamp(max(Ninterval,Namplitude) / 200, 0, 1)"
         }
@@ -339,6 +365,10 @@ fn formula_source_for(id: &str) -> &'static str {
         | "breathing_signal_confidence"
         | "breathing_signal_ready"
         | "breathing_rate"
+        | "phan_breath_event"
+        | "phan_breath_rate"
+        | "flowborne_phase"
+        | "flowborne_motion_score"
         | "breathing_dynamics_confidence"
         | "breath_interval_mean"
         | "breath_interval_sd"
@@ -859,6 +889,78 @@ pub const METRIC_CATALOG: &[MetricDefinition] = &[
         BREATH_ACC,
         BREATH_ACC_URL,
         "breath respiration waveform volume chest",
+        false,
+        false,
+        1,
+        0.0,
+        "Breathing"
+    ),
+    metric!(
+        "phan_breath_event",
+        "phanBreathEvent",
+        "Phan ACC breath event",
+        "Pulse when the adaptive ACC threshold detects a breath",
+        "event",
+        "Breathing",
+        "This is a time-scaled adaptation of Lyn Phan's phone-on-abdomen accelerometer threshold algorithm; one-valued event samples are emitted only on detection. The H10 is mounted on a chest strap rather than a phone on the abdomen, so event accuracy and polarity have not been validated against a respiratory reference.",
+        "unvalidated H10 adaptation",
+        PHAN_SOURCE,
+        PHAN_SOURCE_URL,
+        "phan accelerometer breath event abdomen threshold experimental",
+        false,
+        false,
+        1,
+        0.0,
+        "Markers"
+    ),
+    metric!(
+        "phan_breath_rate",
+        "phanBreathRate",
+        "Phan ACC breath count rate",
+        "Detected events in the trailing 60 seconds, in breaths/min",
+        "breaths/min",
+        "Breathing",
+        "The detector compares 0.2-second and 200-second per-axis acceleration averages, then counts adaptive-threshold onsets after quiet-time and refractory gates. This rate is a rolling count, not a validated respiratory rate: posture shifts, strap placement, and chest motion can cause misses or false detections.",
+        "unvalidated H10 adaptation",
+        PHAN_SOURCE,
+        PHAN_SOURCE_URL,
+        "phan accelerometer respiratory rate breath count experimental",
+        false,
+        false,
+        1,
+        0.0,
+        "Respiration"
+    ),
+    metric!(
+        "flowborne_phase",
+        "flowbornePhase",
+        "Flowborne ACC phase",
+        "+1 inhale · −1 exhale · 0 hold · −2 bad signal",
+        "class",
+        "Breathing",
+        "An exploratory H10 adaptation of MesmerPrism's Viscereality controller classifier. It compares short and long means of the signed, calibrated ACC projection; the controller original compares integrated displacement in metres. Bad signal includes calibration, motion-quality, clock-gap and extreme-score guards. Polarity and thresholds are not validated against respiratory flow and may need sensor-orientation correction.",
+        "unvalidated H10 adaptation",
+        FLOWBORNE_SOURCE,
+        FLOWBORNE_SOURCE_URL,
+        "flowborne controller breathing inhale exhale hold bad signal phase",
+        false,
+        false,
+        1,
+        0.0,
+        "Breathing"
+    ),
+    metric!(
+        "flowborne_motion_score",
+        "flowborneMotionScore",
+        "Flowborne ACC motion score",
+        "Short-minus-long signed ACC mean / calibrated span",
+        "span",
+        "Breathing",
+        "The signed classifier input is the 0.267-second mean of the H10 chest-motion projection minus its 2-second mean, divided by the current calibrated axis span. It is emitted only when the Flowborne phase input is ready. This dimensionless acceleration contrast is not controller displacement or measured lung volume.",
+        "unvalidated H10 adaptation",
+        FLOWBORNE_SOURCE,
+        FLOWBORNE_SOURCE_URL,
+        "flowborne breathing motion score short long average accelerometer",
         false,
         false,
         1,

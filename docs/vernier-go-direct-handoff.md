@@ -23,9 +23,11 @@ sensor mask, requires a confirmed GDX-RB model plus periodic channel-1 Force in
 N, and enables the complete compatible numeric channel set. Setup fails instead
 of silently omitting a channel when metadata is malformed, unsupported,
 duplicated, mutually exclusive, or has no common periodic base interval. The
-native path requests a 100,000 µs (10 Hz) base period when all periodic channels
-accept it, otherwise it uses a common plausible metadata fallback. It reports
-connected only after the start acknowledgement and first valid measurement.
+main multi-streamer requests a 100,000 µs (10 Hz) base period. Vernier Stream
+Mini requests the GDX-RB's 50,000 µs (20 Hz) maximum-response period. Each
+request is used only when all periodic channels accept it; otherwise the shared
+native path uses a common plausible metadata fallback. It reports connected
+only after the start acknowledgement and first valid measurement.
 
 Native LSL then creates two additional per-device outlets before forwarding
 that first measurement: `<base>_rawVernier` and
@@ -104,9 +106,10 @@ The startup order is:
 5. Read the available-sensor mask, decode every advertised sensor's metadata,
    require channel 1 to be periodic Force in N, and reject any unsupported,
    duplicate, or mutually exclusive all-channel schema.
-6. Request 100,000 µs when every periodic sensor accepts it, otherwise select a
-   common plausible metadata period, then enable every compatible channel in
-   one measurement mask.
+6. Request the product-selected base period (100,000 µs for the main
+   multi-streamer, 50,000 µs for Vernier Mini) when every periodic sensor
+   accepts it; otherwise select a common plausible metadata period, then enable
+   every compatible channel in one measurement mask.
 7. Wait for the correlated start acknowledgement.
 8. Report connected only after decoding the first non-empty schema-valid frame;
    the ordered connection event installs both LSL outlets before that frame is
@@ -252,12 +255,16 @@ manual Disconnect removes that identity from the desired set before teardown.
   discoverable without a second enable step; the user may still switch LSL off
   afterward. Browser connections never take this native action.
 
-The preferred 100,000 microsecond period is 10 samples/s. It is requested when
-the sensor metadata declares it valid; otherwise the reported plausible typical
-period is used. “Best possible latency” here means no avoidable application
-batching or UI backpressure; Bluetooth connection
-interval, controller scheduling, device firmware batching, and browser tab
-scheduling remain outside application control.
+The main controller's preferred 100,000 microsecond period is 10 samples/s;
+Vernier Stream Mini instead requests the GDX-RB's 50,000 microsecond period,
+or 20 samples/s. Either request is accepted only when every selected channel's
+metadata declares it valid; otherwise the reported plausible common period is
+used. “Best possible latency” means no avoidable application batching or UI
+backpressure. Mini sessions request throughput-oriented scheduling only when
+the backend supports it and report negotiated MTU/interval values as evidence.
+Windows keeps those values system-managed/read-only. Sensor period does not
+prove BLE notification cadence: packetization, controller scheduling, firmware
+buffering, and browser tab scheduling still require direct measurement.
 
 ## Chromium behavior and limits
 

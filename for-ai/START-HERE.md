@@ -32,15 +32,44 @@ the legacy `PolarH10`/Mesmerism fork; that checkout is quarantined at
 `/home/George/Documents/GitHub/_quarantine/PolarH10-mesmerism-fork` and is not a
 development target for Polar Stream.
 
+## Project routing
+
+- "Main Polar Stream", "the controller", "the desktop app", "the browser demo",
+  "multi-streamer", and unqualified "Polar Stream" UI work target
+  `apps/polar-stream/` and the canonical `apps/polar-stream/ui/` Pages-shared
+  interface. Read `apps/MULTI-STREAMER.md`.
+- "Polar Stream Mini", "Polar Mini", or "Polar mini node" target
+  `apps/polar-stream-mini/` plus shared mini behavior in
+  `crates/stream-mini-runtime/`. Read `apps/POLAR-STREAM-MINI.md`.
+- "Vernier Stream Mini", "Vernier Mini", or "Vernier mini node" target
+  `apps/vernier-stream-mini/` plus shared mini behavior in
+  `crates/stream-mini-runtime/`. Read `apps/VERNIER-STREAM-MINI.md`.
+- Work in `crates/stream-mini-runtime/` affects both minis, so read both mini
+  contracts and verify both packages. Do not read or apply another app's
+  product-specific rules merely because it lives in the same Cargo workspace.
+- The mini apps are standalone BLE-to-LSL applets with their own bundle
+  identifiers, app-local UI assets, saved stream/device preferences, and
+  installer packages. Do not fold them into the main controller, browser demo,
+  LabRecorder workflow, or Pages parity contract unless the user explicitly
+  asks for that integration.
+- Mini UI should preserve the visual language of the main app's node view while
+  remaining a compact transparent-shell app: the node card itself is the whole
+  visible program outline, with no surrounding board or workspace background.
+
 ## Repository map
 
 - `apps/polar-stream/`: thin Tauri coordinator and HTML/CSS/JavaScript UI.
+- `apps/polar-stream-mini/`: standalone Polar H10 BLE-to-LSL mini node applet.
+- `apps/vernier-stream-mini/`: standalone Vernier Go Direct BLE-to-LSL mini
+  node applet.
 - `crates/polar-h10-core/`: Polar PMD/HR decoding and protocol primitives.
 - `crates/polar-h10-input/`: Bluetooth discovery, connection, and input events.
 - `crates/polar-h10-metrics/`: derived metric processors and evidence catalog.
 - `crates/polar-h10-math/`: bounded custom formulas and stateful scalar DSP/HRV.
 - `crates/polar-h10-output/`: canonical names, LSL/OSC publication, and bounded
   native CSV persistence.
+- `crates/stream-mini-runtime/`: shared one-session mini-app coordinator,
+  preference memory, BLE-to-LSL routing, and new-instance launcher.
 - `scripts/`: build, release, preview, and interface-validation tooling.
 - `docs/`: scientific evidence and architecture assessments.
 - `.github/workflows/`: CI, release, and download-page automation.
@@ -49,7 +78,6 @@ development target for Polar Stream.
 
 Work is not complete until behavior is implemented, proportionate checks pass,
 the diff is reviewed for accidental scope, and this directory is updated when
-one of the triggers in `SELF-UPDATE.md` applies. For every completed edit, the
-source checkout, installed per-user desktop app, and public GitHub Pages app
-must also be synchronized and verified under `GLOBAL-INSTRUCTIONS.md`; the final
-handoff must include the verified live Pages URL.
+one of the triggers in `SELF-UPDATE.md` applies. Build, install, launch, and
+report only the selected product set under `GLOBAL-INSTRUCTIONS.md`. Main-app
+or download-surface work also carries the Pages gate; mini-only work does not.

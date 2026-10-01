@@ -10,7 +10,9 @@ mod catalog;
 mod coherence;
 mod ecg;
 mod excitation;
+mod flowborne;
 mod hrv;
+mod phan_breathing;
 mod reference_validation;
 mod timed_breathing;
 mod vernier_breathing;
@@ -25,8 +27,8 @@ pub use breathing::{
 pub use breathing_dynamics::{BreathingDynamicsSnapshot, FeatureSet};
 pub use catalog::{
     METRIC_CATALOG, MetricCitation, MetricDefinition, MetricFormulaDefinition, MetricSelectionTier,
-    RELEASE_POLAR_RESPIRATION_IDS, metric_citations, metric_definition, metric_formula_definition,
-    metric_selection_tier,
+    POLAR_MINI_ONLY_IDS, RELEASE_POLAR_RESPIRATION_IDS, metric_citations, metric_definition,
+    metric_formula_definition, metric_selection_tier,
 };
 pub use coherence::CoherenceSnapshot;
 pub use ecg::EcgSnapshot;
@@ -43,7 +45,9 @@ use breathing_dynamics::BreathingDynamicsProcessor;
 use coherence::CoherenceProcessor;
 use ecg::EcgProcessor;
 use excitation::{ExcitationProcessor, ExcitementScoreProcessor};
+use flowborne::FlowborneProcessor;
 use hrv::HrvProcessor;
+use phan_breathing::PhanBreathingProcessor;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +65,8 @@ pub struct MetricSelection {
     acc_magnitude: bool,
     breathing: bool,
     breathing_dynamics: bool,
+    phan_breathing: bool,
+    flowborne: bool,
     heart_rate: bool,
     rr_interval: bool,
     hrv: bool,
@@ -91,6 +97,11 @@ impl MetricSelection {
                 "breathing_rate" | "breathing_dynamics_confidence" => {
                     selection.breathing = true;
                     selection.breathing_dynamics = true;
+                }
+                "phan_breath_event" | "phan_breath_rate" => selection.phan_breathing = true,
+                "flowborne_phase" | "flowborne_motion_score" => {
+                    selection.breathing = true;
+                    selection.flowborne = true;
                 }
                 "heart_rate" => selection.heart_rate = true,
                 "rr_interval" => selection.rr_interval = true,
@@ -125,6 +136,8 @@ impl MetricSelection {
             acc_magnitude: false,
             breathing: false,
             breathing_dynamics: false,
+            phan_breathing: false,
+            flowborne: false,
             heart_rate: false,
             rr_interval: false,
             hrv: false,
@@ -163,6 +176,8 @@ pub struct MetricEngine {
     coherence: CoherenceProcessor,
     breathing: BreathingProcessor,
     breathing_dynamics: BreathingDynamicsProcessor,
+    phan_breathing: PhanBreathingProcessor,
+    flowborne: FlowborneProcessor,
     ecg: EcgProcessor,
     excitation: ExcitationProcessor,
     excitement_score: ExcitementScoreProcessor,
@@ -182,6 +197,8 @@ impl MetricEngine {
             coherence: CoherenceProcessor::default(),
             breathing: BreathingProcessor::default(),
             breathing_dynamics: BreathingDynamicsProcessor::default(),
+            phan_breathing: PhanBreathingProcessor::default(),
+            flowborne: FlowborneProcessor::default(),
             ecg: EcgProcessor::default(),
             excitation: ExcitationProcessor::default(),
             excitement_score: ExcitementScoreProcessor::default(),
@@ -199,6 +216,12 @@ impl MetricEngine {
         }
         if self.selection.breathing_dynamics != selection.breathing_dynamics {
             self.breathing_dynamics = BreathingDynamicsProcessor::default();
+        }
+        if self.selection.phan_breathing != selection.phan_breathing {
+            self.phan_breathing = PhanBreathingProcessor::default();
+        }
+        if self.selection.flowborne != selection.flowborne {
+            self.flowborne = FlowborneProcessor::default();
         }
         if self.selection.hrv != selection.hrv {
             self.hrv = HrvProcessor::default();
@@ -218,6 +241,7 @@ impl MetricEngine {
     pub fn apply_breathing_settings(&mut self, settings: BreathingSettings) {
         self.breathing.apply_settings(settings);
         self.breathing_dynamics = BreathingDynamicsProcessor::default();
+        self.flowborne = FlowborneProcessor::default();
     }
 
     pub fn breathing_diagnostics(&self) -> BreathingDiagnostics {
@@ -331,12 +355,42 @@ impl MetricEngine {
             };
             if let Some(breathing) = breathing {
                 output.extend(breathing.samples());
+                if self.selection.flowborne {
+                    let flowborne = self.flowborne.push(
+                        breathing,
+                        timing.is_some_and(|batch| batch.clock_reset || batch.gap_before),
+                    );
+                    output.push(MetricSample {
+                        id: "flowborne_phase",
+                        value: flowborne.phase,
+                    });
+                    if let Some(score) = flowborne.motion_score {
+                        output.push(MetricSample {
+                            id: "flowborne_motion_score",
+                            value: score,
+                        });
+                    }
+                }
                 if self.selection.breathing_dynamics
                     && let Some(dynamics) = self.breathing_dynamics.push(breathing)
                 {
                     output.extend(dynamics.samples());
                 }
             }
+        }
+        if self.selection.phan_breathing
+            && let Some(snapshot) = self.phan_breathing.push(samples, timing)
+        {
+            if snapshot.breath_detected {
+                output.push(MetricSample {
+                    id: "phan_breath_event",
+                    value: 1.0,
+                });
+            }
+            output.push(MetricSample {
+                id: "phan_breath_rate",
+                value: snapshot.breaths_per_minute,
+            });
         }
         self.selection.retain_selected(&mut output);
         output

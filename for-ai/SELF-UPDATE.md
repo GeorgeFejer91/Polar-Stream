@@ -26,11 +26,10 @@ Update the relevant files in the same change whenever any of these occur:
 5. Run `for-ai/scripts/check-context.sh`.
 6. Review the context diff for secrets, participant data, stale branch claims,
    contradictory instructions, and unsupported scientific statements.
-7. Complete the three-surface sync: production-build and install the desktop
-   app with rollback, publish the accepted change to `main`, wait for Pages,
-   and verify public manifest/hash parity.
-8. Include `https://georgefejer91.github.io/Polar-Stream/` and the live
-   verification result in the final handoff after every completed edit.
+7. Complete the selected `for-ai/apps/` contract's production build, rollback,
+   install, and launch gate. Shared mini-runtime changes select both minis.
+8. Publish and verify `https://georgefejer91.github.io/Polar-Stream/` only when
+   the selected scope includes the main multi-streamer or download surface.
 
 ## Rules for self-modification
 

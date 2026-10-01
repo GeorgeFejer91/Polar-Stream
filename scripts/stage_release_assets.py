@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
@@ -15,6 +16,24 @@ EXTENSIONS = {
     "windows": (".exe", ".msi"),
     "macos": (".dmg",),
 }
+TAURI_APPS = (
+    Path("apps/polar-stream/tauri.conf.json"),
+    Path("apps/polar-stream-mini/tauri.conf.json"),
+    Path("apps/vernier-stream-mini/tauri.conf.json"),
+)
+
+
+@dataclass(frozen=True)
+class ReleaseProduct:
+    display_name: str
+    asset_prefix: str
+
+
+PRODUCTS = (
+    ReleaseProduct("Polar Stream", "Polar-Stream"),
+    ReleaseProduct("Polar Stream Mini", "Polar-Stream-Mini"),
+    ReleaseProduct("Vernier Stream Mini", "Vernier-Stream-Mini"),
+)
 
 VERSION_PATTERN = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -53,14 +72,30 @@ def cargo_lockfile_versions(path: Path) -> dict[str, str]:
     return packages
 
 
-def find_one(bundle_root: Path, extension: str) -> Path:
+def product_version_pattern(product: ReleaseProduct, version: str) -> re.Pattern[str]:
+    product_tokens = [
+        re.escape(token) for token in re.split(r"\s+", product.display_name.strip())
+    ]
+    product_prefix = r"[\s_.-]+".join(product_tokens)
+    return re.compile(
+        rf"^{product_prefix}[\s_.-]+v?{re.escape(version)}(?:[\s_.-]|$)",
+        re.IGNORECASE,
+    )
+
+
+def find_one(bundle_root: Path, extension: str, product: ReleaseProduct, version: str) -> Path:
+    product_pattern = product_version_pattern(product, version)
     candidates = sorted(
-        path for path in bundle_root.rglob("*")
-        if path.is_file() and path.name.lower().endswith(extension)
+        path
+        for path in bundle_root.rglob("*")
+        if path.is_file()
+        and path.name.lower().endswith(extension.lower())
+        and product_pattern.search(path.name)
     )
     if len(candidates) != 1:
         raise SystemExit(
-            f"Expected exactly one {extension} below {bundle_root}, found {len(candidates)}: "
+            f"Expected exactly one {product.display_name} {extension} below "
+            f"{bundle_root}, found {len(candidates)}: "
             + ", ".join(str(path) for path in candidates)
         )
     return candidates[0]
@@ -90,15 +125,20 @@ def verify_repository_versions(root: Path, raw_version: str) -> str:
     )
     configured_versions = {
         "Cargo workspace": cargo_workspace_version(root / "Cargo.toml"),
-        "Tauri application": json.loads(
-            (root / "apps/polar-stream/tauri.conf.json").read_text(encoding="utf-8")
-        )["version"],
         "npm tooling": json.loads(
             (root / "package.json").read_text(encoding="utf-8")
         )["version"],
         "npm lockfile": lockfile_version,
         "npm lockfile root": lockfile_root_version,
     }
+    configured_versions.update(
+        {
+            f"Tauri application {path.parent.name}": json.loads(
+                (root / path).read_text(encoding="utf-8")
+            )["version"]
+            for path in TAURI_APPS
+        }
+    )
     configured_versions.update(
         {
             f"Cargo lockfile package {name}": configured
@@ -118,6 +158,26 @@ def verify_repository_versions(root: Path, raw_version: str) -> str:
             f"Release tag {raw_version} does not match repository versions: {details}"
         )
     return version
+
+
+def stage_release_assets(
+    bundle_root: Path,
+    output: Path,
+    platform: str,
+    arch: str,
+    version: str,
+) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    for product in PRODUCTS:
+        for extension in EXTENSIONS[platform]:
+            source = find_one(bundle_root, extension, product, version)
+            setup = "_setup" if platform == "windows" and extension == ".exe" else ""
+            destination = output / (
+                f"{product.asset_prefix}_{version}_{platform}_{arch}"
+                f"{setup}{source.suffix}"
+            )
+            shutil.copy2(source, destination)
+            print(f"Staged {destination.name} from {source}")
 
 
 def main() -> None:
@@ -155,15 +215,13 @@ def main() -> None:
             + ", ".join(missing_arguments)
         )
 
-    args.output.mkdir(parents=True, exist_ok=True)
-    for extension in EXTENSIONS[args.platform]:
-        source = find_one(args.bundle_root, extension)
-        setup = "_setup" if args.platform == "windows" and extension == ".exe" else ""
-        destination = args.output / (
-            f"Polar-Stream_{version}_{args.platform}_{args.arch}{setup}{source.suffix}"
-        )
-        shutil.copy2(source, destination)
-        print(f"Staged {destination.name} from {source}")
+    stage_release_assets(
+        args.bundle_root,
+        args.output,
+        args.platform,
+        args.arch,
+        version,
+    )
 
 
 if __name__ == "__main__":

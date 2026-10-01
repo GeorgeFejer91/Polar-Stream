@@ -1,0 +1,44 @@
+Polar Stream bundles liblsl 1.17.7 from https://github.com/sccn/liblsl.
+
+Copyright (C) 2012 Christian A. Kothe
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+liblsl includes pugixml (MIT), Boost (Boost Software License), Loguru (public
+domain), and Catch2 (Boost Software License). See the upstream repository for
+the complete notices.
+
+Polar Stream also bundles the official LabRecorder 1.17.0 application from
+release v1.17.1 at https://github.com/labstreaminglayer/App-LabRecorder.
+
+Copyright (c) 2012 Christian Kothe
+
+LabRecorder is distributed under the MIT License printed above. Its packaged
+directory also retains the upstream LICENSE and README. LabRecorder includes
+its own liblsl and dynamically linked Qt runtime so it remains an independently
+launched XDF recorder. The bundle identifies Qt, preserves replacement of its
+shared libraries, and includes the LGPL-3.0 and GPL-3.0 license texts.
+
+Metric selection preview paths were generated during development with
+NeuroKit2 0.2.13 (MIT): https://github.com/neuropsychology/NeuroKit
+
+Makowski, D., Pham, T., Lau, Z. J., Brammer, J. C., Lespinasse, F., Pham, H.,
+Schölzel, C., & Chen, S. A. (2021). NeuroKit2: A Python toolbox for
+neurophysiological signal processing. Behavior Research Methods, 53(4),
+1689–1696. https://doi.org/10.3758/s13428-020-01516-y
