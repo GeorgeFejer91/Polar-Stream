@@ -22,7 +22,7 @@
     "check:previews": "python scripts/generate_metric_previews.py --check && node --test apps/polar-stream/ui/tests/recorded-preview.test.cjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.4",
-    "playwright": "1.63.0"
+    "@tauri-apps/cli": "2.12.3",
+    "playwright": "1.64.1"
   }
 }
